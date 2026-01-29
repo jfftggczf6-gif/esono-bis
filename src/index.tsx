@@ -860,25 +860,29 @@ app.post('/api/module/answer', async (c) => {
 
     if (!progress) return c.json({ error: 'Progress non trouvé' }, 404)
 
-    // Check if answer exists
+    // Save to questions table (existing logic)
     const existing = await c.env.DB.prepare(`
       SELECT id FROM questions WHERE progress_id = ? AND question_number = ?
     `).bind(progress.id, question_number).first()
 
     if (existing) {
-      // Update
       await c.env.DB.prepare(`
         UPDATE questions 
         SET user_response = ?, updated_at = datetime('now')
         WHERE id = ?
       `).bind(answer, existing.id).run()
     } else {
-      // Insert
       await c.env.DB.prepare(`
         INSERT INTO questions (progress_id, question_number, question_text, user_response)
         VALUES (?, ?, ?, ?)
       `).bind(progress.id, question_number, `Question ${question_number}`, answer).run()
     }
+
+    // Also save to user_answers table for B5/B7 compatibility
+    await c.env.DB.prepare(`
+      INSERT OR REPLACE INTO user_answers (user_id, module_code, question_id, answer_text, updated_at)
+      VALUES (?, ?, ?, ?, datetime('now'))
+    `).bind(payload.userId, module_code, question_number, answer).run()
 
     return c.json({ success: true })
   } catch (error) {
@@ -929,6 +933,12 @@ app.post('/api/module/submit-answers', async (c) => {
           VALUES (?, ?, ?, ?)
         `).bind(progress.id, ans.question_number, `Question ${ans.question_number}`, ans.answer).run()
       }
+      
+      // Also save to user_answers
+      await c.env.DB.prepare(`
+        INSERT OR REPLACE INTO user_answers (user_id, module_code, question_id, answer_text, updated_at)
+        VALUES (?, ?, ?, ?, datetime('now'))
+      `).bind(payload.userId, module_code, ans.question_number, ans.answer).run()
     }
 
     // Update progress status
@@ -941,6 +951,97 @@ app.post('/api/module/submit-answers', async (c) => {
     return c.json({ success: true })
   } catch (error) {
     console.error('Submit answers error:', error)
+    return c.json({ error: 'Erreur serveur' }, 500)
+  }
+})
+
+// API: Save improved answer
+app.post('/api/module/improve-answer', async (c) => {
+  try {
+    const token = getCookie(c, 'auth_token')
+    if (!token) return c.json({ error: 'Non authentifié' }, 401)
+
+    const payload = await verifyToken(token)
+    if (!payload) return c.json({ error: 'Token invalide' }, 401)
+
+    const { module_code, question_number, improved_answer } = await c.req.json()
+
+    const module = await c.env.DB.prepare(`
+      SELECT id FROM modules WHERE module_code = ?
+    `).bind(module_code).first()
+
+    if (!module) return c.json({ error: 'Module non trouvé' }, 404)
+
+    const progress = await c.env.DB.prepare(`
+      SELECT id FROM progress WHERE user_id = ? AND module_id = ?
+    `).bind(payload.userId, module.id).first()
+
+    if (!progress) return c.json({ error: 'Progress non trouvé' }, 404)
+
+    // Update answer and increment iteration count
+    await c.env.DB.prepare(`
+      UPDATE questions 
+      SET user_response = ?, 
+          iteration_count = iteration_count + 1,
+          updated_at = datetime('now')
+      WHERE progress_id = ? AND question_number = ?
+    `).bind(improved_answer, progress.id, question_number).run()
+
+    // Also update user_answers
+    await c.env.DB.prepare(`
+      INSERT OR REPLACE INTO user_answers (user_id, module_code, question_id, answer_text, updated_at)
+      VALUES (?, ?, ?, ?, datetime('now'))
+    `).bind(payload.userId, module_code, question_number, improved_answer).run()
+
+    return c.json({ success: true })
+  } catch (error) {
+    console.error('Improve answer error:', error)
+    return c.json({ error: 'Erreur serveur' }, 500)
+  }
+})
+
+// API: Valider le module (B6)
+app.post('/api/module/validate', async (c) => {
+  try {
+    const token = getCookie(c, 'auth_token')
+    if (!token) return c.json({ error: 'Non authentifié' }, 401)
+
+    const payload = await verifyToken(token)
+    if (!payload) return c.json({ error: 'Token invalide' }, 401)
+
+    const { moduleCode } = await c.req.json()
+
+    const module = await c.env.DB.prepare(`
+      SELECT id FROM modules WHERE module_code = ?
+    `).bind(moduleCode).first()
+
+    if (!module) return c.json({ error: 'Module non trouvé' }, 404)
+
+    // Mettre à jour le statut du progrès
+    await c.env.DB.prepare(`
+      UPDATE progress 
+      SET status = 'validated',
+          completed_at = datetime('now'),
+          updated_at = datetime('now')
+      WHERE user_id = ? AND module_id = ?
+    `).bind(payload.userId, module.id).run()
+
+    // Créer un livrable
+    await c.env.DB.prepare(`
+      INSERT OR REPLACE INTO deliverables (
+        user_id, module_id, title, status, file_url, created_at
+      ) VALUES (?, ?, ?, ?, ?, datetime('now'))
+    `).bind(
+      payload.userId, 
+      module.id, 
+      'Business Model Canvas', 
+      'ready', 
+      `/module/${moduleCode}/download`
+    ).run()
+
+    return c.json({ success: true })
+  } catch (error) {
+    console.error('Validation error:', error)
     return c.json({ error: 'Erreur serveur' }, 500)
   }
 })
