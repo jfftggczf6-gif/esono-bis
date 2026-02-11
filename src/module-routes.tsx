@@ -17,6 +17,11 @@ import {
 } from './module-content'
 import { generateMockFeedback, calculateOverallScore, getScoreLabel, getSectionName } from './ai-feedback'
 import { analyzeSIC, generateSicDiagnosticHtml, getSicScoreLabel, SIC_SECTION_LABELS, QUESTION_SECTION_MAP as SIC_QUESTION_MAP, type SicAnalysisResult, type SicSectionScore, ODD_ICONS, ODD_LABELS } from './sic-engine'
+import {
+  analyzeInputs, generateInputsDiagnosticHtml, getInputsReadinessLabel,
+  INPUT_TAB_ORDER, INPUT_TAB_LABELS, TAB_COACHING, TAB_FIELDS, scoreTab,
+  type InputTabKey, type InputsAnalysisResult, type TabScore
+} from './inputs-engine'
 
 
 type Bindings = {
@@ -1460,7 +1465,298 @@ moduleRoutes.get('/module/:code/inputs', async (c) => {
       return c.redirect('/dashboard')
     }
 
-    if (moduleCode === 'step1_activity_report' || moduleCode === 'mod3_inputs') {
+    // ═══ Module 3 Inputs Financiers — 9 onglets dédiés ═══
+    if (moduleCode === 'mod3_inputs') {
+      const progress = await ensureProgressRecord(c.env.DB, payload.userId, moduleId)
+      
+      // Load existing data from financial_inputs (9-tab JSON columns)
+      const INPUT_TAB_COLS: Record<InputTabKey, string> = {
+        infos_generales: 'infos_generales_json', donnees_historiques: 'donnees_historiques_json',
+        produits_services: 'produits_services_json', ressources_humaines: 'ressources_humaines_json',
+        hypotheses_croissance: 'hypotheses_croissance_json', couts_fixes_variables: 'couts_fixes_variables_json',
+        bfr_tresorerie: 'bfr_tresorerie_json', investissements: 'investissements_json', financement: 'financement_json'
+      }
+      const fiRow = await c.env.DB.prepare('SELECT * FROM financial_inputs WHERE user_id = ? AND module_id = ? LIMIT 1')
+        .bind(payload.userId, moduleId).first()
+      
+      const tabsData: Record<InputTabKey, Record<string, any>> = {} as any
+      for (const tabKey of INPUT_TAB_ORDER) {
+        const col = INPUT_TAB_COLS[tabKey]
+        const raw = fiRow ? (fiRow as any)[col] : null
+        tabsData[tabKey] = raw ? JSON.parse(raw) : {}
+      }
+
+      // Score each tab for display
+      const tabScores = INPUT_TAB_ORDER.map(k => scoreTab(k, tabsData[k]))
+      const overallCompleteness = Math.round(tabScores.reduce((s, t) => s + t.completeness, 0) / tabScores.length)
+      const readiness = fiRow ? Number((fiRow as any).readiness_score ?? 0) : 0
+      const lastUpdated = fiRow && (fiRow as any).updated_at ? new Date((fiRow as any).updated_at as string).toLocaleDateString('fr-FR') : 'Jamais'
+
+      const { navItems: resolvedNavItems, activeNav } = resolveNavigationForStage(moduleCode, 'inputs')
+
+      const pageContent = (
+        <div class="esono-grid">
+          {/* Hero */}
+          <section class="esono-hero esono-hero--vision">
+            <div class="esono-hero__header">
+              <div>
+                <h2 class="esono-hero__title"><i class="fas fa-calculator" style="margin-right:8px;"></i>Inputs Financiers</h2>
+                <p class="esono-hero__description">Saisissez vos données financières dans les 9 onglets. L'IA vérifie la cohérence en temps réel.</p>
+              </div>
+              <span class="esono-hero__badge"><i class="fas fa-pen-to-square"></i> Étape 3 / 7</span>
+            </div>
+            <div class="esono-hero__metrics">
+              <div class="esono-hero__metric"><p class="esono-hero__metric-value" id="globalCompleteness">{overallCompleteness}%</p><p class="esono-hero__metric-label">Complétude</p></div>
+              <div class="esono-hero__metric"><p class="esono-hero__metric-value" id="globalReadiness">{readiness}%</p><p class="esono-hero__metric-label">Readiness</p></div>
+              <div class="esono-hero__metric"><p class="esono-hero__metric-value">{lastUpdated}</p><p class="esono-hero__metric-label">Dernière MàJ</p></div>
+              <div class="esono-hero__metric"><p class="esono-hero__metric-value">{progress.status === 'validated' ? 'Validé' : progress.status === 'not_started' ? 'À démarrer' : 'En cours'}</p><p class="esono-hero__metric-label">Statut</p></div>
+            </div>
+          </section>
+
+          {/* Tab Navigation */}
+          <section class="esono-card">
+            <div class="esono-card__body" style="padding:0;">
+              <div id="inputTabNav" style="display:flex;flex-wrap:wrap;gap:4px;padding:12px;">
+                {INPUT_TAB_ORDER.map((tabKey, idx) => {
+                  const info = INPUT_TAB_LABELS[tabKey]
+                  const ts = tabScores[idx]
+                  const badgeColor = ts.completeness >= 80 ? '#059669' : ts.completeness >= 50 ? '#d97706' : '#94a3b8'
+                  return (
+                    <button
+                      type="button"
+                      class={`esono-btn ${idx === 0 ? 'esono-btn--primary' : 'esono-btn--ghost'}`}
+                      data-tab-btn={tabKey}
+                      onclick={`switchTab('${tabKey}')`}
+                      style="font-size:12px;padding:6px 10px;position:relative;"
+                    >
+                      <i class={`fas ${info.icon}`} style="margin-right:4px;"></i>
+                      {info.shortLabel}
+                      <span style={`position:absolute;top:-6px;right:-6px;background:${badgeColor};color:white;font-size:9px;padding:1px 5px;border-radius:10px;font-weight:700;`}>{ts.completeness}%</span>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          </section>
+
+          {/* Tab Panels */}
+          {INPUT_TAB_ORDER.map((tabKey, idx) => {
+            const info = INPUT_TAB_LABELS[tabKey]
+            const coaching = TAB_COACHING[tabKey]
+            const fields = TAB_FIELDS[tabKey]
+            const ts = tabScores[idx]
+            const currentData = tabsData[tabKey]
+
+            return (
+              <div id={`tab-panel-${tabKey}`} class="input-tab-panel" style={idx === 0 ? '' : 'display:none;'}>
+                {/* Coaching Sidebar */}
+                <section class="esono-card" style="border-left:4px solid #3b82f6;">
+                  <div class="esono-card__header">
+                    <h3 class="esono-card__title" style="font-size:14px;">
+                      <i class="fas fa-graduation-cap" style="color:#3b82f6;margin-right:6px;"></i>
+                      Coaching — {info.label}
+                    </h3>
+                  </div>
+                  <div class="esono-card__body" style="display:flex;flex-direction:column;gap:8px;">
+                    <div style="background:#dcfce7;padding:10px;border-radius:8px;font-size:13px;">
+                      <strong style="color:#059669;">🟢 Conseil :</strong> {coaching.conseil}
+                    </div>
+                    <div style="background:#dbeafe;padding:10px;border-radius:8px;font-size:13px;">
+                      <strong style="color:#2563eb;">🟢 Exemple :</strong> {coaching.exemple}
+                    </div>
+                    <div style="background:#fee2e2;padding:10px;border-radius:8px;font-size:13px;">
+                      <strong style="color:#dc2626;">🔴 À éviter :</strong> {coaching.aEviter}
+                    </div>
+                  </div>
+                </section>
+
+                {/* Form Fields */}
+                <section class="esono-card">
+                  <div class="esono-card__header">
+                    <h2 class="esono-card__title">
+                      <i class={`fas ${info.icon} esono-card__title-icon`}></i>
+                      {info.label}
+                    </h2>
+                    <span class="esono-note esono-note--info" id={`tab-completeness-${tabKey}`}>{ts.completeness}% complété · {ts.filledFields}/{ts.totalFields} champs</span>
+                  </div>
+                  <div class="esono-card__body">
+                    <div class="esono-form__grid esono-form__grid--2">
+                      {fields.map(field => {
+                        const val = currentData[field.key] ?? field.defaultValue ?? ''
+                        const fieldId = `input-${tabKey}-${field.key}`
+                        
+                        if (field.type === 'select' && field.options) {
+                          return (
+                            <label class="esono-form__field" htmlFor={fieldId}>
+                              <span class="esono-form__label">{field.label} {field.required ? <span style="color:#dc2626;">*</span> : ''}</span>
+                              <select id={fieldId} name={field.key} class="esono-textarea" data-tab={tabKey} data-field-input style="height:42px;padding:8px;">
+                                <option value="">— Sélectionnez —</option>
+                                {field.options.map(opt => <option value={opt} selected={String(val) === opt}>{opt}</option>)}
+                              </select>
+                              {field.unit && <span class="esono-form__hint">{field.unit}</span>}
+                            </label>
+                          )
+                        }
+                        
+                        if (field.type === 'textarea') {
+                          return (
+                            <label class="esono-form__field esono-form__field--full" htmlFor={fieldId}>
+                              <span class="esono-form__label">{field.label} {field.required ? <span style="color:#dc2626;">*</span> : ''}</span>
+                              <textarea id={fieldId} name={field.key} rows={4} placeholder={field.placeholder ?? ''} data-tab={tabKey} data-field-input class="esono-textarea">{String(val)}</textarea>
+                            </label>
+                          )
+                        }
+
+                        return (
+                          <label class="esono-form__field" htmlFor={fieldId}>
+                            <span class="esono-form__label">{field.label} {field.required ? <span style="color:#dc2626;">*</span> : ''}</span>
+                            <input type={field.type === 'currency' ? 'number' : field.type} id={fieldId} name={field.key} value={String(val)} placeholder={field.placeholder ?? ''} data-tab={tabKey} data-field-input class="esono-textarea" style="height:42px;padding:8px;" />
+                            {field.unit && <span class="esono-form__hint">{field.unit}</span>}
+                          </label>
+                        )
+                      })}
+                    </div>
+                  </div>
+                </section>
+
+                {/* Alerts for this tab */}
+                <div id={`tab-alerts-${tabKey}`} class="esono-card" style={ts.alerts.length === 0 ? 'display:none;' : ''}>
+                  <div class="esono-card__header">
+                    <h3 class="esono-card__title" style="font-size:14px;color:#d97706;">
+                      <i class="fas fa-triangle-exclamation" style="margin-right:6px;"></i>
+                      Alertes IA ({ts.alerts.length})
+                    </h3>
+                  </div>
+                  <div class="esono-card__body" style="display:flex;flex-direction:column;gap:6px;">
+                    {ts.alerts.map(alert => (
+                      <div style={`padding:8px 12px;border-radius:6px;font-size:13px;border-left:3px solid ${alert.level === 'error' ? '#dc2626' : alert.level === 'warning' ? '#d97706' : '#3b82f6'};background:${alert.level === 'error' ? '#fee2e2' : alert.level === 'warning' ? '#fef3c7' : '#dbeafe'};`}>
+                        <i class={`fas ${alert.level === 'error' ? 'fa-circle-exclamation' : 'fa-triangle-exclamation'}`} style={`margin-right:4px;color:${alert.level === 'error' ? '#dc2626' : '#d97706'};`}></i>
+                        {alert.message}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )
+          })}
+
+          {/* Save Status */}
+          <div id="inputSaveStatus" class="esono-alert" style="display:none;"></div>
+
+          {/* Action Buttons */}
+          <div class="esono-form__actions">
+            <button type="button" id="saveCurrentTabBtn" class="esono-btn esono-btn--primary" onclick="saveCurrentTab()">
+              <i class="fas fa-save"></i> Enregistrer cet onglet
+            </button>
+            <button type="button" id="saveAllTabsBtn" class="esono-btn esono-btn--secondary" onclick="saveAllTabs()">
+              <i class="fas fa-floppy-disk"></i> Tout enregistrer
+            </button>
+            <a href="/module/mod3_inputs/analysis" class="esono-btn esono-btn--accent">
+              <i class="fas fa-robot"></i> Lancer l'analyse IA
+            </a>
+          </div>
+        </div>
+      )
+
+      const extraScripts = `
+(() => {
+  let currentTab = '${INPUT_TAB_ORDER[0]}';
+  const allTabs = ${JSON.stringify(INPUT_TAB_ORDER)};
+
+  window.switchTab = function(tabKey) {
+    currentTab = tabKey;
+    allTabs.forEach(t => {
+      const panel = document.getElementById('tab-panel-' + t);
+      if (panel) panel.style.display = t === tabKey ? '' : 'none';
+    });
+    document.querySelectorAll('[data-tab-btn]').forEach(btn => {
+      if (btn.dataset.tabBtn === tabKey) {
+        btn.classList.remove('esono-btn--ghost');
+        btn.classList.add('esono-btn--primary');
+      } else {
+        btn.classList.remove('esono-btn--primary');
+        btn.classList.add('esono-btn--ghost');
+      }
+    });
+  };
+
+  function collectTabData(tabKey) {
+    const data = {};
+    document.querySelectorAll('[data-tab="' + tabKey + '"][data-field-input]').forEach(el => {
+      const name = el.name || el.id.split('-').slice(2).join('-');
+      data[name] = el.value || '';
+    });
+    return data;
+  }
+
+  function showStatus(msg, ok) {
+    const el = document.getElementById('inputSaveStatus');
+    if (!el) return;
+    el.style.display = 'block';
+    el.className = 'esono-alert ' + (ok ? 'esono-alert--success' : 'esono-alert--error');
+    el.innerHTML = '<i class="fas ' + (ok ? 'fa-check-circle' : 'fa-exclamation-triangle') + '"></i> ' + msg;
+    setTimeout(() => { el.style.display = 'none'; }, 4000);
+  }
+
+  window.saveCurrentTab = async function() {
+    const btn = document.getElementById('saveCurrentTabBtn');
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Enregistrement...'; }
+    try {
+      const data = collectTabData(currentTab);
+      const res = await fetch('/api/inputs/save-tab', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ moduleCode: 'mod3_inputs', tab: currentTab, data })
+      });
+      const json = await res.json();
+      if (json.success) {
+        showStatus('Onglet "' + currentTab + '" enregistré avec succès.', true);
+        if (json.score) {
+          const compEl = document.getElementById('tab-completeness-' + currentTab);
+          if (compEl) compEl.textContent = json.score.completeness + '% complété · ' + json.score.filledFields + '/' + json.score.totalFields + ' champs';
+        }
+      } else {
+        showStatus(json.error || 'Erreur lors de l\\'enregistrement.', false);
+      }
+    } catch(e) {
+      showStatus('Erreur réseau.', false);
+    }
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-save"></i> Enregistrer cet onglet'; }
+  };
+
+  window.saveAllTabs = async function() {
+    const btn = document.getElementById('saveAllTabsBtn');
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sauvegarde...'; }
+    let savedCount = 0;
+    for (const tabKey of allTabs) {
+      try {
+        const data = collectTabData(tabKey);
+        const res = await fetch('/api/inputs/save-tab', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ moduleCode: 'mod3_inputs', tab: tabKey, data })
+        });
+        const json = await res.json();
+        if (json.success) savedCount++;
+      } catch(e) {}
+    }
+    showStatus(savedCount + '/' + allTabs.length + ' onglets enregistrés.', savedCount === allTabs.length);
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-floppy-disk"></i> Tout enregistrer'; }
+  };
+})();
+`
+
+      return c.html(renderEsanoLayout({
+        pageTitle: 'Inputs Financiers — Module 3',
+        navItems: resolvedNavItems,
+        activeNav,
+        content: pageContent,
+        extraScripts
+      }))
+    }
+
+    // ═══ Activity Report inputs (step1_activity_report) ═══
+    if (moduleCode === 'step1_activity_report') {
       const progress = await ensureProgressRecord(c.env.DB, payload.userId, moduleId)
       const inputsRecord = (await getActivityReportInputsRow(c.env.DB, payload.userId, moduleId)) ?? {}
 
@@ -2438,7 +2734,7 @@ moduleRoutes.get('/module/:code/analysis', async (c) => {
     const moduleCode = c.req.param('code')
     const variant = getModuleVariant(moduleCode)
 
-    if (variant === 'finance') {
+    if (variant === 'finance' && moduleCode !== 'mod3_inputs') {
       return c.redirect(`/module/${moduleCode}/inputs`)
     }
     
@@ -2463,7 +2759,7 @@ moduleRoutes.get('/module/:code/analysis', async (c) => {
       ORDER BY question_number
     `).bind(progress.id).all()
 
-    if (!answers.results.length || answers.results.every((a: any) => !a.user_response || !a.user_response.trim())) {
+    if (moduleCode !== 'mod3_inputs' && (!answers.results.length || answers.results.every((a: any) => !a.user_response || !a.user_response.trim()))) {
       return c.redirect(`/module/${moduleCode}/questions`)
     }
 
@@ -2480,10 +2776,187 @@ moduleRoutes.get('/module/:code/analysis', async (c) => {
       }
     })
 
-    if (!answersMap.size) {
+    if (!answersMap.size && moduleCode !== 'mod3_inputs') {
       return c.redirect(`/module/${moduleCode}/questions`)
     }
-    
+
+    // ═══ Module 3 Inputs Financiers — dedicated analysis page ═══
+    if (moduleCode === 'mod3_inputs') {
+      const fiRow = await c.env.DB.prepare('SELECT * FROM financial_inputs WHERE user_id = ? AND module_id = ? LIMIT 1')
+        .bind(payload.userId, module.id).first()
+
+      if (!fiRow) {
+        return c.redirect('/module/mod3_inputs/inputs')
+      }
+
+      const FI_COLS: Record<InputTabKey, string> = {
+        infos_generales: 'infos_generales_json', donnees_historiques: 'donnees_historiques_json',
+        produits_services: 'produits_services_json', ressources_humaines: 'ressources_humaines_json',
+        hypotheses_croissance: 'hypotheses_croissance_json', couts_fixes_variables: 'couts_fixes_variables_json',
+        bfr_tresorerie: 'bfr_tresorerie_json', investissements: 'investissements_json', financement: 'financement_json'
+      }
+      const allData: Record<InputTabKey, Record<string, any>> = {} as any
+      for (const tabKey of INPUT_TAB_ORDER) {
+        const raw = (fiRow as any)[FI_COLS[tabKey]]
+        allData[tabKey] = raw ? JSON.parse(raw) : {}
+      }
+
+      const inputsAnalysis = analyzeInputs(allData)
+
+      // Persist analysis
+      await c.env.DB.prepare(`
+        UPDATE financial_inputs SET completeness_pct = ?, readiness_score = ?, analysis_json = ?, analysis_timestamp = datetime('now'),
+          marge_brute_pct = ?, marge_op_pct = ?, marge_nette_pct = ?, updated_at = datetime('now')
+        WHERE user_id = ? AND module_id = ?
+      `).bind(
+        inputsAnalysis.overallCompleteness, inputsAnalysis.readinessScore, JSON.stringify(inputsAnalysis),
+        inputsAnalysis.financialRatios.margeBrute, inputsAnalysis.financialRatios.margeOperationnelle, inputsAnalysis.financialRatios.margeNette,
+        payload.userId, module.id
+      ).run()
+
+      await c.env.DB.prepare(`UPDATE progress SET ai_score = ?, ai_feedback_json = ?, ai_last_analysis = datetime('now'), updated_at = datetime('now') WHERE id = ?`)
+        .bind(inputsAnalysis.readinessScore, JSON.stringify(inputsAnalysis), progress.id).run()
+
+      const { navItems: resolvedNavItems, activeNav } = resolveNavigationForStage(moduleCode, 'analysis')
+      const readinessInfo = getInputsReadinessLabel(inputsAnalysis.readinessScore)
+      const scoreColor = readinessInfo.color === 'green' ? '#059669' : readinessInfo.color === 'blue' ? '#0284c7' : readinessInfo.color === 'yellow' ? '#d97706' : '#dc2626'
+      const errCount = inputsAnalysis.alerts.filter(a => a.level === 'error').length
+      const warnCount = inputsAnalysis.alerts.filter(a => a.level === 'warning').length
+
+      const pageContent = (
+        <div class="esono-grid">
+          {/* Hero Score */}
+          <section class="esono-hero" style={`background:linear-gradient(135deg, ${scoreColor}15 0%, ${scoreColor}05 100%);border:1px solid ${scoreColor}30;`}>
+            <div class="esono-hero__header">
+              <div style="display:flex;align-items:center;gap:20px;">
+                <div style={`width:90px;height:90px;border-radius:50%;background:${scoreColor};display:flex;flex-direction:column;align-items:center;justify-content:center;color:white;font-size:24px;font-weight:800;`}>
+                  {inputsAnalysis.readinessScore}%
+                  <span style="font-size:10px;font-weight:400;opacity:0.9;">Readiness</span>
+                </div>
+                <div>
+                  <h2 class="esono-hero__title" style="margin-bottom:4px;">Analyse Inputs Financiers</h2>
+                  <span style={`display:inline-block;padding:4px 12px;border-radius:20px;background:${scoreColor}20;color:${scoreColor};font-weight:700;font-size:13px;margin-bottom:8px;`}>
+                    {readinessInfo.label}
+                  </span>
+                  <p style="font-size:14px;color:#475569;max-width:500px;">{inputsAnalysis.verdict}</p>
+                </div>
+              </div>
+            </div>
+            <div class="esono-hero__metrics">
+              <div class="esono-hero__metric"><p class="esono-hero__metric-value">{inputsAnalysis.overallCompleteness}%</p><p class="esono-hero__metric-label">Complétude</p></div>
+              <div class="esono-hero__metric"><p class="esono-hero__metric-value" style={errCount > 0 ? 'color:#dc2626;' : ''}>{errCount}</p><p class="esono-hero__metric-label">Erreurs</p></div>
+              <div class="esono-hero__metric"><p class="esono-hero__metric-value" style={warnCount > 0 ? 'color:#d97706;' : ''}>{warnCount}</p><p class="esono-hero__metric-label">Alertes</p></div>
+              <div class="esono-hero__metric"><p class="esono-hero__metric-value">{inputsAnalysis.tabs.filter(t => t.completeness >= 80).length}/9</p><p class="esono-hero__metric-label">Onglets OK</p></div>
+            </div>
+          </section>
+
+          {/* Tab-by-tab completeness */}
+          <section class="esono-card">
+            <div class="esono-card__header">
+              <h2 class="esono-card__title"><i class="fas fa-chart-bar esono-card__title-icon"></i>Complétude par onglet</h2>
+            </div>
+            <div class="esono-card__body" style="display:flex;flex-direction:column;gap:8px;">
+              {inputsAnalysis.tabs.map(tab => {
+                const barColor = tab.completeness >= 80 ? '#059669' : tab.completeness >= 50 ? '#d97706' : '#dc2626'
+                const tabAlertCount = tab.alerts.filter(a => a.level === 'error').length
+                return (
+                  <div style="padding:10px;border:1px solid #e5e7eb;border-radius:8px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+                      <span style="font-weight:600;font-size:13px;">{tab.label}</span>
+                      <div style="display:flex;align-items:center;gap:8px;">
+                        {tabAlertCount > 0 && <span style="background:#fee2e2;color:#991b1b;font-size:11px;padding:2px 8px;border-radius:12px;font-weight:600;">{tabAlertCount} err.</span>}
+                        <span style={`font-weight:700;color:${barColor};`}>{tab.completeness}%</span>
+                      </div>
+                    </div>
+                    <div style="height:5px;background:#e5e7eb;border-radius:3px;overflow:hidden;">
+                      <div style={`height:100%;width:${tab.completeness}%;background:${barColor};border-radius:3px;`}></div>
+                    </div>
+                    {tab.strengths.length > 0 && (
+                      <div style="margin-top:6px;">{tab.strengths.map(s => <div style="font-size:12px;color:#059669;">✓ {s}</div>)}</div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </section>
+
+          {/* Financial Ratios */}
+          <section class="esono-card">
+            <div class="esono-card__header">
+              <h2 class="esono-card__title"><i class="fas fa-chart-pie esono-card__title-icon"></i>Ratios Financiers Clés</h2>
+            </div>
+            <div class="esono-card__body">
+              <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;">
+                {[
+                  { label: 'Marge brute', val: inputsAnalysis.financialRatios.margeBrute, bench: '>30%', unit: '%' },
+                  { label: 'Marge opér.', val: inputsAnalysis.financialRatios.margeOperationnelle, bench: '>15%', unit: '%' },
+                  { label: 'Marge nette', val: inputsAnalysis.financialRatios.margeNette, bench: '>10%', unit: '%' },
+                  { label: 'DSO', val: inputsAnalysis.financialRatios.dso, bench: '<45j', unit: 'j' },
+                  { label: 'CAGR 5 ans', val: inputsAnalysis.financialRatios.cagr5Ans, bench: '15-30%', unit: '%' },
+                  { label: 'Ch. fixes/CA', val: inputsAnalysis.financialRatios.chargesFixesSurCA, bench: '<50%', unit: '%' }
+                ].map(r => (
+                  <div style="background:#f8fafc;padding:12px;border-radius:8px;text-align:center;">
+                    <div style="font-size:11px;color:#64748b;margin-bottom:4px;">{r.label}</div>
+                    <div style="font-size:22px;font-weight:700;color:#1e293b;">{r.val !== null ? `${r.val}${r.unit}` : '—'}</div>
+                    <div style="font-size:10px;color:#94a3b8;">Bench: {r.bench}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </section>
+
+          {/* Alerts */}
+          {inputsAnalysis.alerts.length > 0 && (
+            <section class="esono-card">
+              <div class="esono-card__header">
+                <h2 class="esono-card__title" style="color:#d97706;"><i class="fas fa-triangle-exclamation esono-card__title-icon"></i>Alertes IA ({inputsAnalysis.alerts.length})</h2>
+              </div>
+              <div class="esono-card__body" style="display:flex;flex-direction:column;gap:6px;">
+                {inputsAnalysis.alerts.slice(0, 15).map(alert => (
+                  <div style={`padding:8px 12px;border-radius:6px;font-size:13px;border-left:3px solid ${alert.level === 'error' ? '#dc2626' : alert.level === 'warning' ? '#d97706' : '#3b82f6'};background:${alert.level === 'error' ? '#fee2e2' : alert.level === 'warning' ? '#fef3c7' : '#dbeafe'};`}>
+                    <strong style="font-size:11px;color:#64748b;">[{INPUT_TAB_LABELS[alert.tab]?.shortLabel}]</strong>{' '}
+                    {alert.message}
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* Recommendations */}
+          <section class="esono-card">
+            <div class="esono-card__header">
+              <h2 class="esono-card__title"><i class="fas fa-lightbulb esono-card__title-icon" style="color:#d97706;"></i>Recommandations</h2>
+            </div>
+            <div class="esono-card__body">
+              <ol style="padding-left:20px;">
+                {inputsAnalysis.recommendations.map(r => <li style="margin-bottom:6px;font-size:14px;">{r}</li>)}
+              </ol>
+            </div>
+          </section>
+
+          {/* Actions */}
+          <div class="esono-form__actions">
+            <a href="/module/mod3_inputs/inputs" class="esono-btn esono-btn--secondary">
+              <i class="fas fa-pen-to-square"></i> Modifier mes données
+            </a>
+            <a href="/module/mod3_inputs/validate" class="esono-btn esono-btn--primary">
+              <i class="fas fa-check-circle"></i> Valider le module
+            </a>
+            <a href="/module/mod3_inputs/download" class="esono-btn esono-btn--accent">
+              <i class="fas fa-file-arrow-down"></i> Voir le livrable
+            </a>
+          </div>
+        </div>
+      )
+
+      return c.html(renderEsanoLayout({
+        pageTitle: 'Analyse Inputs Financiers — Module 3',
+        navItems: resolvedNavItems,
+        activeNav,
+        content: pageContent
+      }))
+    }
+
     // ─── SIC-specific analysis or generic mock feedback ───
     const isSicModule = moduleCode === 'mod2_sic'
     let sicAnalysis: SicAnalysisResult | null = null
@@ -4659,6 +5132,130 @@ moduleRoutes.get('/module/:code/download', async (c) => {
       )
     }
     // ═══ End SIC dedicated download ═══
+
+    // ═══ Module 3 Inputs Financiers: dedicated download page ═══
+    if (moduleCode === 'mod3_inputs') {
+      const fiRow = await c.env.DB.prepare('SELECT * FROM financial_inputs WHERE user_id = ? AND module_id = ? LIMIT 1')
+        .bind(payload.userId, module.id).first()
+
+      let inputsAnalysis: InputsAnalysisResult | null = null
+      if (fiRow && (fiRow as any).analysis_json) {
+        try { inputsAnalysis = JSON.parse((fiRow as any).analysis_json) } catch {}
+      }
+
+      // If no analysis, run one
+      if (!inputsAnalysis && fiRow) {
+        const FI_COLS2: Record<InputTabKey, string> = {
+          infos_generales: 'infos_generales_json', donnees_historiques: 'donnees_historiques_json',
+          produits_services: 'produits_services_json', ressources_humaines: 'ressources_humaines_json',
+          hypotheses_croissance: 'hypotheses_croissance_json', couts_fixes_variables: 'couts_fixes_variables_json',
+          bfr_tresorerie: 'bfr_tresorerie_json', investissements: 'investissements_json', financement: 'financement_json'
+        }
+        const allData2: Record<InputTabKey, Record<string, any>> = {} as any
+        for (const tabKey of INPUT_TAB_ORDER) {
+          const raw = (fiRow as any)[FI_COLS2[tabKey]]
+          allData2[tabKey] = raw ? JSON.parse(raw) : {}
+        }
+        inputsAnalysis = analyzeInputs(allData2)
+      }
+
+      const readiness = inputsAnalysis?.readinessScore ?? 0
+      const readinessLbl = getInputsReadinessLabel(readiness)
+      const sColor = readinessLbl.color === 'green' ? '#059669' : readinessLbl.color === 'blue' ? '#0284c7' : readinessLbl.color === 'yellow' ? '#d97706' : '#dc2626'
+
+      // Company name
+      let companyName = 'Mon Entreprise'
+      let entrepreneurName = 'Entrepreneur'
+      if (fiRow && (fiRow as any).infos_generales_json) {
+        try {
+          const infos = JSON.parse((fiRow as any).infos_generales_json)
+          companyName = infos.nom_entreprise || companyName
+          entrepreneurName = infos.dirigeant_nom || entrepreneurName
+        } catch {}
+      }
+      const userRow = await c.env.DB.prepare('SELECT name FROM users WHERE id = ?').bind(payload.userId).first()
+      if (userRow && (userRow as any).name) entrepreneurName = (userRow as any).name
+
+      const { navItems: resolvedNavItems, activeNav } = resolveNavigationForStage(moduleCode, 'download')
+      const validatedDate = progress.validated_at ? new Date(progress.validated_at as string).toLocaleDateString('fr-FR') : null
+
+      const diagnosticHtml = inputsAnalysis ? generateInputsDiagnosticHtml(inputsAnalysis, companyName, entrepreneurName) : null
+
+      const pageContent = (
+        <div class="esono-grid">
+          <section class="esono-hero" style={`background:linear-gradient(135deg, ${sColor}15 0%, ${sColor}05 100%);border:1px solid ${sColor}30;`}>
+            <div class="esono-hero__header">
+              <div>
+                <h2 class="esono-hero__title"><i class="fas fa-file-invoice-dollar" style="margin-right:8px;"></i>Livrable — Inputs Financiers</h2>
+                <p class="esono-hero__description">{companyName} — Score Readiness: <strong style={`color:${sColor};`}>{readiness}%</strong> ({readinessLbl.label})</p>
+              </div>
+              <span class={`esono-hero__badge`} style={`background:${isValidated ? '#dcfce7' : '#fef3c7'};color:${isValidated ? '#166534' : '#92400e'};`}>
+                <i class={`fas ${isValidated ? 'fa-check-circle' : 'fa-clock'}`}></i>
+                {isValidated ? `Validé le ${validatedDate}` : 'Brouillon'}
+              </span>
+            </div>
+            <div class="esono-hero__metrics">
+              <div class="esono-hero__metric"><p class="esono-hero__metric-value" style={`color:${sColor};`}>{readiness}%</p><p class="esono-hero__metric-label">Readiness</p></div>
+              <div class="esono-hero__metric"><p class="esono-hero__metric-value">{inputsAnalysis?.overallCompleteness ?? 0}%</p><p class="esono-hero__metric-label">Complétude</p></div>
+              <div class="esono-hero__metric"><p class="esono-hero__metric-value">{inputsAnalysis?.alerts.filter(a => a.level === 'error').length ?? 0}</p><p class="esono-hero__metric-label">Erreurs</p></div>
+              <div class="esono-hero__metric"><p class="esono-hero__metric-value">{inputsAnalysis?.recommendations.length ?? 0}</p><p class="esono-hero__metric-label">Recommandations</p></div>
+            </div>
+          </section>
+
+          {/* Diagnostic HTML iframe */}
+          {diagnosticHtml && (
+            <section class="esono-card">
+              <div class="esono-card__header">
+                <h2 class="esono-card__title"><i class="fas fa-stethoscope esono-card__title-icon"></i>Diagnostic Inputs Financiers</h2>
+              </div>
+              <div class="esono-card__body" style="padding:0;">
+                <iframe
+                  id="diagnosticFrame"
+                  srcdoc={diagnosticHtml}
+                  style="width:100%;min-height:800px;border:none;border-radius:0 0 12px 12px;"
+                  title="Diagnostic Inputs Financiers"
+                ></iframe>
+              </div>
+            </section>
+          )}
+
+          {/* Download actions */}
+          <div class="esono-form__actions">
+            <a href="/module/mod3_inputs/inputs" class="esono-btn esono-btn--secondary">
+              <i class="fas fa-pen-to-square"></i> Modifier les inputs
+            </a>
+            <a href="/module/mod3_inputs/analysis" class="esono-btn esono-btn--secondary">
+              <i class="fas fa-robot"></i> Relancer l'analyse
+            </a>
+            <button type="button" class="esono-btn esono-btn--primary" onclick="printDiagnostic()">
+              <i class="fas fa-print"></i> Imprimer / PDF
+            </button>
+            <a href="/api/inputs/diagnostic?module=mod3_inputs" target="_blank" class="esono-btn esono-btn--accent">
+              <i class="fas fa-external-link-alt"></i> Diagnostic HTML
+            </a>
+            <a href="/dashboard" class="esono-btn esono-btn--ghost">
+              <i class="fas fa-arrow-left"></i> Dashboard
+            </a>
+          </div>
+        </div>
+      )
+
+      const extraScripts = `
+        function printDiagnostic() {
+          const frame = document.getElementById('diagnosticFrame');
+          if (frame && frame.contentWindow) { frame.contentWindow.print(); }
+        }
+      `
+
+      return c.html(renderEsanoLayout({
+        pageTitle: 'Livrable Inputs Financiers — Module 3',
+        navItems: resolvedNavItems,
+        activeNav,
+        content: pageContent,
+        extraScripts
+      }))
+    }
+    // ═══ End Inputs Financiers dedicated download ═══
 
     let sections: CanvasSection[] | null = null
 

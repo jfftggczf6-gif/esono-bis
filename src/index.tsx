@@ -22,6 +22,11 @@ import {
 } from './module-content'
 import { getScoreLabel, getSectionName } from './ai-feedback'
 import { analyzeSIC, generateSicDiagnosticHtml, getSicScoreLabel, QUESTION_SECTION_MAP, SIC_SECTION_LABELS, type SicAnalysisResult } from './sic-engine'
+import {
+  analyzeInputs, generateInputsDiagnosticHtml, getInputsReadinessLabel,
+  INPUT_TAB_ORDER, INPUT_TAB_LABELS, TAB_COACHING, TAB_FIELDS, scoreTab,
+  type InputTabKey, type InputsAnalysisResult
+} from './inputs-engine'
 
 type Bindings = {
   DB: D1Database
@@ -4399,6 +4404,226 @@ app.post('/api/sic/deliverable/refresh', async (c) => {
     })
   } catch (error) {
     console.error('SIC refresh error:', error)
+    return c.json({ error: 'Erreur serveur' }, 500)
+  }
+})
+
+// ═══════════════════════════════════════════════════════════════
+// Module 3 — Inputs Financiers (9 onglets) APIs
+// ═══════════════════════════════════════════════════════════════
+
+const INPUT_TAB_COLUMNS: Record<InputTabKey, string> = {
+  infos_generales: 'infos_generales_json',
+  donnees_historiques: 'donnees_historiques_json',
+  produits_services: 'produits_services_json',
+  ressources_humaines: 'ressources_humaines_json',
+  hypotheses_croissance: 'hypotheses_croissance_json',
+  couts_fixes_variables: 'couts_fixes_variables_json',
+  bfr_tresorerie: 'bfr_tresorerie_json',
+  investissements: 'investissements_json',
+  financement: 'financement_json'
+}
+
+// GET /api/inputs/tabs — Load all 9 tabs data + coaching
+app.get('/api/inputs/tabs', async (c) => {
+  try {
+    const token = getCookie(c, 'auth_token')
+    if (!token) return c.json({ error: 'Non authentifié' }, 401)
+    const payload = await verifyToken(token)
+    if (!payload) return c.json({ error: 'Token invalide' }, 401)
+
+    const moduleCode = c.req.query('module')?.trim() || 'mod3_inputs'
+    const module = await c.env.DB.prepare('SELECT id FROM modules WHERE module_code = ? LIMIT 1').bind(moduleCode).first()
+    if (!module) return c.json({ error: 'Module introuvable' }, 404)
+
+    const row = await c.env.DB.prepare('SELECT * FROM financial_inputs WHERE user_id = ? AND module_id = ? LIMIT 1')
+      .bind(payload.userId, module.id).first()
+
+    const tabsData: Record<string, any> = {}
+    for (const tabKey of INPUT_TAB_ORDER) {
+      const col = INPUT_TAB_COLUMNS[tabKey]
+      const raw = row ? (row as any)[col] : null
+      tabsData[tabKey] = raw ? JSON.parse(raw) : {}
+    }
+
+    return c.json({
+      success: true,
+      tabs: tabsData,
+      coaching: TAB_COACHING,
+      fields: TAB_FIELDS,
+      tabOrder: INPUT_TAB_ORDER,
+      tabLabels: INPUT_TAB_LABELS,
+      completeness: row ? (row as any).completeness_pct ?? 0 : 0,
+      readinessScore: row ? (row as any).readiness_score ?? 0 : 0
+    })
+  } catch (error) {
+    console.error('Inputs tabs fetch error:', error)
+    return c.json({ error: 'Erreur serveur' }, 500)
+  }
+})
+
+// POST /api/inputs/save-tab — Save a single tab's data
+app.post('/api/inputs/save-tab', async (c) => {
+  try {
+    const token = getCookie(c, 'auth_token')
+    if (!token) return c.json({ error: 'Non authentifié' }, 401)
+    const payload = await verifyToken(token)
+    if (!payload) return c.json({ error: 'Token invalide' }, 401)
+
+    const body = await c.req.json().catch(() => ({})) as Record<string, unknown>
+    const moduleCode = (body.moduleCode as string)?.trim() || 'mod3_inputs'
+    const tabKey = body.tab as InputTabKey
+    const tabData = body.data as Record<string, any>
+
+    if (!tabKey || !INPUT_TAB_COLUMNS[tabKey]) {
+      return c.json({ error: 'Onglet invalide' }, 400)
+    }
+
+    const module = await c.env.DB.prepare('SELECT id FROM modules WHERE module_code = ? LIMIT 1').bind(moduleCode).first()
+    if (!module) return c.json({ error: 'Module introuvable' }, 404)
+
+    const progress = await ensureProgressRecord(c.env.DB, payload.userId, Number(module.id))
+    const existing = await c.env.DB.prepare('SELECT id FROM financial_inputs WHERE user_id = ? AND module_id = ? LIMIT 1')
+      .bind(payload.userId, module.id).first()
+
+    const col = INPUT_TAB_COLUMNS[tabKey]
+    const jsonStr = JSON.stringify(tabData || {})
+
+    if (existing?.id) {
+      await c.env.DB.prepare(`UPDATE financial_inputs SET ${col} = ?, updated_at = datetime('now') WHERE id = ?`)
+        .bind(jsonStr, existing.id).run()
+    } else {
+      await c.env.DB.prepare(`INSERT INTO financial_inputs (user_id, module_id, progress_id, ${col}) VALUES (?, ?, ?, ?)`)
+        .bind(payload.userId, module.id, progress.id, jsonStr).run()
+    }
+
+    // Update progress to in_progress
+    await c.env.DB.prepare(`UPDATE progress SET status = CASE WHEN status = 'not_started' THEN 'in_progress' ELSE status END, updated_at = datetime('now') WHERE id = ?`)
+      .bind(progress.id).run()
+
+    // Score this tab in real-time
+    const tabScore = scoreTab(tabKey, tabData || {})
+
+    return c.json({
+      success: true,
+      tab: tabKey,
+      score: tabScore
+    })
+  } catch (error) {
+    console.error('Inputs save-tab error:', error)
+    return c.json({ error: 'Erreur serveur' }, 500)
+  }
+})
+
+// POST /api/inputs/analyze — Run full 9-tab analysis
+app.post('/api/inputs/analyze', async (c) => {
+  try {
+    const token = getCookie(c, 'auth_token')
+    if (!token) return c.json({ error: 'Non authentifié' }, 401)
+    const payload = await verifyToken(token)
+    if (!payload) return c.json({ error: 'Token invalide' }, 401)
+
+    const body = await c.req.json().catch(() => ({})) as Record<string, unknown>
+    const moduleCode = (body.moduleCode as string)?.trim() || 'mod3_inputs'
+
+    const module = await c.env.DB.prepare('SELECT id FROM modules WHERE module_code = ? LIMIT 1').bind(moduleCode).first()
+    if (!module) return c.json({ error: 'Module introuvable' }, 404)
+
+    const progress = await ensureProgressRecord(c.env.DB, payload.userId, Number(module.id))
+
+    // Load all tabs
+    const row = await c.env.DB.prepare('SELECT * FROM financial_inputs WHERE user_id = ? AND module_id = ? LIMIT 1')
+      .bind(payload.userId, module.id).first()
+    if (!row) return c.json({ error: 'Aucune donnée saisie. Remplissez vos onglets avant de lancer l\'analyse.' }, 400)
+
+    const allData: Record<InputTabKey, Record<string, any>> = {} as any
+    for (const tabKey of INPUT_TAB_ORDER) {
+      const col = INPUT_TAB_COLUMNS[tabKey]
+      const raw = (row as any)[col]
+      allData[tabKey] = raw ? JSON.parse(raw) : {}
+    }
+
+    // Run analysis engine
+    const analysis = analyzeInputs(allData)
+
+    // Persist scores
+    await c.env.DB.prepare(`
+      UPDATE financial_inputs 
+      SET completeness_pct = ?, readiness_score = ?, analysis_json = ?, analysis_timestamp = datetime('now'),
+          marge_brute_pct = ?, marge_op_pct = ?, marge_nette_pct = ?,
+          ca_annee_n = ?, ca_cible_an5 = ?, updated_at = datetime('now')
+      WHERE user_id = ? AND module_id = ?
+    `).bind(
+      analysis.overallCompleteness, analysis.readinessScore, JSON.stringify(analysis),
+      analysis.financialRatios.margeBrute, analysis.financialRatios.margeOperationnelle, analysis.financialRatios.margeNette,
+      null, null,
+      payload.userId, module.id
+    ).run()
+
+    // Update progress
+    await c.env.DB.prepare(`
+      UPDATE progress SET ai_score = ?, ai_feedback_json = ?, ai_last_analysis = datetime('now'), updated_at = datetime('now') WHERE id = ?
+    `).bind(analysis.readinessScore, JSON.stringify(analysis), progress.id).run()
+
+    // Persist alerts
+    await c.env.DB.prepare('DELETE FROM input_alerts WHERE user_id = ? AND module_id = ?').bind(payload.userId, module.id).run()
+    for (const alert of analysis.alerts.slice(0, 50)) {
+      await c.env.DB.prepare(`INSERT INTO input_alerts (user_id, module_id, tab_key, field_key, alert_level, message, rule_name) VALUES (?,?,?,?,?,?,?)`)
+        .bind(payload.userId, Number(module.id), alert.tab, alert.field, alert.level, alert.message, alert.rule).run()
+    }
+
+    return c.json({
+      success: true,
+      analysis,
+      readinessScore: analysis.readinessScore,
+      readinessLabel: analysis.readinessLabel,
+      verdict: analysis.verdict
+    })
+  } catch (error) {
+    console.error('Inputs analysis error:', error)
+    return c.json({ error: 'Erreur serveur' }, 500)
+  }
+})
+
+// GET /api/inputs/diagnostic — Generate HTML diagnostic
+app.get('/api/inputs/diagnostic', async (c) => {
+  try {
+    const token = getCookie(c, 'auth_token')
+    if (!token) return c.json({ error: 'Non authentifié' }, 401)
+    const payload = await verifyToken(token)
+    if (!payload) return c.json({ error: 'Token invalide' }, 401)
+
+    const moduleCode = c.req.query('module')?.trim() || 'mod3_inputs'
+    const module = await c.env.DB.prepare('SELECT id FROM modules WHERE module_code = ? LIMIT 1').bind(moduleCode).first()
+    if (!module) return c.json({ error: 'Module introuvable' }, 404)
+
+    const row = await c.env.DB.prepare('SELECT analysis_json FROM financial_inputs WHERE user_id = ? AND module_id = ? LIMIT 1')
+      .bind(payload.userId, module.id).first()
+    if (!row || !(row as any).analysis_json) return c.json({ error: 'Aucune analyse disponible. Lancez l\'analyse d\'abord.' }, 400)
+
+    const analysis: InputsAnalysisResult = JSON.parse((row as any).analysis_json)
+
+    // Get company name from infos_generales
+    const inputRow = await c.env.DB.prepare('SELECT infos_generales_json FROM financial_inputs WHERE user_id = ? AND module_id = ? LIMIT 1')
+      .bind(payload.userId, module.id).first()
+    let companyName = 'Mon Entreprise'
+    let entrepreneurName = 'Entrepreneur'
+    if (inputRow && (inputRow as any).infos_generales_json) {
+      try {
+        const infos = JSON.parse((inputRow as any).infos_generales_json)
+        companyName = infos.nom_entreprise || companyName
+        entrepreneurName = infos.dirigeant_nom || entrepreneurName
+      } catch {}
+    }
+
+    // Also get user name
+    const user = await c.env.DB.prepare('SELECT name FROM users WHERE id = ?').bind(payload.userId).first()
+    if (user && (user as any).name) entrepreneurName = (user as any).name
+
+    const html = generateInputsDiagnosticHtml(analysis, companyName, entrepreneurName)
+    return c.html(html)
+  } catch (error) {
+    console.error('Inputs diagnostic error:', error)
     return c.json({ error: 'Erreur serveur' }, 500)
   }
 })
