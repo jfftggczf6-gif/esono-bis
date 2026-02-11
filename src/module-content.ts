@@ -249,86 +249,205 @@ export const sicContent: ModuleContent = {
   quiz_questions: [
     {
       id: 1,
-      question: "Quelle est la différence entre output et outcome dans la mesure d'impact ?",
+      question: "Quelle est la difference entre output et outcome dans la mesure d'impact ?",
       options: [
-        "Il n'y a pas de différence",
-        "L'output est le résultat direct d'une activité, l'outcome est le changement à plus long terme",
+        "Il n'y a pas de difference",
+        "L'output est le resultat direct d'une activite, l'outcome est le changement a plus long terme",
         "L'output concerne les finances, l'outcome concerne les clients",
-        "L'outcome est plus facile à mesurer que l'output"
+        "L'outcome est plus facile a mesurer que l'output"
       ],
       correct_answer: 1,
-      explanation: "L'output (ex: 100 formations délivrées) est le résultat immédiat. L'outcome (ex: 60% des formés ont augmenté leur revenu) est le changement durable."
+      explanation: "L'output (ex: 100 formations delivrees) est le resultat immediat. L'outcome (ex: 60% des formes ont augmente leur revenu) est le changement durable."
     },
     {
       id: 2,
       question: "Qu'est-ce que l'impact washing ?",
       options: [
         "Mesurer trop d'indicateurs",
-        "Exagérer ou inventer un impact social/environnemental pour obtenir des financements",
-        "Avoir un impact négatif",
+        "Exagerer ou inventer un impact social/environnemental pour obtenir des financements",
+        "Avoir un impact negatif",
         "Ignorer les ODD"
       ],
       correct_answer: 1,
-      explanation: "L'impact washing consiste à exagérer ou fabriquer des prétentions d'impact pour paraître socialement responsable."
+      explanation: "L'impact washing consiste a exagerer ou fabriquer des pretentions d'impact pour paraitre socialement responsable."
     },
     {
       id: 3,
       question: "Qu'est-ce qu'un indicateur SMART ?",
       options: [
         "Un indicateur digital",
-        "Spécifique, Mesurable, Atteignable, Réaliste, Temporellement défini",
+        "Specifique, Mesurable, Atteignable, Realiste, Temporellement defini",
         "Un indicateur financier",
-        "Un indicateur validé par un auditeur"
+        "Un indicateur valide par un auditeur"
       ],
       correct_answer: 1,
-      explanation: "SMART garantit que l'indicateur est concret et vérifiable : Spécifique, Mesurable, Atteignable, Réaliste, Temporellement défini."
-    }
-  ],
-  guided_questions: [
-    {
-      id: 1,
-      section: "Impact Visé",
-      question: "Quel problème social/environnemental résolvez-vous et quel changement visez-vous ?",
-      placeholder: "Décrivez le problème résolu, le changement visé et la zone géographique...",
-      help_text: "Soyez précis sur le problème, le changement attendu et la zone d'intervention.",
-      example: "Problème: 60% des ménages ruraux de la région des Savanes n'ont pas accès à l'eau potable. Changement visé: Réduire de 40% les maladies hydriques en 3 ans dans 15 communautés.",
-      common_mistake: "Être trop vague ('améliorer la vie des gens'). Précisez le qui, quoi, où, combien."
-    },
-    {
-      id: 2,
-      section: "Bénéficiaires",
-      question: "Qui sont vos bénéficiaires directs et indirects ? Combien sont-ils ?",
-      placeholder: "Directs: [qui, combien]. Indirects: [qui]. Mode d'implication des bénéficiaires...",
-      help_text: "Les bénéficiaires directs reçoivent votre produit/service. Les indirects bénéficient par ricochet.",
-      example: "Directs: 2 000 agricultrices (formation + accès marché). Indirects: 10 000 membres des familles. Implication: comité consultatif de 12 agricultrices.",
-      common_mistake: "Gonfler les chiffres de bénéficiaires indirects sans justification."
-    },
-    {
-      id: 3,
-      section: "Mesure d'Impact",
-      question: "Quel est votre KPI principal ? Valeur actuelle et cible à 3 ans ? Méthode de mesure ?",
-      placeholder: "KPI: [indicateur]. Actuel: [valeur]. Cible 3 ans: [valeur]. Méthode: [comment]",
-      help_text: "Choisissez un indicateur SMART principal et expliquez comment vous le mesurez.",
-      example: "KPI: Revenu moyen des agricultrices. Actuel: 450 000 XOF/an. Cible: 780 000 XOF/an (+73%). Méthode: Enquête semestrielle auprès d'un panel de 200 bénéficiaires.",
-      common_mistake: "Choisir un indicateur impossible à mesurer avec vos moyens."
+      explanation: "SMART garantit que l'indicateur est concret et verifiable : Specifique, Mesurable, Atteignable, Realiste, Temporellement defini."
     },
     {
       id: 4,
-      section: "ODD & Contribution",
-      question: "À quels ODD contribuez-vous (max 3) ? Quelles cibles spécifiques ?",
-      placeholder: "ODD principal: [numéro + cible]. ODD secondaires: [numéro + cible]...",
-      help_text: "Sélectionnez les ODD les plus pertinents. Moins c'est mieux si c'est prouvé.",
-      example: "ODD 2 (Faim Zéro) cible 2.3 : doubler la productivité des petits producteurs. ODD 8 (Travail décent) cible 8.5 : emploi productif pour les femmes.",
-      common_mistake: "Cocher tous les ODD. 2-3 ODD bien documentés valent mieux que 10 vagues."
+      question: "Combien d'ODD maximum recommande-t-on de cibler pour un projet PME ?",
+      options: [
+        "Tous les 17",
+        "Entre 5 et 10",
+        "2 a 3 maximum, bien documentes",
+        "Un seul"
+      ],
+      correct_answer: 2,
+      explanation: "2-3 ODD bien documentes avec des preuves concretes ont plus de valeur aupres d'un investisseur que 10 ODD superficiels."
     },
     {
       id: 5,
-      section: "Risques & Défis",
-      question: "Quels sont les principaux risques qui pourraient compromettre votre impact ?",
-      placeholder: "Risque 1: [description + mitigation]. Risque 2: [description + mitigation]...",
-      help_text: "Identifiez les risques de financement, culturels, réglementaires, climatiques.",
-      example: "Risque climatique: sécheresse → diversification cultures + irrigation goutte-à-goutte. Risque financement: retard subvention → plan B avec crédit fournisseur.",
-      common_mistake: "Ignorer les risques ou les minimiser. Un investisseur apprécie la lucidité."
+      question: "Quel element rend un impact credible aux yeux d'un investisseur ?",
+      options: [
+        "Des declarations d'intention",
+        "Un grand nombre de beneficiaires estimes",
+        "Des indicateurs mesurables avec une methode de collecte definie et une baseline",
+        "Un logo ODD sur le pitch deck"
+      ],
+      correct_answer: 2,
+      explanation: "La credibilite vient de la mesurabilite : indicateur precis + valeur actuelle (baseline) + cible + methode + frequence de collecte."
+    }
+  ],
+  guided_questions: [
+    // ─── Section 1 : Impact Vise (3 questions) ───
+    {
+      id: 1,
+      section: "Impact Vise",
+      question: "Quel probleme social ou environnemental votre entreprise resout-elle ?",
+      placeholder: "Decrivez le probleme precis que vous adressez avec des chiffres si possible...",
+      help_text: "Soyez precis et quantitatif. Citez des sources si possible (rapport gouvernemental, etude, donnees terrain).",
+      example: "Chomage des jeunes diplomes en zone rurale : 42% de taux de chomage chez les 18-30 ans dans la region des Savanes (source: INS 2024). Plus de 15 000 diplomes sans emploi chaque annee.",
+      common_mistake: "Etre trop vague ('ameliorer la vie des gens'). Un investisseur veut un probleme precis, chiffre et localise."
+    },
+    {
+      id: 2,
+      section: "Impact Vise",
+      question: "Quelle transformation concrete votre solution va-t-elle creer ?",
+      placeholder: "Decrivez le changement attendu en termes mesurables...",
+      help_text: "Formulez le changement comme une equation : situation actuelle -> situation visee. Utilisez des chiffres.",
+      example: "Augmenter les revenus des petits agriculteurs de 50% en 3 ans (de 450 000 XOF/an a 675 000 XOF/an) grace a la formation et l'acces au marche direct.",
+      common_mistake: "Promettre un changement sans echelle de temps ni indicateur quantifie."
+    },
+    {
+      id: 3,
+      section: "Impact Vise",
+      question: "Pourquoi ce probleme est-il urgent et important MAINTENANT ?",
+      placeholder: "Contexte d'urgence, tendances, donnees recentes...",
+      help_text: "Montrez l'urgence avec des tendances actuelles : aggravation du probleme, fenetre d'opportunite, politique publique favorable.",
+      example: "Migration massive des jeunes vers Abidjan (+12%/an), taux de malnutrition en hausse dans la region (+8% en 2 ans), nouvelle politique gouvernementale de soutien a l'agriculture durable (Programme National 2025-2030).",
+      common_mistake: "Citer des donnees anciennes ou des generalites sans lien avec votre zone d'intervention."
+    },
+    // ─── Section 2 : Beneficiaires (3 questions) ───
+    {
+      id: 4,
+      section: "Beneficiaires",
+      question: "Qui sont vos beneficiaires directs ? (profil, nombre, localisation)",
+      placeholder: "Profil: [qui]. Nombre: [combien]. Localisation: [ou]...",
+      help_text: "Les beneficiaires directs sont ceux qui recoivent directement votre produit ou service. Soyez precis sur le profil socio-demographique.",
+      example: "500 petits agriculteurs de la region de Thies : 70% femmes, age moyen 35 ans, revenus < 500 000 XOF/an, cultivant sur moins de 2 hectares.",
+      common_mistake: "Donner un chiffre rond sans justification. Expliquez comment vous arrivez a ce nombre."
+    },
+    {
+      id: 5,
+      section: "Beneficiaires",
+      question: "Combien de personnes seront impactees d'ici 3 ans ? (directs + indirects)",
+      placeholder: "Directs: [nombre + base de calcul]. Indirects: [nombre + explication du mecanisme]...",
+      help_text: "Beneficiaires indirects = ceux qui beneficient par ricochet (familles, communaute). Le ratio indirect/direct doit etre justifie.",
+      example: "Directs: 2 000 agricultrices formees et accompagnees. Indirects: 10 000 personnes (5 membres par famille en moyenne). Mecanisme: augmentation des revenus familiaux, meilleure alimentation des enfants.",
+      common_mistake: "Multiplier les directs par un coefficient exagere pour gonfler les indirects (ratio > 10:1 est suspect)."
+    },
+    {
+      id: 6,
+      section: "Beneficiaires",
+      question: "Comment vos beneficiaires sont-ils impliques dans la conception et l'amelioration de votre solution ?",
+      placeholder: "Mecanismes de participation, consultation, co-creation...",
+      help_text: "Un investisseur d'impact verifie que les beneficiaires ne sont pas passifs. Montrez leur role actif.",
+      example: "Comite consultatif de 12 agricultrices elu chaque annee. Enquete de satisfaction semestrielle. Sessions de co-design des formations avec les beneficiaires pilotes.",
+      common_mistake: "Dire que les beneficiaires 'participent' sans decrire le mecanisme concret."
+    },
+    // ─── Section 3 : Mesure d'Impact (4 questions) ───
+    {
+      id: 7,
+      section: "Mesure d'Impact",
+      question: "Quel est votre indicateur d'impact principal (KPI) ?",
+      placeholder: "KPI principal: [indicateur precis et mesurable]...",
+      help_text: "Choisissez UN indicateur principal SMART. Il doit etre directement lie a votre impact vise.",
+      example: "Revenu agricole moyen annuel des beneficiaires (en XOF). C'est notre KPI principal car il mesure directement l'amelioration economique visee.",
+      common_mistake: "Choisir un KPI trop large ('amelioration du bien-etre') ou impossible a mesurer avec vos moyens."
+    },
+    {
+      id: 8,
+      section: "Mesure d'Impact",
+      question: "Quelle est votre cible d'impact a 1 an et a 3 ans ?",
+      placeholder: "Valeur actuelle (baseline): [X]. Cible 1 an: [Y]. Cible 3 ans: [Z]...",
+      help_text: "La baseline (valeur actuelle) est indispensable. Sans elle, impossible de mesurer le progres.",
+      example: "Baseline: 450 000 XOF/an (enquete T0 sur 200 agricultrices). Cible 1 an: 580 000 XOF (+29%). Cible 3 ans: 780 000 XOF (+73%).",
+      common_mistake: "Ne pas avoir de baseline. Comment prouver un progres sans point de depart ?"
+    },
+    {
+      id: 9,
+      section: "Mesure d'Impact",
+      question: "Quelle methode utilisez-vous pour mesurer votre impact ?",
+      placeholder: "Methode(s): enquetes, donnees internes, audit... Frequence: [periodicite]...",
+      help_text: "Decrivez vos outils de collecte et la frequence. Un mix de methodes est plus credible.",
+      example: "1) Enquete avant/apres aupres des beneficiaires (echantillon 200, semestriel). 2) Donnees de vente du service (mensuel). 3) Temoignages et etudes de cas (trimestriel). Audit externe prevu en annee 2.",
+      common_mistake: "Dire qu'on 'va mesurer' sans methode concrete. L'investisseur veut voir un plan de M&E (Monitoring & Evaluation) existant."
+    },
+    {
+      id: 10,
+      section: "Mesure d'Impact",
+      question: "A quelle frequence mesurez-vous votre impact ?",
+      placeholder: "Frequence: mensuelle/trimestrielle/semestrielle/annuelle. Responsable: [qui]...",
+      help_text: "La frequence doit etre adaptee a votre indicateur. Un suivi trop rare empeche les corrections.",
+      example: "Suivi mensuel des donnees de vente (automatise). Enquete terrain semestrielle (equipe impact, 2 personnes). Rapport annuel d'impact avec audit externe.",
+      common_mistake: "Prevoir une frequence irrealiste (suivi quotidien terrain avec 1 personne) ou trop espacee (annuel uniquement)."
+    },
+    // ─── Section 4 : ODD & Contribution (3 questions) ───
+    {
+      id: 11,
+      section: "ODD & Contribution",
+      question: "Quels ODD adressez-vous ? (max 3 ODD principaux)",
+      placeholder: "ODD principal: [numero + intitule]. ODD secondaire 1: [...]. ODD secondaire 2: [...]...",
+      help_text: "Selectionnez 2-3 ODD maximum. Pour chaque ODD, identifiez la cible specifique (ex: ODD 2, cible 2.3).",
+      example: "ODD 2 (Faim Zero) - cible 2.3 : doubler la productivite des petits producteurs alimentaires. ODD 8 (Travail decent) - cible 8.5 : emploi productif pour les femmes. ODD 12 (Conso responsable) - cible 12.2 : gestion durable des ressources naturelles.",
+      common_mistake: "Cocher 8-10 ODD sans justification. 2-3 ODD bien documentes avec des preuves ont plus de poids."
+    },
+    {
+      id: 12,
+      section: "ODD & Contribution",
+      question: "Comment contribuez-vous concretement a ces ODD ? (contribution directe vs indirecte)",
+      placeholder: "Pour chaque ODD: action concrete, preuve, direct/indirect...",
+      help_text: "Distinguez contribution directe (mecanisme prouve) et indirecte (effet secondaire estime).",
+      example: "ODD 2 direct: nos formations augmentent les rendements de 40% (mesure par enquete). ODD 8 direct: 200 emplois crees dans la chaine de valeur. ODD 12 indirect: reduction des dechets agricoles par compostage (pas encore mesure).",
+      common_mistake: "Presenter tout comme contribution directe. Un investisseur respecte plus l'honnetete qu'une inflation d'impact."
+    },
+    {
+      id: 13,
+      section: "ODD & Contribution",
+      question: "Quelles preuves avez-vous de votre contribution aux ODD ?",
+      placeholder: "Donnees, rapports, certifications, partenariats officiels...",
+      help_text: "Les preuves peuvent etre internes (donnees propres) ou externes (audit, certification, rapport partenaire).",
+      example: "Rapport d'impact annuel audite par Cabinet XYZ. Partenariat avec le Ministere de l'Agriculture (convention signee). Certification Commerce Equitable en cours.",
+      common_mistake: "Declarer une contribution ODD sans aucune preuve ni plan de collecte de preuves."
+    },
+    // ─── Section 5 : Risques & Defis (2 questions) ───
+    {
+      id: 14,
+      section: "Risques & Defis",
+      question: "Quels sont les principaux risques qui pourraient compromettre votre impact ? (cochez et detaillez)",
+      placeholder: "Risques identifies: financement, adoption, culture, infrastructure, reglementation, concurrence, climat, autre. Pour chaque risque, indiquez le niveau (faible/moyen/eleve) et une breve description...",
+      help_text: "Identifiez au minimum 3 risques. Un investisseur apprecie la lucidite plus que l'optimisme aveugle.",
+      example: "1) Financement insuffisant (eleve) : dependance a 60% des subventions. 2) Resistance culturelle (moyen) : adoption lente des nouvelles pratiques agricoles. 3) Climat (eleve) : secheresse recurrente dans la zone.",
+      common_mistake: "Ignorer les risques ou tous les classer en 'faible'. Le deni de risque est un red flag pour les investisseurs."
+    },
+    {
+      id: 15,
+      section: "Risques & Defis",
+      question: "Comment attenuez-vous chacun de ces risques ?",
+      placeholder: "Pour chaque risque identifie: strategie d'attenuation concrete...",
+      help_text: "Chaque risque doit avoir un plan B. Montrez que vous avez anticipe les scenarios defavorables.",
+      example: "1) Financement: diversification vers revenus propres (objectif 60% autofinancement en an 3). 2) Culture: partenariat avec leaders communautaires + formation par les pairs. 3) Climat: irrigation goutte-a-goutte + varietes resistantes.",
+      common_mistake: "Donner des strategies generiques ('on trouvera une solution'). Soyez precis et chiffre."
     }
   ]
 }

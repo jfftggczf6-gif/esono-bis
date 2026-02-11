@@ -21,6 +21,7 @@ import {
   type LearningModuleDefinition,
 } from './module-content'
 import { getScoreLabel, getSectionName } from './ai-feedback'
+import { analyzeSIC, generateSicDiagnosticHtml, getSicScoreLabel, QUESTION_SECTION_MAP, SIC_SECTION_LABELS, type SicAnalysisResult } from './sic-engine'
 
 type Bindings = {
   DB: D1Database
@@ -489,7 +490,7 @@ const getActivityReportInputsRow = async (db: D1Database, userId: number, module
   return row ? (row as ActivityReportInputsRecord) : null
 }
 
-const ACTIVITY_REPORT_ALLOWED_MODULES = new Set<string>(['step1_activity_report'])
+const ACTIVITY_REPORT_ALLOWED_MODULES = new Set<string>(['step1_activity_report', 'mod3_inputs'])
 
 const buildActivityReportSummaryPayload = (analysis: ActivityReportAnalysisResult, timestampIso: string) => {
   return {
@@ -4095,6 +4096,310 @@ app.post('/api/module/:code/deliverable/refresh', async (c) => {
     })
   } catch (error) {
     console.error('Deliverable refresh error:', error)
+    return c.json({ error: 'Erreur serveur' }, 500)
+  }
+})
+
+// ═══════════════════════════════════════════════════════════════
+// MODULE 2 — SIC (Social Impact Canvas) API Endpoints
+// ═══════════════════════════════════════════════════════════════
+
+const SIC_MODULE_CODES = new Set(['mod2_sic', 'step1_social_impact'])
+
+// Helper: get or create SIC data row
+async function ensureSicDataRow(db: D1Database, userId: number, projectId: number | null, moduleId: number, progressId: number) {
+  const existing = await db.prepare(`
+    SELECT * FROM sic_data WHERE user_id = ? AND module_id = ?
+  `).bind(userId, moduleId).first()
+  if (existing) return existing
+
+  await db.prepare(`
+    INSERT INTO sic_data (user_id, project_id, module_id, progress_id) VALUES (?, ?, ?, ?)
+  `).bind(userId, projectId, moduleId, progressId).run()
+
+  return await db.prepare(`
+    SELECT * FROM sic_data WHERE user_id = ? AND module_id = ?
+  `).bind(userId, moduleId).first()
+}
+
+// POST /api/sic/analyze - Run SIC analysis
+app.post('/api/sic/analyze', async (c) => {
+  try {
+    const token = getCookie(c, 'auth_token')
+    if (!token) return c.json({ error: 'Non authentifie' }, 401)
+
+    const payload = await verifyToken(token)
+    if (!payload) return c.json({ error: 'Token invalide' }, 401)
+
+    const body = await c.req.json()
+    const moduleCode = body?.moduleCode?.trim() || 'mod2_sic'
+
+    if (!SIC_MODULE_CODES.has(moduleCode)) {
+      return c.json({ error: 'Module non supporte pour SIC' }, 400)
+    }
+
+    const db = c.env.DB
+
+    // Get module
+    const module = await db.prepare(`SELECT id FROM modules WHERE module_code = ?`).bind(moduleCode).first()
+    if (!module) return c.json({ error: 'Module non trouve' }, 404)
+
+    const moduleId = Number(module.id)
+
+    // Get progress
+    const progress = await db.prepare(`
+      SELECT id, project_id FROM progress WHERE user_id = ? AND module_id = ?
+    `).bind(payload.userId, moduleId).first()
+    if (!progress) return c.json({ error: 'Pas de progression' }, 404)
+
+    // Get user answers for SIC
+    const answersResult = await db.prepare(`
+      SELECT question_number, user_response FROM questions WHERE progress_id = ? ORDER BY question_number
+    `).bind(progress.id).all()
+
+    const sicAnswers = new Map<number, string>()
+    for (const row of (answersResult.results ?? [])) {
+      const qNum = Number((row as any).question_number)
+      const resp = (row as any).user_response as string ?? ''
+      if (resp.trim()) sicAnswers.set(qNum, resp.trim())
+    }
+
+    if (sicAnswers.size === 0) {
+      return c.json({ error: 'Aucune reponse SIC soumise' }, 400)
+    }
+
+    // Try to get BMC answers for coherence check
+    const bmcModule = await db.prepare(`SELECT id FROM modules WHERE module_code = 'mod1_bmc'`).first()
+    let bmcAnswers: Map<number, string> | undefined
+    if (bmcModule) {
+      const bmcProgress = await db.prepare(`
+        SELECT id FROM progress WHERE user_id = ? AND module_id = ?
+      `).bind(payload.userId, bmcModule.id).first()
+      if (bmcProgress) {
+        const bmcResult = await db.prepare(`
+          SELECT question_number, user_response FROM questions WHERE progress_id = ? ORDER BY question_number
+        `).bind(bmcProgress.id).all()
+        bmcAnswers = new Map<number, string>()
+        for (const row of (bmcResult.results ?? [])) {
+          const qNum = Number((row as any).question_number)
+          const resp = (row as any).user_response as string ?? ''
+          if (resp.trim()) bmcAnswers.set(qNum, resp.trim())
+        }
+      }
+    }
+
+    // Run analysis
+    const analysis = analyzeSIC(sicAnswers, bmcAnswers)
+
+    // Update progress with scores
+    await db.prepare(`
+      UPDATE progress
+      SET ai_score = ?, ai_feedback_json = ?, ai_last_analysis = datetime('now'), updated_at = datetime('now')
+      WHERE id = ?
+    `).bind(
+      Math.round(analysis.scoreGlobal * 10), // Convert /10 to /100 percentage
+      JSON.stringify(analysis),
+      progress.id
+    ).run()
+
+    // Update per-question feedback
+    for (const section of analysis.sections) {
+      const questionIds = Object.entries(QUESTION_SECTION_MAP)
+        .filter(([, sec]) => sec === section.key)
+        .map(([id]) => Number(id))
+
+      for (const qId of questionIds) {
+        const feedbackPayload = JSON.stringify({
+          suggestions: section.feedback,
+          questions: section.warnings,
+          percentage: section.percentage,
+          scoreLabel: section.score >= 7 ? 'Excellent' : section.score >= 5 ? 'Bien' : section.score >= 3 ? 'A ameliorer' : 'Insuffisant'
+        })
+
+        await db.prepare(`
+          UPDATE questions
+          SET ai_feedback = ?, quality_score = ?, feedback_updated_at = datetime('now')
+          WHERE progress_id = ? AND question_number = ?
+        `).bind(feedbackPayload, Math.round(section.score * 10), progress.id, qId).run()
+      }
+    }
+
+    // Save/update SIC data
+    const projectId = progress.project_id ? Number(progress.project_id) : null
+    await ensureSicDataRow(db, payload.userId, projectId, moduleId, Number(progress.id))
+
+    await db.prepare(`
+      UPDATE sic_data
+      SET score_global = ?, score_coherence_bmc = ?, analysis_json = ?,
+          analysis_timestamp = datetime('now'), impact_matrix_json = ?,
+          odd_selected = ?, updated_at = datetime('now')
+      WHERE user_id = ? AND project_id = ? AND module_id = ?
+    `).bind(
+      analysis.scoreGlobal,
+      analysis.scoreCoherenceBmc,
+      JSON.stringify(analysis),
+      JSON.stringify(analysis.impactMatrix),
+      JSON.stringify(analysis.oddMappings.map(o => o.oddNumber)),
+      payload.userId,
+      projectId,
+      moduleId
+    ).run()
+
+    return c.json({
+      success: true,
+      analysis: {
+        scoreGlobal: analysis.scoreGlobal,
+        sections: analysis.sections.map(s => ({
+          key: s.key,
+          label: s.label,
+          score: s.score,
+          percentage: s.percentage,
+          strengths: s.strengths,
+          warnings: s.warnings
+        })),
+        smartCheck: analysis.smartCheck,
+        impactWashingRisk: analysis.impactWashingRisk,
+        oddCount: analysis.oddMappings.length,
+        verdict: analysis.verdict,
+        scoreCoherenceBmc: analysis.scoreCoherenceBmc
+      }
+    })
+  } catch (error) {
+    console.error('SIC analyze error:', error)
+    return c.json({ error: 'Erreur serveur' }, 500)
+  }
+})
+
+// GET /api/sic/deliverable - Get SIC deliverable (HTML diagnostic)
+app.get('/api/sic/deliverable', async (c) => {
+  try {
+    const token = getCookie(c, 'auth_token')
+    if (!token) return c.json({ error: 'Non authentifie' }, 401)
+
+    const payload = await verifyToken(token)
+    if (!payload) return c.json({ error: 'Token invalide' }, 401)
+
+    const moduleCode = c.req.query('module')?.trim() || 'mod2_sic'
+    const format = c.req.query('format')?.trim() || 'html'
+    const db = c.env.DB
+
+    const module = await db.prepare(`SELECT id FROM modules WHERE module_code = ?`).bind(moduleCode).first()
+    if (!module) return c.json({ error: 'Module non trouve' }, 404)
+
+    const progress = await db.prepare(`
+      SELECT id, project_id, ai_score, ai_feedback_json FROM progress WHERE user_id = ? AND module_id = ?
+    `).bind(payload.userId, module.id).first()
+    if (!progress) return c.json({ error: 'Pas de progression' }, 404)
+
+    const analysisJson = progress.ai_feedback_json as string | null
+    if (!analysisJson) {
+      return c.json({ error: 'Lancez d\'abord l\'analyse IA (etape B4)' }, 400)
+    }
+
+    let analysis: SicAnalysisResult
+    try {
+      analysis = JSON.parse(analysisJson)
+    } catch {
+      return c.json({ error: 'Donnees d\'analyse corrompues' }, 500)
+    }
+
+    // Get user info
+    const user = await db.prepare(`SELECT name FROM users WHERE id = ?`).bind(payload.userId).first()
+    const userName = (user?.name as string) ?? 'Entrepreneur'
+
+    // Get project info
+    const project = await db.prepare(`SELECT name FROM projects WHERE id = ?`).bind(progress.project_id).first()
+    const projectName = (project?.name as string) ?? 'Mon Projet'
+
+    if (format === 'html') {
+      const html = generateSicDiagnosticHtml(analysis, projectName, userName)
+      return c.html(html)
+    }
+
+    // JSON format (for Excel generation client-side or future API)
+    return c.json({
+      success: true,
+      analysis,
+      user: userName,
+      project: projectName
+    })
+  } catch (error) {
+    console.error('SIC deliverable error:', error)
+    return c.json({ error: 'Erreur serveur' }, 500)
+  }
+})
+
+// POST /api/sic/deliverable/refresh - Regenerate SIC deliverable
+app.post('/api/sic/deliverable/refresh', async (c) => {
+  try {
+    const token = getCookie(c, 'auth_token')
+    if (!token) return c.json({ error: 'Non authentifie' }, 401)
+
+    const payload = await verifyToken(token)
+    if (!payload) return c.json({ error: 'Token invalide' }, 401)
+
+    const body = await c.req.json()
+    const moduleCode = body?.moduleCode?.trim() || 'mod2_sic'
+    const db = c.env.DB
+
+    const module = await db.prepare(`SELECT id FROM modules WHERE module_code = ?`).bind(moduleCode).first()
+    if (!module) return c.json({ error: 'Module non trouve' }, 404)
+
+    // First re-run analysis
+    const progress = await db.prepare(`
+      SELECT id, project_id FROM progress WHERE user_id = ? AND module_id = ?
+    `).bind(payload.userId, module.id).first()
+    if (!progress) return c.json({ error: 'Pas de progression' }, 404)
+
+    const answersResult = await db.prepare(`
+      SELECT question_number, user_response FROM questions WHERE progress_id = ? ORDER BY question_number
+    `).bind(progress.id).all()
+
+    const sicAnswers = new Map<number, string>()
+    for (const row of (answersResult.results ?? [])) {
+      const qNum = Number((row as any).question_number)
+      const resp = (row as any).user_response as string ?? ''
+      if (resp.trim()) sicAnswers.set(qNum, resp.trim())
+    }
+
+    if (sicAnswers.size === 0) {
+      return c.json({ error: 'Aucune reponse SIC' }, 400)
+    }
+
+    // BMC answers for coherence
+    const bmcModule = await db.prepare(`SELECT id FROM modules WHERE module_code = 'mod1_bmc'`).first()
+    let bmcAnswers: Map<number, string> | undefined
+    if (bmcModule) {
+      const bmcProgress = await db.prepare(`
+        SELECT id FROM progress WHERE user_id = ? AND module_id = ?
+      `).bind(payload.userId, bmcModule.id).first()
+      if (bmcProgress) {
+        const bmcResult = await db.prepare(`
+          SELECT question_number, user_response FROM questions WHERE progress_id = ? ORDER BY question_number
+        `).bind(bmcProgress.id).all()
+        bmcAnswers = new Map<number, string>()
+        for (const row of (bmcResult.results ?? [])) {
+          bmcAnswers.set(Number((row as any).question_number), ((row as any).user_response as string ?? '').trim())
+        }
+      }
+    }
+
+    const analysis = analyzeSIC(sicAnswers, bmcAnswers)
+
+    await db.prepare(`
+      UPDATE progress
+      SET ai_score = ?, ai_feedback_json = ?, ai_last_analysis = datetime('now'), updated_at = datetime('now')
+      WHERE id = ?
+    `).bind(Math.round(analysis.scoreGlobal * 10), JSON.stringify(analysis), progress.id).run()
+
+    return c.json({
+      success: true,
+      refreshedAt: analysis.timestamp,
+      scoreGlobal: analysis.scoreGlobal,
+      verdict: analysis.verdict
+    })
+  } catch (error) {
+    console.error('SIC refresh error:', error)
     return c.json({ error: 'Erreur serveur' }, 500)
   }
 })

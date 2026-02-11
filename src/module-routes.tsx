@@ -16,6 +16,7 @@ import {
   ModuleVariant
 } from './module-content'
 import { generateMockFeedback, calculateOverallScore, getScoreLabel, getSectionName } from './ai-feedback'
+import { analyzeSIC, generateSicDiagnosticHtml, getSicScoreLabel, SIC_SECTION_LABELS, QUESTION_SECTION_MAP as SIC_QUESTION_MAP, type SicAnalysisResult, type SicSectionScore, ODD_ICONS, ODD_LABELS } from './sic-engine'
 
 
 type Bindings = {
@@ -742,7 +743,7 @@ export const renderEsanoLayout = ({
               <>
                 <div class="esono-nav__divider"></div>
 
-                <a href="/module/step1_business_model/download" class="esono-nav__item">
+                <a href="/livrables" class="esono-nav__item">
                   <span class="esono-nav__icon">
                     <i class="fas fa-file-pdf"></i>
                   </span>
@@ -1115,7 +1116,7 @@ moduleRoutes.get('/module/:code/quiz', async (c) => {
     const heroDescription = variant === 'finance'
       ? 'Validez votre compréhension des notions financières essentielles avant de renseigner vos chiffres. Un score minimal de 80 % est requis pour poursuivre.'
       : 'Validez les fondamentaux avant de passer aux questions guidées. Un score minimal de 80 % est requis pour poursuivre.'
-    const useInputsRoute = variant === 'finance' || moduleCode === 'step1_activity_report'
+    const useInputsRoute = variant === 'finance' || moduleCode === 'step1_activity_report' || moduleCode === 'mod3_inputs'
     const nextStepPath = useInputsRoute
       ? `/module/${moduleCode}/inputs`
       : `/module/${moduleCode}/questions`
@@ -1459,7 +1460,7 @@ moduleRoutes.get('/module/:code/inputs', async (c) => {
       return c.redirect('/dashboard')
     }
 
-    if (moduleCode === 'step1_activity_report') {
+    if (moduleCode === 'step1_activity_report' || moduleCode === 'mod3_inputs') {
       const progress = await ensureProgressRecord(c.env.DB, payload.userId, moduleId)
       const inputsRecord = (await getActivityReportInputsRow(c.env.DB, payload.userId, moduleId)) ?? {}
 
@@ -2066,7 +2067,7 @@ moduleRoutes.get('/module/:code/questions', async (c) => {
       answersMap.set(a.question_number, a.user_response)
     })
 
-    const content = moduleCode === 'step1_business_model' ? businessModelCanvasContent : null
+    const content = getModuleContent(moduleCode)
     if (!content || !content.guided_questions) {
       return c.redirect(`/module/${moduleCode}`)
     }
@@ -2466,7 +2467,7 @@ moduleRoutes.get('/module/:code/analysis', async (c) => {
       return c.redirect(`/module/${moduleCode}/questions`)
     }
 
-    const content = moduleCode === 'step1_business_model' ? businessModelCanvasContent : null
+    const content = getModuleContent(moduleCode)
     const sectionDetailsMap = new Map<number, { section: string, question: string }>()
     content?.guided_questions?.forEach((q) => {
       sectionDetailsMap.set(q.id, { section: q.section, question: q.question })
@@ -2483,103 +2484,200 @@ moduleRoutes.get('/module/:code/analysis', async (c) => {
       return c.redirect(`/module/${moduleCode}/questions`)
     }
     
-    const feedback = generateMockFeedback(answersMap)
-    const overallScore = calculateOverallScore(feedback)
-    const scoreInfo = getScoreLabel(overallScore)
+    // ─── SIC-specific analysis or generic mock feedback ───
+    const isSicModule = moduleCode === 'mod2_sic'
+    let sicAnalysis: SicAnalysisResult | null = null
+    let overallScore: number
+    let scoreInfo: { label: string, color: string }
+    let sectionSummaries: Array<{
+      questionId: number
+      sectionName: string
+      questionText?: string
+      answer: string
+      strengths: Array<{ message: string, score: number }>
+      suggestions: Array<{ message: string, score: number }>
+      questions: Array<{ message: string, score: number }>
+      percentage: number
+      scoreInfo: { label: string, color: string }
+      palette: ReturnType<typeof getAnalysisPalette>
+    }>
+    let strengthsCount: number
+    let suggestionsCount: number
+    let questionsCount: number
+    let sectionsNeedingWork: number
+    let topSuggestions: Array<{ section: string, questionId: number, message: string, score: number }>
 
-    const overallPalette = getAnalysisPalette(scoreInfo.color)
+    if (isSicModule) {
+      // ─── Fetch BMC answers for coherence check ───
+      const bmcModule = await c.env.DB.prepare(`SELECT id FROM modules WHERE module_code = 'mod1_bmc'`).first()
+      let bmcAnswers: Map<number, string> | undefined
+      if (bmcModule) {
+        const bmcProgress = await c.env.DB.prepare(`
+          SELECT id FROM progress WHERE user_id = ? AND module_id = ?
+        `).bind(payload.userId, bmcModule.id).first()
+        if (bmcProgress) {
+          const bmcResult = await c.env.DB.prepare(`
+            SELECT question_number, user_response FROM questions WHERE progress_id = ? ORDER BY question_number
+          `).bind(bmcProgress.id).all()
+          bmcAnswers = new Map<number, string>()
+          for (const row of (bmcResult.results ?? [])) {
+            const qn = Number((row as any).question_number)
+            const r = ((row as any).user_response as string ?? '').trim()
+            if (r) bmcAnswers.set(qn, r)
+          }
+        }
+      }
 
-    const sectionSummaries = answers.results
-      .filter((a: any) => a.user_response && a.user_response.trim())
-      .map((a: any) => {
-        const sectionName = getSectionName(a.question_number)
-        const details = sectionDetailsMap.get(a.question_number)
-        const sectionFeedbackItems = feedback.filter((item) => item.section === sectionName)
-        const strengths = sectionFeedbackItems.filter((item) => item.type === 'strength')
-        const suggestions = sectionFeedbackItems.filter((item) => item.type === 'suggestion')
-        const questionsItems = sectionFeedbackItems.filter((item) => item.type === 'question')
-        const averageScore = sectionFeedbackItems.length
-          ? Math.round(sectionFeedbackItems.reduce((sum, item) => sum + item.score, 0) / sectionFeedbackItems.length)
-          : 0
-        const percentage = Math.round((averageScore / 5) * 100)
-        const sectionScoreInfo = getScoreLabel(percentage)
+      // Run SIC analysis engine
+      sicAnalysis = analyzeSIC(answersMap, bmcAnswers)
+      overallScore = Math.round(sicAnalysis.scoreGlobal * 10) // /10 → %
+      scoreInfo = getScoreLabel(overallScore)
 
+      // Convert SIC sections to unified format
+      sectionSummaries = sicAnalysis.sections.map((sec) => {
+        const sectionScoreInfo = getScoreLabel(sec.percentage)
         return {
-          questionId: a.question_number,
-          sectionName,
-          questionText: details?.question,
-          answer: a.user_response,
-          strengths,
-          suggestions,
-          questions: questionsItems,
-          percentage,
+          questionId: Object.entries(SIC_QUESTION_MAP)
+            .filter(([, s]) => s === sec.key).map(([id]) => Number(id))[0] ?? 0,
+          sectionName: sec.label,
+          questionText: undefined,
+          answer: '',
+          strengths: sec.strengths.map(s => ({ message: s, score: Math.round(sec.score / 2) })),
+          suggestions: sec.feedback.map(f => ({ message: f, score: Math.round((10 - sec.score) / 2) })),
+          questions: sec.warnings.map(w => ({ message: w, score: 1 })),
+          percentage: sec.percentage,
           scoreInfo: sectionScoreInfo,
           palette: getAnalysisPalette(sectionScoreInfo.color)
         }
       })
 
-    const strengthsCount = feedback.filter((item) => item.type === 'strength').length
-    const suggestionsCount = feedback.filter((item) => item.type === 'suggestion').length
-    const questionsCount = feedback.filter((item) => item.type === 'question').length
-    const sectionsNeedingWork = sectionSummaries.filter((section) => section.suggestions.length || section.questions.length).length
+      strengthsCount = sectionSummaries.reduce((s, sec) => s + sec.strengths.length, 0)
+      suggestionsCount = sectionSummaries.reduce((s, sec) => s + sec.suggestions.length, 0)
+      questionsCount = sectionSummaries.reduce((s, sec) => s + sec.questions.length, 0)
+      sectionsNeedingWork = sectionSummaries.filter(sec => sec.suggestions.length || sec.questions.length).length
 
-    const topSuggestions = sectionSummaries
-      .flatMap((section) => section.suggestions.map((item) => ({
-        section: section.sectionName,
-        questionId: section.questionId,
-        message: item.message,
-        score: item.score
-      })))
-      .sort((a, b) => a.score - b.score)
-      .slice(0, 3)
+      topSuggestions = sicAnalysis.recommendations.slice(0, 3).map((msg, i) => ({
+        section: 'Recommandation',
+        questionId: i + 1,
+        message: msg,
+        score: 1
+      }))
 
-    const summaryPayload = {
-      overallScore,
-      overallLabel: scoreInfo.label,
-      palette: scoreInfo.color,
-      strengthsCount,
-      suggestionsCount,
-      questionsCount,
-      sectionsNeedingWork,
-      topSuggestions
-    }
+      // Persist to DB
+      await c.env.DB.prepare(`
+        UPDATE progress
+        SET ai_score = ?,
+            ai_feedback_json = ?,
+            ai_last_analysis = datetime('now'),
+            updated_at = datetime('now')
+        WHERE id = ?
+      `).bind(overallScore, JSON.stringify(sicAnalysis), progress.id).run()
 
-    const sanitizeItems = (items: typeof sectionSummaries[number]['strengths']) =>
-      items.map((item) => ({ message: item.message, score: item.score }))
+      // Update per-question feedback
+      for (const sec of sicAnalysis.sections) {
+        const qIds = Object.entries(SIC_QUESTION_MAP).filter(([, s]) => s === sec.key).map(([id]) => Number(id))
+        for (const qId of qIds) {
+          const feedbackPayload = JSON.stringify({
+            suggestions: sec.feedback,
+            questions: sec.warnings,
+            percentage: sec.percentage,
+            scoreLabel: sec.score >= 7 ? 'Excellent' : sec.score >= 5 ? 'Bien' : sec.score >= 3 ? 'A ameliorer' : 'Insuffisant'
+          })
+          await c.env.DB.prepare(`
+            UPDATE questions SET ai_feedback = ?, quality_score = ?, feedback_updated_at = datetime('now')
+            WHERE progress_id = ? AND question_number = ?
+          `).bind(feedbackPayload, Math.round(sec.score * 10), progress.id, qId).run()
+        }
+      }
+    } else {
+      // ─── Generic mock feedback for other modules ───
+      const feedback = generateMockFeedback(answersMap)
+      overallScore = calculateOverallScore(feedback)
+      scoreInfo = getScoreLabel(overallScore)
 
-    for (const section of sectionSummaries) {
-      const payload = {
-        sectionName: section.sectionName,
-        questionId: section.questionId,
-        questionText: section.questionText,
-        percentage: section.percentage,
-        scoreLabel: section.scoreInfo.label,
-        strengths: sanitizeItems(section.strengths),
-        suggestions: sanitizeItems(section.suggestions),
-        questions: sanitizeItems(section.questions)
+      sectionSummaries = answers.results
+        .filter((a: any) => a.user_response && a.user_response.trim())
+        .map((a: any) => {
+          const sectionName = getSectionName(a.question_number)
+          const details = sectionDetailsMap.get(a.question_number)
+          const sectionFeedbackItems = feedback.filter((item) => item.section === sectionName)
+          const strengths = sectionFeedbackItems.filter((item) => item.type === 'strength')
+          const suggestions = sectionFeedbackItems.filter((item) => item.type === 'suggestion')
+          const questionsItems = sectionFeedbackItems.filter((item) => item.type === 'question')
+          const averageScore = sectionFeedbackItems.length
+            ? Math.round(sectionFeedbackItems.reduce((sum, item) => sum + item.score, 0) / sectionFeedbackItems.length)
+            : 0
+          const percentage = Math.round((averageScore / 5) * 100)
+          const sectionScoreInfo = getScoreLabel(percentage)
+          return {
+            questionId: a.question_number,
+            sectionName,
+            questionText: details?.question,
+            answer: a.user_response,
+            strengths,
+            suggestions,
+            questions: questionsItems,
+            percentage,
+            scoreInfo: sectionScoreInfo,
+            palette: getAnalysisPalette(sectionScoreInfo.color)
+          }
+        })
+
+      strengthsCount = feedback.filter((item) => item.type === 'strength').length
+      suggestionsCount = feedback.filter((item) => item.type === 'suggestion').length
+      questionsCount = feedback.filter((item) => item.type === 'question').length
+      sectionsNeedingWork = sectionSummaries.filter((section) => section.suggestions.length || section.questions.length).length
+
+      topSuggestions = sectionSummaries
+        .flatMap((section) => section.suggestions.map((item) => ({
+          section: section.sectionName,
+          questionId: section.questionId,
+          message: item.message,
+          score: item.score
+        })))
+        .sort((a, b) => a.score - b.score)
+        .slice(0, 3)
+
+      const summaryPayload = {
+        overallScore,
+        overallLabel: scoreInfo.label,
+        palette: scoreInfo.color,
+        strengthsCount,
+        suggestionsCount,
+        questionsCount,
+        sectionsNeedingWork,
+        topSuggestions
+      }
+
+      const sanitizeItems = (items: any[]) =>
+        items.map((item) => ({ message: item.message, score: item.score }))
+
+      for (const section of sectionSummaries) {
+        const pl = {
+          sectionName: section.sectionName,
+          questionId: section.questionId,
+          questionText: section.questionText,
+          percentage: section.percentage,
+          scoreLabel: section.scoreInfo.label,
+          strengths: sanitizeItems(section.strengths),
+          suggestions: sanitizeItems(section.suggestions),
+          questions: sanitizeItems(section.questions)
+        }
+        await c.env.DB.prepare(`
+          UPDATE questions SET ai_feedback = ?, quality_score = ?, feedback_updated_at = datetime('now')
+          WHERE progress_id = ? AND question_number = ?
+        `).bind(JSON.stringify(pl), section.percentage, progress.id, section.questionId).run()
       }
 
       await c.env.DB.prepare(`
-        UPDATE questions
-        SET ai_feedback = ?,
-            quality_score = ?,
-            feedback_updated_at = datetime('now')
-        WHERE progress_id = ? AND question_number = ?
-      `)
-        .bind(JSON.stringify(payload), section.percentage, progress.id, section.questionId)
-        .run()
+        UPDATE progress
+        SET ai_score = ?,
+            ai_feedback_json = ?,
+            ai_last_analysis = datetime('now'),
+            updated_at = datetime('now')
+        WHERE id = ?
+      `).bind(overallScore, JSON.stringify(summaryPayload), progress.id).run()
     }
-
-    await c.env.DB.prepare(`
-      UPDATE progress
-      SET ai_score = ?,
-          ai_feedback_json = ?,
-          ai_last_analysis = datetime('now'),
-          updated_at = datetime('now')
-      WHERE id = ?
-    `)
-      .bind(overallScore, JSON.stringify(summaryPayload), progress.id)
-      .run()
 
     const moduleTitle = module.title as string
     const scoreIcon = (SCORE_BADGE_STYLES[scoreInfo.label as keyof typeof SCORE_BADGE_STYLES] ?? SCORE_BADGE_STYLES.default).icon
@@ -2591,7 +2689,7 @@ moduleRoutes.get('/module/:code/analysis', async (c) => {
         <section class="esono-hero">
           <div class="esono-hero__header">
             <div>
-              <h2 class="esono-hero__title">Analyse IA du Canvas</h2>
+              <h2 class="esono-hero__title">{isSicModule ? "Analyse IA — Social Impact Canvas" : "Analyse IA du Canvas"}</h2>
               <p class="esono-hero__description">
                 L’IA a passé en revue vos réponses et met en évidence vos forces ainsi que les axes à renforcer avant validation.
               </p>
@@ -2624,6 +2722,18 @@ moduleRoutes.get('/module/:code/analysis', async (c) => {
                 <p class="esono-hero__metric-value">{sectionsNeedingWork}</p>
                 <p class="esono-hero__metric-label">Blocs à consolider</p>
               </div>
+              {isSicModule && sicAnalysis && (
+                <>
+                  <div class="esono-hero__metric esono-hero__metric--info">
+                    <p class="esono-hero__metric-value">{sicAnalysis.smartCheck.score}/5</p>
+                    <p class="esono-hero__metric-label">SMART Score</p>
+                  </div>
+                  <div class="esono-hero__metric">
+                    <p class="esono-hero__metric-value">{sicAnalysis.oddMappings.length}</p>
+                    <p class="esono-hero__metric-label">ODD cibles</p>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </section>
@@ -2816,6 +2926,181 @@ moduleRoutes.get('/module/:code/analysis', async (c) => {
           </div>
         </section>
 
+        {/* ─── SIC-specific analysis sections ─── */}
+        {isSicModule && sicAnalysis && (
+          <>
+            {/* SMART Check */}
+            <section class="esono-card">
+              <div class="esono-card__header">
+                <h3 class="esono-card__title">
+                  <i class="fas fa-bullseye esono-card__title-icon"></i>
+                  Vérification SMART de l'indicateur
+                </h3>
+                <span class="esono-badge" style={`background: ${sicAnalysis.smartCheck.score >= 4 ? 'var(--esono-success-light)' : 'var(--esono-warning-light)'}; color: ${sicAnalysis.smartCheck.score >= 4 ? 'var(--esono-success)' : 'var(--esono-warning)'};`}>
+                  {sicAnalysis.smartCheck.score}/5
+                </span>
+              </div>
+              <div class="esono-card__body">
+                <p class="esono-text-sm esono-text-muted" style="margin-bottom: var(--spacing-md);">{sicAnalysis.smartCheck.feedback}</p>
+                <div style="display: flex; gap: var(--spacing-sm); flex-wrap: wrap;">
+                  {[
+                    { label: 'Spécifique', ok: sicAnalysis.smartCheck.isSpecific },
+                    { label: 'Mesurable', ok: sicAnalysis.smartCheck.isMeasurable },
+                    { label: 'Atteignable', ok: sicAnalysis.smartCheck.isAttainable },
+                    { label: 'Pertinent', ok: sicAnalysis.smartCheck.isRelevant },
+                    { label: 'Temporel', ok: sicAnalysis.smartCheck.isTimeBound }
+                  ].map((item, idx) => (
+                    <span
+                      key={`smart-${idx}`}
+                      class="esono-badge"
+                      style={`background: ${item.ok ? 'var(--esono-success-light)' : 'var(--esono-danger-light)'}; color: ${item.ok ? 'var(--esono-success)' : 'var(--esono-danger)'};`}
+                    >
+                      <i class={item.ok ? 'fas fa-check' : 'fas fa-times'}></i>
+                      {item.label}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </section>
+
+            {/* ODD Alignment */}
+            <section class="esono-card">
+              <div class="esono-card__header">
+                <h3 class="esono-card__title">
+                  <i class="fas fa-globe-africa esono-card__title-icon"></i>
+                  Alignement ODD ({sicAnalysis.oddMappings.length} cible{sicAnalysis.oddMappings.length > 1 ? 's' : ''})
+                </h3>
+              </div>
+              <div class="esono-card__body">
+                {sicAnalysis.oddMappings.length > 0 ? (
+                  <div style="display: grid; gap: var(--spacing-sm);">
+                    {sicAnalysis.oddMappings.map((odd, idx) => {
+                      const oddColor = ODD_ICONS[odd.oddNumber] ?? '#666'
+                      const evLabel = odd.evidenceLevel === 'prouve' ? 'Prouvé' : odd.evidenceLevel === 'mesure' ? 'Mesuré' : 'Déclaré'
+                      return (
+                        <div key={`odd-${idx}`} style={`display: flex; align-items: center; gap: var(--spacing-md); padding: var(--spacing-sm) var(--spacing-md); border-radius: var(--radius-md); border: 1px solid ${oddColor}33; background: ${oddColor}08;`}>
+                          <div style={`width: 40px; height: 40px; border-radius: var(--radius-sm); background: ${oddColor}; color: white; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; flex-shrink: 0;`}>
+                            {odd.oddNumber}
+                          </div>
+                          <div style="flex: 1;">
+                            <div style="font-weight: 600; font-size: 13px;">{odd.oddLabel}</div>
+                            <div class="esono-text-sm esono-text-muted" style="margin-top: 2px;">
+                              {odd.contributionType === 'direct' ? 'Direct' : 'Indirect'} · {evLabel} · Score: {odd.score}/3
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                ) : (
+                  <p class="esono-text-sm esono-text-muted">Aucun ODD identifié. Complétez la section ODD & Contribution.</p>
+                )}
+              </div>
+            </section>
+
+            {/* Impact Matrix */}
+            <section class="esono-card">
+              <div class="esono-card__header">
+                <h3 class="esono-card__title">
+                  <i class="fas fa-layer-group esono-card__title-icon"></i>
+                  Matrice d'Impact
+                </h3>
+              </div>
+              <div class="esono-card__body">
+                <p class="esono-text-sm esono-text-muted" style="margin-bottom: var(--spacing-md);">
+                  Niveau de maturité de votre impact : de l'intention à la preuve.
+                </p>
+                <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--spacing-md);">
+                  <div class="esono-note esono-note--warning">
+                    <strong style="display: block; margin-bottom: 4px;">
+                      <i class="fas fa-circle"></i> Intentionnel
+                    </strong>
+                    {sicAnalysis.impactMatrix.intentionnel.length > 0 ? (
+                      <ul style="margin: 0; padding-left: var(--spacing-md); font-size: 12px;">
+                        {sicAnalysis.impactMatrix.intentionnel.map((item, idx) => (
+                          <li key={`int-${idx}`}>{item}</li>
+                        ))}
+                      </ul>
+                    ) : <span class="esono-text-sm esono-text-muted">Aucun</span>}
+                  </div>
+                  <div class="esono-note esono-note--info">
+                    <strong style="display: block; margin-bottom: 4px;">
+                      <i class="fas fa-chart-line"></i> Mesuré
+                    </strong>
+                    {sicAnalysis.impactMatrix.mesure.length > 0 ? (
+                      <ul style="margin: 0; padding-left: var(--spacing-md); font-size: 12px;">
+                        {sicAnalysis.impactMatrix.mesure.map((item, idx) => (
+                          <li key={`mes-${idx}`}>{item}</li>
+                        ))}
+                      </ul>
+                    ) : <span class="esono-text-sm esono-text-muted">Aucun</span>}
+                  </div>
+                  <div class="esono-note esono-note--success">
+                    <strong style="display: block; margin-bottom: 4px;">
+                      <i class="fas fa-check-circle"></i> Prouvé
+                    </strong>
+                    {sicAnalysis.impactMatrix.prouve.length > 0 ? (
+                      <ul style="margin: 0; padding-left: var(--spacing-md); font-size: 12px;">
+                        {sicAnalysis.impactMatrix.prouve.map((item, idx) => (
+                          <li key={`prv-${idx}`}>{item}</li>
+                        ))}
+                      </ul>
+                    ) : <span class="esono-text-sm esono-text-muted">Aucun</span>}
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            {/* Impact Washing */}
+            {sicAnalysis.impactWashingSignals.length > 0 && (
+              <section class="esono-card">
+                <div class="esono-card__header">
+                  <h3 class="esono-card__title" style={`color: ${sicAnalysis.impactWashingRisk === 'eleve' ? 'var(--esono-danger)' : 'var(--esono-warning)'};`}>
+                    <i class="fas fa-exclamation-triangle esono-card__title-icon"></i>
+                    Signaux d'Impact Washing
+                  </h3>
+                  <span class="esono-badge" style={`background: ${sicAnalysis.impactWashingRisk === 'eleve' ? 'var(--esono-danger-light)' : 'var(--esono-warning-light)'}; color: ${sicAnalysis.impactWashingRisk === 'eleve' ? 'var(--esono-danger)' : 'var(--esono-warning)'};`}>
+                    Risque: {sicAnalysis.impactWashingRisk}
+                  </span>
+                </div>
+                <div class="esono-card__body">
+                  <ul style="margin: 0; padding-left: var(--spacing-md);">
+                    {sicAnalysis.impactWashingSignals.map((signal, idx) => (
+                      <li key={`wash-${idx}`} class="esono-text-sm" style={`color: ${sicAnalysis!.impactWashingRisk === 'eleve' ? 'var(--esono-danger)' : 'var(--esono-warning)'}; margin-bottom: 4px;`}>
+                        {signal}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </section>
+            )}
+
+            {/* BMC Coherence */}
+            {sicAnalysis.bmcCoherenceIssues.length > 0 && (
+              <section class="esono-card">
+                <div class="esono-card__header">
+                  <h3 class="esono-card__title">
+                    <i class="fas fa-link esono-card__title-icon"></i>
+                    Cohérence BMC ↔ SIC
+                  </h3>
+                  <span class="esono-badge" style={`background: var(--esono-warning-light); color: var(--esono-warning);`}>
+                    {sicAnalysis.scoreCoherenceBmc.toFixed(1)}/10
+                  </span>
+                </div>
+                <div class="esono-card__body">
+                  <ul style="margin: 0; padding-left: var(--spacing-md);">
+                    {sicAnalysis.bmcCoherenceIssues.map((issue, idx) => (
+                      <li key={`bmc-${idx}`} class="esono-text-sm" style="color: var(--esono-warning); margin-bottom: 4px;">
+                        <i class="fas fa-exclamation-circle"></i> {issue}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </section>
+            )}
+          </>
+        )}
+
         <section class="esono-grid esono-grid--2">
           <div class="esono-card">
             <div class="esono-card__body" style="display: flex; gap: var(--spacing-md); align-items: flex-start;">
@@ -3007,7 +3292,7 @@ moduleRoutes.get('/module/:code/improve', async (c) => {
         .filter((entry): entry is { message: string; score?: number } => !!entry)
     }
 
-    const content = moduleCode === 'step1_business_model' ? businessModelCanvasContent : null
+    const content = getModuleContent(moduleCode)
     if (!content) return c.redirect(`/module/${moduleCode}`)
 
     const sectionDetailsMap = new Map<number, { section: string; question: string }>()
@@ -3575,8 +3860,8 @@ moduleRoutes.get('/module/:code/validate', async (c) => {
 
     if (!module) return c.redirect('/dashboard')
 
-    const moduleTitle = (module.title as string) ?? 'Business Model Canvas'
-    const content = moduleCode === 'step1_business_model' ? businessModelCanvasContent : null
+    const moduleTitle = (module.title as string) ?? 'Module'
+    const content = getModuleContent(moduleCode)
     if (!content) return c.redirect(`/module/${moduleCode}`)
 
     const progress = await c.env.DB.prepare(`
@@ -3658,6 +3943,7 @@ moduleRoutes.get('/module/:code/validate', async (c) => {
     const score = typeof progress.ai_score === 'number' ? Number(progress.ai_score) : 0
     const scoreInfo = getScoreLabel(score)
     const scoreTone = getScoreToneStyles(scoreInfo.label)
+    const scorePalette = getAnalysisPalette(scoreInfo.color)
 
     const lastAnalysisDate = parseDateValue(progress.ai_last_analysis as string | null)
     const latestActivity = latestAnswerTimestamp ?? 0
@@ -4068,8 +4354,8 @@ moduleRoutes.get('/module/:code/validate', async (c) => {
         </body>
       </html>
     )
-  } catch (error) {
-    console.error('Validation page error:', error)
+  } catch (error: any) {
+    console.error('Validation page error:', error?.message, error?.stack)
     return c.redirect('/dashboard')
   }
 })
@@ -4120,6 +4406,259 @@ moduleRoutes.get('/module/:code/download', async (c) => {
         console.warn('Impossible de parser le content_json du livrable', error)
       }
     }
+
+    // ═══ SIC Module: dedicated download page ═══
+    if (moduleCode === 'mod2_sic') {
+      // Fetch SIC answers
+      const answersRes = await c.env.DB.prepare(`
+        SELECT question_number, user_response FROM questions WHERE progress_id = ? ORDER BY question_number
+      `).bind(progress.id).all()
+      const sicAnswers = new Map<number, string>()
+      for (const row of (answersRes.results ?? []) as any[]) {
+        const r = (row.user_response ?? '').trim()
+        if (r) sicAnswers.set(Number(row.question_number), r)
+      }
+
+      // Fetch BMC answers for coherence check
+      let bmcAnswersMap: Map<number, string> | undefined
+      const bmcModule = await c.env.DB.prepare(`SELECT id FROM modules WHERE module_code = 'mod1_bmc'`).first()
+      if (bmcModule) {
+        const bmcProgress = await c.env.DB.prepare(`SELECT id FROM progress WHERE user_id = ? AND module_id = ?`).bind(payload.userId, bmcModule.id).first()
+        if (bmcProgress) {
+          const bmcRes = await c.env.DB.prepare(`SELECT question_number, user_response FROM questions WHERE progress_id = ? ORDER BY question_number`).bind(bmcProgress.id).all()
+          bmcAnswersMap = new Map<number, string>()
+          for (const row of (bmcRes.results ?? []) as any[]) {
+            const r = (row.user_response ?? '').trim()
+            if (r) bmcAnswersMap.set(Number(row.question_number), r)
+          }
+        }
+      }
+
+      // Run or retrieve analysis
+      let sicAnalysis: SicAnalysisResult
+      if (deliverableContent?.scoreGlobal !== undefined) {
+        sicAnalysis = deliverableContent as SicAnalysisResult
+      } else if (progress.ai_feedback_json) {
+        try {
+          sicAnalysis = JSON.parse(progress.ai_feedback_json as string) as SicAnalysisResult
+        } catch {
+          sicAnalysis = analyzeSIC(sicAnswers, bmcAnswersMap)
+        }
+      } else {
+        sicAnalysis = analyzeSIC(sicAnswers, bmcAnswersMap)
+      }
+
+      // Get user info
+      const user = await c.env.DB.prepare(`SELECT name FROM users WHERE id = ?`).bind(payload.userId).first()
+      const userName = (user?.name as string) ?? 'Entrepreneur'
+      const projectName = (module.title as string) ?? 'Social Impact Canvas'
+
+      const diagnosticHtml = generateSicDiagnosticHtml(sicAnalysis, projectName, userName)
+      const scoreLabel = getSicScoreLabel(sicAnalysis.scoreGlobal)
+      const aiScorePercent = Math.round(sicAnalysis.scoreGlobal * 10)
+
+      // Render SIC download page with embedded diagnostic
+      return c.html(
+        <html lang="fr">
+          <head>
+            <meta charset="UTF-8" />
+            <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+            <title>Livrable SIC - {projectName}</title>
+            <script src="https://cdn.tailwindcss.com"></script>
+            <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet" />
+          </head>
+          <body class="bg-slate-50">
+            <nav class="bg-white shadow-sm border-b border-slate-200">
+              <div class="max-w-6xl mx-auto px-4 py-4 flex items-center justify-between">
+                <a href="/dashboard" class="text-indigo-600 hover:text-indigo-700 flex items-center gap-2 font-medium">
+                  <i class="fas fa-arrow-left"></i>
+                  <span>Retour au dashboard</span>
+                </a>
+                <span class="text-xs text-slate-500 flex items-center gap-2">
+                  <i class="fas fa-flag-checkered"></i>
+                  Module 2 · SIC
+                </span>
+              </div>
+            </nav>
+
+            <main class="max-w-6xl mx-auto px-4 py-8 space-y-8">
+              {!isValidated && (
+                <section class="rounded-2xl border border-amber-200 bg-amber-50 p-4 flex flex-col md:flex-row md:items-center md:justify-between gap-3 text-amber-800">
+                  <div class="flex items-start gap-3">
+                    <span class="inline-flex items-center justify-center w-10 h-10 rounded-full bg-amber-100 text-amber-600">
+                      <i class="fas fa-triangle-exclamation"></i>
+                    </span>
+                    <div>
+                      <h2 class="text-sm font-semibold">Livrable en mode brouillon</h2>
+                      <p class="text-sm">Validez le module pour générer la version officielle du diagnostic SIC.</p>
+                    </div>
+                  </div>
+                  <a href={`/module/${moduleCode}/validate`} class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-sm font-semibold">
+                    <i class="fas fa-check-double"></i>
+                    Passer à la validation
+                  </a>
+                </section>
+              )}
+
+              <header class="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                <div>
+                  <p class="text-xs uppercase tracking-wider text-slate-500">{isValidated ? 'Livrable final' : 'Livrable brouillon'}</p>
+                  <h1 class="text-3xl font-bold text-slate-900">Social Impact Canvas</h1>
+                  <p class="mt-2 text-slate-600">Diagnostic d'impact social avec scoring, alignement ODD et vérification SMART.</p>
+                </div>
+                <div class="flex items-center gap-3 flex-wrap">
+                  <span class={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-semibold ${scoreLabel.color === 'green' ? 'bg-emerald-100 text-emerald-700' : scoreLabel.color === 'blue' ? 'bg-blue-100 text-blue-700' : scoreLabel.color === 'yellow' ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700'}`}>
+                    <i class="fas fa-chart-line"></i>
+                    {sicAnalysis.scoreGlobal}/10 — {scoreLabel.label}
+                  </span>
+                  <span class={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-semibold ${sicAnalysis.impactWashingRisk === 'faible' ? 'bg-emerald-100 text-emerald-700' : sicAnalysis.impactWashingRisk === 'moyen' ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700'}`}>
+                    <i class="fas fa-shield-halved"></i>
+                    Impact washing: {sicAnalysis.impactWashingRisk}
+                  </span>
+                  <span class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-semibold bg-purple-100 text-purple-700">
+                    <i class="fas fa-bullseye"></i>
+                    {sicAnalysis.oddMappings.length} ODD
+                  </span>
+                  <span class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-semibold bg-sky-100 text-sky-700">
+                    <i class="fas fa-check-circle"></i>
+                    SMART: {sicAnalysis.smartCheck.score}/5
+                  </span>
+                </div>
+              </header>
+
+              <section class="grid gap-4 md:grid-cols-2">
+                <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4">
+                  <h2 class="text-lg font-semibold text-slate-900 flex items-center gap-2">
+                    <i class="fas fa-download text-indigo-500"></i>
+                    Livrables disponibles
+                  </h2>
+                  <div class="space-y-3">
+                    <a href={`/api/sic/deliverable`} target="_blank"
+                      class="flex items-center gap-3 p-3 rounded-xl border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 transition">
+                      <div class="w-10 h-10 rounded-lg bg-emerald-100 text-emerald-600 flex items-center justify-center">
+                        <i class="fas fa-file-code"></i>
+                      </div>
+                      <div>
+                        <p class="font-semibold text-emerald-900 text-sm">Diagnostic HTML</p>
+                        <p class="text-xs text-emerald-700">Rapport interactif avec visualisations ODD</p>
+                      </div>
+                    </a>
+                    <div class="flex items-center gap-3 p-3 rounded-xl border border-slate-200 bg-slate-50">
+                      <div class="w-10 h-10 rounded-lg bg-slate-100 text-slate-400 flex items-center justify-center">
+                        <i class="fas fa-file-excel"></i>
+                      </div>
+                      <div>
+                        <p class="font-semibold text-slate-600 text-sm">Excel SIC (6 feuilles)</p>
+                        <p class="text-xs text-slate-500">Prochainement disponible</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4">
+                  <h2 class="text-lg font-semibold text-slate-900 flex items-center gap-2">
+                    <i class="fas fa-chart-bar text-indigo-500"></i>
+                    Scores par section
+                  </h2>
+                  <div class="space-y-3">
+                    {sicAnalysis.sections.map((sec) => {
+                      const barColor = sec.score >= 7 ? '#059669' : sec.score >= 5 ? '#0284c7' : sec.score >= 3 ? '#d97706' : '#dc2626'
+                      return (
+                        <div class="space-y-1" key={`sec-${sec.key}`}>
+                          <div class="flex justify-between text-sm">
+                            <span class="font-medium text-slate-700">{sec.label}</span>
+                            <span class="font-bold" style={`color:${barColor}`}>{sec.score}/10</span>
+                          </div>
+                          <div class="h-2 bg-slate-100 rounded-full overflow-hidden">
+                            <div class="h-full rounded-full" style={`width:${sec.percentage}%;background:${barColor}`}></div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              </section>
+
+              {sicAnalysis.oddMappings.length > 0 && (
+                <section class="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
+                  <h2 class="text-lg font-semibold text-slate-900 flex items-center gap-2 mb-4">
+                    <i class="fas fa-globe text-indigo-500"></i>
+                    Alignement ODD
+                  </h2>
+                  <div class="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+                    {sicAnalysis.oddMappings.map((odd) => {
+                      const color = ODD_ICONS[odd.oddNumber] ?? '#666'
+                      return (
+                        <div class="flex items-center gap-3 p-3 rounded-xl border" style={`border-color:${color}30;background:${color}08`} key={`odd-${odd.oddNumber}`}>
+                          <div class="w-10 h-10 rounded-lg flex items-center justify-center text-white font-bold text-sm" style={`background:${color}`}>
+                            {odd.oddNumber}
+                          </div>
+                          <div>
+                            <p class="font-semibold text-sm text-slate-900">{odd.oddLabel}</p>
+                            <p class="text-xs text-slate-600">
+                              {odd.contributionType === 'direct' ? 'Direct' : 'Indirect'} · {odd.evidenceLevel === 'prouve' ? 'Prouvé' : odd.evidenceLevel === 'mesure' ? 'Mesuré' : 'Déclaré'} · {odd.score}/3
+                            </p>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </section>
+              )}
+
+              {sicAnalysis.recommendations.length > 0 && (
+                <section class="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
+                  <h2 class="text-lg font-semibold text-slate-900 flex items-center gap-2 mb-4">
+                    <i class="fas fa-lightbulb text-amber-500"></i>
+                    Recommandations
+                  </h2>
+                  <ul class="space-y-2">
+                    {sicAnalysis.recommendations.map((rec, idx) => (
+                      <li class="flex items-start gap-2 text-sm text-slate-700" key={`rec-${idx}`}>
+                        <span class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-amber-100 text-amber-700 text-xs font-bold flex-shrink-0 mt-0.5">{idx + 1}</span>
+                        {rec}
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              )}
+
+              <section class="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
+                <h2 class="text-lg font-semibold text-slate-900 flex items-center gap-2 mb-4">
+                  <i class="fas fa-rocket text-indigo-500"></i>
+                  Prochaines étapes
+                </h2>
+                <div class="grid gap-4 md:grid-cols-2">
+                  <a href="/module/mod3_inputs/video" class="block rounded-2xl border border-slate-200 hover:border-indigo-300 hover:bg-indigo-50 transition p-4">
+                    <div class="flex items-center gap-3">
+                      <div class="w-10 h-10 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center">
+                        <i class="fas fa-keyboard"></i>
+                      </div>
+                      <div>
+                        <p class="font-semibold text-slate-900">Module 3 · Inputs Entrepreneur</p>
+                        <p class="text-sm text-slate-600">Renseignez vos données financières historiques.</p>
+                      </div>
+                    </div>
+                  </a>
+                  <a href="/dashboard" class="block rounded-2xl border border-slate-200 hover:border-emerald-300 hover:bg-emerald-50 transition p-4">
+                    <div class="flex items-center gap-3">
+                      <div class="w-10 h-10 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center">
+                        <i class="fas fa-home"></i>
+                      </div>
+                      <div>
+                        <p class="font-semibold text-slate-900">Tableau de bord</p>
+                        <p class="text-sm text-slate-600">Revenez au parcours Investment Readiness.</p>
+                      </div>
+                    </div>
+                  </a>
+                </div>
+              </section>
+            </main>
+          </body>
+        </html>
+      )
+    }
+    // ═══ End SIC dedicated download ═══
 
     let sections: CanvasSection[] | null = null
 
