@@ -29,6 +29,7 @@ import {
   INPUT_TAB_ORDER, INPUT_TAB_LABELS, TAB_COACHING, TAB_FIELDS, scoreTab,
   type InputTabKey, type InputsAnalysisResult
 } from './inputs-engine'
+import { analyzePme, generatePmeExcelXml, generatePmePreviewHtml, type PmeInputData } from './framework-pme-engine'
 
 type Bindings = {
   DB: D1Database
@@ -4592,6 +4593,281 @@ app.post('/api/bmc/deliverable/refresh', async (c) => {
     })
   } catch (error) {
     console.error('BMC refresh error:', error)
+    return c.json({ error: 'Erreur serveur' }, 500)
+  }
+})
+
+// ═══════════════════════════════════════════════════════════════
+// Module 4 — Framework Analyse PME (Excel 8 feuilles)
+// ═══════════════════════════════════════════════════════════════
+
+// Helper: Build PmeInputData from Module 3 financial_inputs
+function buildPmeInputDataFromInputs(
+  infos: any, historiques: any, produits: any, rh: any,
+  hypotheses: any, couts: any, bfr: any, investissements: any,
+  financement: any, companyName: string, userName: string
+): PmeInputData {
+  // Extract activities
+  const acts = produits?.produits ?? produits?.activites ?? []
+  const activities = Array.isArray(acts) && acts.length > 0
+    ? acts.map((a: any) => ({ name: a.nom || a.name || 'Activité', isStrategic: a.strategique !== false }))
+    : [{ name: 'Activité principale', isStrategic: true }]
+
+  // Parse historique (N-2, N-1, N)
+  const hist = historiques || {}
+  const parseArr3 = (key: string, fallback = [0, 0, 0]): [number, number, number] => {
+    const v = hist[key]
+    if (Array.isArray(v) && v.length >= 3) return [Number(v[0]) || 0, Number(v[1]) || 0, Number(v[2]) || 0]
+    if (typeof v === 'number') return [0, 0, v]
+    return fallback as [number, number, number]
+  }
+
+  // CA by activity
+  const caByActivity: [number, number, number][] = activities.map((_: any, i: number) => {
+    const key = `ca_activite_${i + 1}`
+    return parseArr3(key, [0, 0, 0])
+  })
+
+  // Hypotheses projection
+  const hyp = hypotheses || {}
+  const parseArr5 = (key: string, def: number): [number, number, number, number, number] => {
+    const v = hyp[key]
+    if (Array.isArray(v) && v.length >= 5) return [Number(v[0]) || def, Number(v[1]) || def, Number(v[2]) || def, Number(v[3]) || def, Number(v[4]) || def]
+    const single = Number(v) || def
+    return [single, single, single, single, single]
+  }
+
+  // Investissements
+  const inv = investissements || {}
+  const capexArr = parseArr5('capex', 0)
+  const invDetails = inv.investissements_details
+  const investissementsList = Array.isArray(invDetails)
+    ? invDetails.map((d: any) => ({
+        description: d.description || 'Investissement',
+        montants: (d.montants || capexArr) as [number, number, number, number, number]
+      }))
+    : undefined
+
+  // BFR
+  const bfrData = bfr || {}
+
+  // Couts
+  const coutsData = couts || {}
+
+  return {
+    companyName: infos?.nom_entreprise || companyName || 'Mon Entreprise',
+    sector: infos?.secteur || infos?.secteur_activite || '',
+    analysisDate: new Date().toISOString().split('T')[0],
+    consultant: 'ESONO Investment Readiness',
+    location: infos?.localisation || infos?.ville || '',
+    country: infos?.pays || 'Côte d\'Ivoire',
+    activities,
+    historique: {
+      caTotal: parseArr3('ca_total'),
+      caByActivity,
+      achatsMP: parseArr3('achats_mp', [0, 0, 0]),
+      sousTraitance: parseArr3('sous_traitance', [0, 0, 0]),
+      coutsProduction: parseArr3('couts_production', [0, 0, 0]),
+      salaires: parseArr3('salaires', [0, 0, 0]),
+      loyers: parseArr3('loyers', [0, 0, 0]),
+      assurances: parseArr3('assurances', [0, 0, 0]),
+      fraisGeneraux: parseArr3('frais_generaux', [0, 0, 0]),
+      marketing: parseArr3('marketing', [0, 0, 0]),
+      fraisBancaires: parseArr3('frais_bancaires', [0, 0, 0]),
+      resultatNet: parseArr3('resultat_net', [0, 0, 0]),
+      tresoDebut: parseArr3('treso_debut', [0, 0, 0]),
+      tresoFin: parseArr3('treso_fin', [0, 0, 0]),
+      dso: parseArr3('dso', [30, 30, 30]),
+      dpo: parseArr3('dpo', [30, 30, 30]),
+      stockJours: parseArr3('stock_jours', [15, 15, 15]),
+      detteCT: parseArr3('dette_ct', [0, 0, 0]),
+      detteLT: parseArr3('dette_lt', [0, 0, 0]),
+      serviceDette: parseArr3('service_dette', [0, 0, 0]),
+      amortissements: parseArr3('amortissements', [0, 0, 0]),
+    },
+    hypotheses: {
+      croissanceCA: parseArr5('croissance_ca', 15),
+      croissanceParActivite: activities.length > 1
+        ? activities.map((_: any, i: number) => parseArr5(`croissance_activite_${i + 1}`, 15))
+        : undefined,
+      evolutionPrix: parseArr5('evolution_prix', 3),
+      evolutionCoutsDirects: parseArr5('evolution_couts_directs', 3),
+      inflationChargesFixes: parseArr5('inflation_charges_fixes', 3),
+      evolutionMasseSalariale: parseArr5('evolution_masse_salariale', 5),
+      capex: capexArr,
+      amortissement: Number(inv.duree_amortissement) || 5,
+      embauches: rh?.plan_embauche ?? undefined,
+      investissements: investissementsList,
+    }
+  }
+}
+
+// GET /api/pme/framework - Get PME Framework deliverable (Excel XML or HTML preview)
+app.get('/api/pme/framework', async (c) => {
+  try {
+    const token = getCookie(c, 'auth_token')
+    if (!token) return c.json({ error: 'Non authentifié' }, 401)
+    const payload = await verifyToken(token)
+    if (!payload) return c.json({ error: 'Token invalide' }, 401)
+
+    const format = c.req.query('format') || 'excel' // excel | html | json
+
+    // Get Module 4 (framework)
+    const mod4 = await c.env.DB.prepare('SELECT id, module_code, title FROM modules WHERE module_code = ?')
+      .bind('mod4_framework').first<any>()
+    if (!mod4) return c.json({ error: 'Module non trouvé' }, 404)
+
+    // Get Module 3 (inputs) to read financial data
+    const mod3 = await c.env.DB.prepare('SELECT id FROM modules WHERE module_code = ?')
+      .bind('mod3_inputs').first<any>()
+
+    // Get financial_inputs from Module 3
+    let inputsRow: any = null
+    if (mod3) {
+      inputsRow = await c.env.DB.prepare(
+        'SELECT * FROM financial_inputs WHERE user_id = ? AND module_id = ?'
+      ).bind(payload.userId, mod3.id).first<any>()
+    }
+
+    if (!inputsRow) {
+      return c.json({ error: 'Aucune donnée financière. Remplissez d\'abord les Inputs Entrepreneur (Module 3).' }, 400)
+    }
+
+    // Parse all JSON tabs
+    const infos = inputsRow.infos_generales_json ? JSON.parse(inputsRow.infos_generales_json) : {}
+    const historiques = inputsRow.donnees_historiques_json ? JSON.parse(inputsRow.donnees_historiques_json) : {}
+    const produits = inputsRow.produits_services_json ? JSON.parse(inputsRow.produits_services_json) : {}
+    const rh = inputsRow.ressources_humaines_json ? JSON.parse(inputsRow.ressources_humaines_json) : {}
+    const hypotheses = inputsRow.hypotheses_croissance_json ? JSON.parse(inputsRow.hypotheses_croissance_json) : {}
+    const coutsData = inputsRow.couts_fixes_variables_json ? JSON.parse(inputsRow.couts_fixes_variables_json) : {}
+    const bfrData = inputsRow.bfr_tresorerie_json ? JSON.parse(inputsRow.bfr_tresorerie_json) : {}
+    const invData = inputsRow.investissements_json ? JSON.parse(inputsRow.investissements_json) : {}
+    const finData = inputsRow.financement_json ? JSON.parse(inputsRow.financement_json) : {}
+
+    // Get user name
+    const user = await c.env.DB.prepare('SELECT name FROM users WHERE id = ?').bind(payload.userId).first<any>()
+    const userName = user?.name || 'Entrepreneur'
+
+    // Get project name
+    let companyName = 'Mon Entreprise'
+    const progress4 = await c.env.DB.prepare('SELECT project_id FROM progress WHERE user_id = ? AND module_id = ?')
+      .bind(payload.userId, mod4.id).first<any>()
+    if (progress4?.project_id) {
+      const proj = await c.env.DB.prepare('SELECT name FROM projects WHERE id = ?').bind(progress4.project_id).first<any>()
+      if (proj?.name) companyName = proj.name
+    }
+
+    // Build PmeInputData
+    const pmeInput = buildPmeInputDataFromInputs(
+      infos, historiques, produits, rh, hypotheses, coutsData, bfrData, invData, finData,
+      companyName, userName
+    )
+
+    // Run analysis
+    const analysis = analyzePme(pmeInput)
+
+    if (format === 'excel') {
+      const xml = generatePmeExcelXml(pmeInput, analysis)
+      return new Response(xml, {
+        headers: {
+          'Content-Type': 'application/vnd.ms-excel',
+          'Content-Disposition': `attachment; filename="Framework_Analyse_${companyName.replace(/[^a-zA-Z0-9]/g, '_')}.xls"`,
+        }
+      })
+    }
+
+    if (format === 'html') {
+      const html = generatePmePreviewHtml(analysis, pmeInput)
+      return c.html(html)
+    }
+
+    // JSON format
+    return c.json({ success: true, analysis, input: pmeInput })
+
+  } catch (e: any) {
+    console.error('PME framework error:', e)
+    return c.json({ error: 'Erreur serveur' }, 500)
+  }
+})
+
+// POST /api/pme/framework/refresh - Regenerate PME analysis
+app.post('/api/pme/framework/refresh', async (c) => {
+  try {
+    const token = getCookie(c, 'auth_token')
+    if (!token) return c.json({ error: 'Non authentifié' }, 401)
+    const payload = await verifyToken(token)
+    if (!payload) return c.json({ error: 'Token invalide' }, 401)
+
+    const mod4 = await c.env.DB.prepare('SELECT id FROM modules WHERE module_code = ?')
+      .bind('mod4_framework').first<any>()
+    if (!mod4) return c.json({ error: 'Module non trouvé' }, 404)
+
+    const mod3 = await c.env.DB.prepare('SELECT id FROM modules WHERE module_code = ?')
+      .bind('mod3_inputs').first<any>()
+
+    let inputsRow: any = null
+    if (mod3) {
+      inputsRow = await c.env.DB.prepare(
+        'SELECT * FROM financial_inputs WHERE user_id = ? AND module_id = ?'
+      ).bind(payload.userId, mod3.id).first<any>()
+    }
+    if (!inputsRow) return c.json({ error: 'Aucune donnée financière' }, 400)
+
+    const infos = inputsRow.infos_generales_json ? JSON.parse(inputsRow.infos_generales_json) : {}
+    const historiques = inputsRow.donnees_historiques_json ? JSON.parse(inputsRow.donnees_historiques_json) : {}
+    const produits = inputsRow.produits_services_json ? JSON.parse(inputsRow.produits_services_json) : {}
+    const rh = inputsRow.ressources_humaines_json ? JSON.parse(inputsRow.ressources_humaines_json) : {}
+    const hypotheses = inputsRow.hypotheses_croissance_json ? JSON.parse(inputsRow.hypotheses_croissance_json) : {}
+    const coutsData = inputsRow.couts_fixes_variables_json ? JSON.parse(inputsRow.couts_fixes_variables_json) : {}
+    const bfrData = inputsRow.bfr_tresorerie_json ? JSON.parse(inputsRow.bfr_tresorerie_json) : {}
+    const invData = inputsRow.investissements_json ? JSON.parse(inputsRow.investissements_json) : {}
+    const finData = inputsRow.financement_json ? JSON.parse(inputsRow.financement_json) : {}
+
+    const user = await c.env.DB.prepare('SELECT name FROM users WHERE id = ?').bind(payload.userId).first<any>()
+    const userName = user?.name || 'Entrepreneur'
+
+    let companyName = 'Mon Entreprise'
+    const progress4 = await c.env.DB.prepare('SELECT id, project_id FROM progress WHERE user_id = ? AND module_id = ?')
+      .bind(payload.userId, mod4.id).first<any>()
+    if (progress4?.project_id) {
+      const proj = await c.env.DB.prepare('SELECT name FROM projects WHERE id = ?').bind(progress4.project_id).first<any>()
+      if (proj?.name) companyName = proj.name
+    }
+
+    const pmeInput = buildPmeInputDataFromInputs(
+      infos, historiques, produits, rh, hypotheses, coutsData, bfrData, invData, finData,
+      companyName, userName
+    )
+
+    const analysis = analyzePme(pmeInput)
+
+    // Update progress with score
+    const score = Math.round(
+      (analysis.historique.margeEbitdaPct[2] > 0 ? 30 : 0) +
+      (analysis.historique.margeBrutePct[2] >= 25 ? 20 : 10) +
+      (analysis.alertes.filter(a => a.type === 'danger').length === 0 ? 20 : 0) +
+      (analysis.projection.tresoCumulee[4] > 0 ? 20 : 10) +
+      (analysis.forces.length >= 3 ? 10 : 5)
+    )
+
+    if (progress4?.id) {
+      const now = new Date().toISOString()
+      await c.env.DB.prepare(
+        'UPDATE progress SET ai_score = ?, ai_feedback_json = ?, ai_last_analysis = ?, updated_at = ? WHERE id = ?'
+      ).bind(score, JSON.stringify(analysis), now, now, progress4.id).run()
+    }
+
+    return c.json({
+      success: true,
+      refreshedAt: analysis.analysisDate,
+      score,
+      alertes: analysis.alertes.length,
+      forces: analysis.forces.length,
+      faiblesses: analysis.faiblesses.length
+    })
+
+  } catch (e: any) {
+    console.error('PME framework refresh error:', e)
     return c.json({ error: 'Erreur serveur' }, 500)
   }
 })

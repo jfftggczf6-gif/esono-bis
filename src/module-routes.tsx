@@ -19,6 +19,7 @@ import { generateMockFeedback, calculateOverallScore, getScoreLabel, getSectionN
 import { analyzeSIC, generateSicDiagnosticHtml, getSicScoreLabel, SIC_SECTION_LABELS, QUESTION_SECTION_MAP as SIC_QUESTION_MAP, type SicAnalysisResult, type SicSectionScore, ODD_ICONS, ODD_LABELS } from './sic-engine'
 import { generateFullSicDeliverable, type SicDeliverableData } from './sic-deliverable-engine'
 import { generateFullBmcDeliverable, generateBmcDiagnosticHtml, type BmcDeliverableData } from './bmc-deliverable-engine'
+import { analyzePme, generatePmeExcelXml, generatePmePreviewHtml, type PmeInputData } from './framework-pme-engine'
 import {
   analyzeInputs, generateInputsDiagnosticHtml, getInputsReadinessLabel,
   INPUT_TAB_ORDER, INPUT_TAB_LABELS, TAB_COACHING, TAB_FIELDS, scoreTab,
@@ -4852,7 +4853,7 @@ moduleRoutes.get('/module/:code/download', async (c) => {
     if (!module) return c.redirect('/dashboard')
 
     const progress = await c.env.DB.prepare(`
-      SELECT id, status, ai_score, ai_last_analysis, validated_at
+      SELECT id, status, ai_score, ai_last_analysis, validated_at, project_id
       FROM progress
       WHERE user_id = ? AND module_id = ?
     `).bind(payload.userId, module.id).first()
@@ -5555,6 +5556,265 @@ moduleRoutes.get('/module/:code/download', async (c) => {
       }))
     }
     // ═══ End Inputs Financiers dedicated download ═══
+
+    // ═══ Module 4 Framework Analyse PME: dedicated download page ═══
+    if (moduleCode === 'mod4_framework') {
+      // Get Module 3 inputs data
+      const mod3 = await c.env.DB.prepare('SELECT id FROM modules WHERE module_code = ?')
+        .bind('mod3_inputs').first<any>()
+
+      let hasInputsData = false
+      let pmeAnalysis: any = null
+      let pmeInput: any = null
+      let companyName = 'Mon Entreprise'
+      let previewHtml = ''
+
+
+      if (mod3) {
+        const inputsRow = await c.env.DB.prepare(
+          'SELECT * FROM financial_inputs WHERE user_id = ? AND module_id = ?'
+        ).bind(payload.userId, mod3.id).first<any>()
+
+        if (inputsRow) {
+          hasInputsData = true
+          try {
+            const infos = inputsRow.infos_generales_json ? JSON.parse(inputsRow.infos_generales_json) : {}
+            const historiques = inputsRow.donnees_historiques_json ? JSON.parse(inputsRow.donnees_historiques_json) : {}
+            const produits = inputsRow.produits_services_json ? JSON.parse(inputsRow.produits_services_json) : {}
+            const rh = inputsRow.ressources_humaines_json ? JSON.parse(inputsRow.ressources_humaines_json) : {}
+            const hypotheses = inputsRow.hypotheses_croissance_json ? JSON.parse(inputsRow.hypotheses_croissance_json) : {}
+            const coutsData = inputsRow.couts_fixes_variables_json ? JSON.parse(inputsRow.couts_fixes_variables_json) : {}
+            const bfrData = inputsRow.bfr_tresorerie_json ? JSON.parse(inputsRow.bfr_tresorerie_json) : {}
+            const invData = inputsRow.investissements_json ? JSON.parse(inputsRow.investissements_json) : {}
+            const finData = inputsRow.financement_json ? JSON.parse(inputsRow.financement_json) : {}
+
+            // Get project name
+            if (progress.project_id) {
+              const proj = await c.env.DB.prepare('SELECT name FROM projects WHERE id = ?').bind(progress.project_id).first<any>()
+              if (proj?.name) companyName = proj.name
+            }
+
+            const userRow = await c.env.DB.prepare('SELECT name FROM users WHERE id = ?').bind(payload.userId).first<any>()
+            const userName = (userRow?.name as string) ?? 'Entrepreneur'
+
+            // Build PmeInputData inline
+            const acts = produits?.produits ?? produits?.activites ?? []
+            const activities = Array.isArray(acts) && acts.length > 0
+              ? acts.map((a: any) => ({ name: a.nom || a.name || 'Activité', isStrategic: a.strategique !== false }))
+              : [{ name: 'Activité principale', isStrategic: true }]
+
+            const parseArr3 = (key: string, fallback = [0, 0, 0]): [number, number, number] => {
+              const v = (historiques as any)[key]
+              if (Array.isArray(v) && v.length >= 3) return [Number(v[0]) || 0, Number(v[1]) || 0, Number(v[2]) || 0]
+              if (typeof v === 'number') return [0, 0, v]
+              return fallback as [number, number, number]
+            }
+            const caByActivity: [number, number, number][] = activities.map((_: any, i: number) => parseArr3(`ca_activite_${i + 1}`, [0, 0, 0]))
+            const parseArr5 = (key: string, def: number): [number, number, number, number, number] => {
+              const v = (hypotheses as any)[key]
+              if (Array.isArray(v) && v.length >= 5) return [Number(v[0]) || def, Number(v[1]) || def, Number(v[2]) || def, Number(v[3]) || def, Number(v[4]) || def]
+              const single = Number(v) || def
+              return [single, single, single, single, single]
+            }
+            const capexArr = parseArr5('capex', 0)
+
+            pmeInput = {
+              companyName: infos?.nom_entreprise || companyName,
+              sector: infos?.secteur || infos?.secteur_activite || '',
+              analysisDate: new Date().toISOString().split('T')[0],
+              consultant: 'ESONO Investment Readiness',
+              location: infos?.localisation || infos?.ville || '',
+              country: infos?.pays || 'Côte d\'Ivoire',
+              activities,
+              historique: {
+                caTotal: parseArr3('ca_total'), caByActivity,
+                achatsMP: parseArr3('achats_mp'), sousTraitance: parseArr3('sous_traitance'),
+                coutsProduction: parseArr3('couts_production'), salaires: parseArr3('salaires'),
+                loyers: parseArr3('loyers'), assurances: parseArr3('assurances'),
+                fraisGeneraux: parseArr3('frais_generaux'), marketing: parseArr3('marketing'),
+                fraisBancaires: parseArr3('frais_bancaires'), resultatNet: parseArr3('resultat_net'),
+                tresoDebut: parseArr3('treso_debut'), tresoFin: parseArr3('treso_fin'),
+                dso: parseArr3('dso', [30, 30, 30]), dpo: parseArr3('dpo', [30, 30, 30]),
+                stockJours: parseArr3('stock_jours', [15, 15, 15]),
+                detteCT: parseArr3('dette_ct'), detteLT: parseArr3('dette_lt'),
+                serviceDette: parseArr3('service_dette'), amortissements: parseArr3('amortissements'),
+              },
+              hypotheses: {
+                croissanceCA: parseArr5('croissance_ca', 15),
+                evolutionPrix: parseArr5('evolution_prix', 3),
+                evolutionCoutsDirects: parseArr5('evolution_couts_directs', 3),
+                inflationChargesFixes: parseArr5('inflation_charges_fixes', 3),
+                evolutionMasseSalariale: parseArr5('evolution_masse_salariale', 5),
+                capex: capexArr,
+                amortissement: Number(invData?.duree_amortissement) || 5,
+              }
+            } as PmeInputData
+
+            pmeAnalysis = analyzePme(pmeInput)
+            previewHtml = generatePmePreviewHtml(pmeAnalysis, pmeInput)
+          } catch (e: any) {
+            console.error('PME analysis error on download page:', e?.message || e)
+          }
+        }
+      }
+
+      const aiScore = pmeAnalysis ? Math.round(
+        (pmeAnalysis.historique.margeEbitdaPct[2] > 0 ? 30 : 0) +
+        (pmeAnalysis.historique.margeBrutePct[2] >= 25 ? 20 : 10) +
+        (pmeAnalysis.alertes.filter((a: any) => a.type === 'danger').length === 0 ? 20 : 0) +
+        (pmeAnalysis.projection.tresoCumulee[4] > 0 ? 20 : 10) +
+        (pmeAnalysis.forces.length >= 3 ? 10 : 5)
+      ) : 0
+
+      const scoreLabel = aiScore >= 80 ? 'Sain' : aiScore >= 60 ? 'Correct' : aiScore >= 40 ? 'Fragile' : 'Critique'
+      const scoreColor = aiScore >= 80 ? '#059669' : aiScore >= 60 ? '#0284c7' : aiScore >= 40 ? '#d97706' : '#dc2626'
+
+      const { navItems: resolvedNavItems, activeNav } = resolveNavigationForStage(moduleCode, 'download')
+      const extraScripts = ''
+
+      // Build bodyContent outside of template literal to avoid minification issues
+      const alertes = pmeAnalysis?.alertes ?? []
+      const forces = pmeAnalysis?.forces ?? []
+      const faiblesses = pmeAnalysis?.faiblesses ?? []
+      const dangerCount = alertes.filter((a: any) => a.type === 'danger').length
+
+      const alertesHtml = alertes.length > 0 ? alertes.map((a: any) => {
+        const bg = a.type === 'danger' ? 'background:#fee2e2;color:#991b1b;border-left:4px solid #dc2626;'
+          : a.type === 'warning' ? 'background:#fff7ed;color:#9a3412;border-left:4px solid #d97706;'
+          : 'background:#eff6ff;color:#1e40af;border-left:4px solid #2563eb;'
+        const dot = a.type === 'danger' ? '\u{1F534}' : a.type === 'warning' ? '\u{1F7E0}' : '\u{1F535}'
+        return '<div style="padding:12px 16px;border-radius:10px;font-size:13px;' + bg + '">' + dot + ' ' + a.message + '</div>'
+      }).join('') : ''
+
+      const forcesHtml = forces.map((f: string) =>
+        '<div style="padding:8px 0;font-size:13px;border-bottom:1px solid #f1f5f9;">\u2705 ' + f + '</div>'
+      ).join('')
+
+      const faiblessesHtml = faiblesses.map((f: string) =>
+        '<div style="padding:8px 0;font-size:13px;border-bottom:1px solid #f1f5f9;">\u26A0\uFE0F ' + f + '</div>'
+      ).join('')
+
+      const sheetsData = [
+        ['1', 'Donn\u00e9es Historiques', '3 derni\u00e8res ann\u00e9es \u00b7 CA, marges, tr\u00e9sorerie', 'fas fa-history', '#2E5090'],
+        ['2', 'Analyse des Marges', 'Par activit\u00e9 \u00b7 Classification strat\u00e9gique', 'fas fa-chart-pie', '#059669'],
+        ['3', 'Structure de Co\u00fbts', 'Ratios d\'efficacit\u00e9 \u00b7 Benchmarks CI', 'fas fa-cogs', '#d97706'],
+        ['4', 'Tr\u00e9sorerie & BFR', 'DSO/DPO \u00b7 DSCR \u00b7 Endettement', 'fas fa-money-bill-wave', '#dc2626'],
+        ['5', 'Hypoth\u00e8ses de Projection', 'Croissance \u00b7 CAPEX \u00b7 Inflation', 'fas fa-lightbulb', '#7c3aed'],
+        ['6', 'Projection 5 Ans', 'Compte de r\u00e9sultat \u00b7 Cash-flow \u00b7 Point mort', 'fas fa-chart-line', '#0284c7'],
+        ['7', 'Analyse par Sc\u00e9narios', 'Prudent \u00b7 Central \u00b7 Ambitieux + sensibilit\u00e9', 'fas fa-exchange-alt', '#f59e0b'],
+        ['8', 'Synth\u00e8se Ex\u00e9cutive', '3 slides max \u00b7 Comit\u00e9 d\'investissement', 'fas fa-file-alt', '#1a2332'],
+      ]
+      const sheetsHtml = sheetsData.map(function(s) {
+        return '<div style="display:flex;gap:12px;padding:14px;border-radius:12px;background:#f8fafc;align-items:flex-start;">'
+          + '<div style="width:36px;height:36px;border-radius:10px;background:' + s[4] + '15;display:flex;align-items:center;justify-content:center;flex-shrink:0;">'
+          + '<i class="' + s[3] + '" style="color:' + s[4] + ';font-size:14px;"></i></div>'
+          + '<div><div style="font-size:13px;font-weight:600;color:#1a2332;">Feuille ' + s[0] + ' \u2014 ' + s[1] + '</div>'
+          + '<div style="font-size:11px;color:#64748b;">' + s[2] + '</div></div></div>'
+      }).join('')
+
+      let bodyHtml = ''
+      bodyHtml += '<div style="margin-bottom:16px;display:flex;align-items:center;gap:8px;">'
+      bodyHtml += '<a href="/dashboard" style="color:var(--esono-text-muted);text-decoration:none;font-size:14px;"><i class="fas fa-arrow-left" style="margin-right:4px;"></i> Tableau de bord</a>'
+      bodyHtml += '<span style="color:var(--esono-text-muted);">\u203A</span>'
+      bodyHtml += '<span style="font-size:14px;color:var(--esono-primary);font-weight:600;">Module 4 \u00b7 Framework PME</span></div>'
+
+      if (!hasInputsData) {
+        bodyHtml += '<div style="background:linear-gradient(135deg,#fff7ed,#fef3c7);border:1px solid #f59e0b;border-radius:16px;padding:40px;text-align:center;margin:24px 0;">'
+        bodyHtml += '<div style="font-size:48px;margin-bottom:16px;">\u{1F4CB}</div>'
+        bodyHtml += '<h2 style="color:#92400e;font-size:20px;margin-bottom:8px;">Donn\u00e9es financi\u00e8res requises</h2>'
+        bodyHtml += '<p style="color:#78350f;font-size:14px;margin-bottom:24px;">Compl\u00e9tez d\'abord les Inputs Entrepreneur (Module 3) pour g\u00e9n\u00e9rer votre Framework Analyse PME.</p>'
+        bodyHtml += '<a href="/module/mod3_inputs/video" style="display:inline-flex;align-items:center;gap:8px;background:#f59e0b;color:white;padding:12px 24px;border-radius:12px;font-weight:600;text-decoration:none;"><i class="fas fa-arrow-right"></i> Commencer Module 3</a></div>'
+      } else {
+        // Draft warning
+        if (!isValidated) {
+          bodyHtml += '<div style="background:linear-gradient(135deg,#fffbeb,#fef3c7);border:1px solid #fbbf24;border-radius:12px;padding:16px 20px;margin-bottom:16px;display:flex;align-items:center;gap:12px;">'
+          bodyHtml += '<i class="fas fa-exclamation-triangle" style="color:#f59e0b;font-size:18px;"></i>'
+          bodyHtml += '<div><strong style="color:#92400e;">Livrable en mode brouillon</strong>'
+          bodyHtml += '<span style="font-size:13px;color:#78350f;margin-left:8px;">Vous pouvez t\u00e9l\u00e9charger, mais la validation coach n\'est pas encore faite</span></div>'
+          bodyHtml += '<a href="/module/' + moduleCode + '/validate" style="margin-left:auto;background:#f59e0b;color:white;padding:8px 16px;border-radius:8px;font-size:13px;font-weight:600;text-decoration:none;">Passer \u00e0 la validation</a></div>'
+        }
+
+        // Hero header
+        bodyHtml += '<div style="background:linear-gradient(135deg,#1a2e50 0%,#2E5090 40%,#4472C4 100%);border-radius:20px;padding:40px 32px;color:white;margin-bottom:24px;">'
+        bodyHtml += '<div style="display:flex;align-items:center;gap:16px;margin-bottom:24px;">'
+        bodyHtml += '<div style="font-size:36px;">\u{1F4CA}</div><div>'
+        bodyHtml += '<h1 style="font-size:26px;font-weight:800;margin:0;">Framework Analyse PME</h1>'
+        bodyHtml += '<p style="opacity:0.7;font-size:14px;">' + companyName + ' \u2014 Analyse financi\u00e8re 5 ans</p></div></div>'
+        bodyHtml += '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;">'
+        bodyHtml += '<div style="background:rgba(255,255,255,0.12);border-radius:14px;padding:20px;text-align:center;"><div style="font-size:32px;font-weight:800;">' + aiScore + '</div><div style="font-size:11px;opacity:0.7;">Score Sant\u00e9</div><div style="margin-top:4px;padding:2px 10px;border-radius:99px;display:inline-block;font-size:11px;font-weight:600;background:' + scoreColor + ';">' + scoreLabel + '</div></div>'
+        bodyHtml += '<div style="background:rgba(255,255,255,0.12);border-radius:14px;padding:20px;text-align:center;"><div style="font-size:32px;font-weight:800;">' + alertes.length + '</div><div style="font-size:11px;opacity:0.7;">Alertes</div><div style="margin-top:4px;font-size:11px;opacity:0.6;">' + dangerCount + ' critiques</div></div>'
+        bodyHtml += '<div style="background:rgba(255,255,255,0.12);border-radius:14px;padding:20px;text-align:center;"><div style="font-size:32px;font-weight:800;">8</div><div style="font-size:11px;opacity:0.7;">Feuilles Excel</div><div style="margin-top:4px;font-size:11px;opacity:0.6;">Analyse compl\u00e8te</div></div>'
+        bodyHtml += '<div style="background:rgba(255,255,255,0.12);border-radius:14px;padding:20px;text-align:center;"><div style="font-size:32px;font-weight:800;">3</div><div style="font-size:11px;opacity:0.7;">Sc\u00e9narios</div><div style="margin-top:4px;font-size:11px;opacity:0.6;">5 ans</div></div>'
+        bodyHtml += '</div></div>'
+
+        // Download options
+        bodyHtml += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:24px;">'
+        // Excel
+        bodyHtml += '<a href="/api/pme/framework?format=excel" style="text-decoration:none;"><div style="background:white;border-radius:16px;padding:24px;border:2px solid #059669;text-align:center;transition:all 0.2s;cursor:pointer;">'
+        bodyHtml += '<div style="background:#ecfdf5;width:56px;height:56px;border-radius:14px;display:flex;align-items:center;justify-content:center;margin:0 auto 12px;font-size:24px;"><i class="fas fa-file-excel" style="color:#059669;"></i></div>'
+        bodyHtml += '<h3 style="font-size:15px;font-weight:700;color:#1a2332;margin-bottom:4px;">Excel 8 feuilles</h3>'
+        bodyHtml += '<p style="font-size:12px;color:#64748b;">Analyse compl\u00e8te \u00b7 SpreadsheetML</p>'
+        bodyHtml += '<div style="margin-top:12px;background:#059669;color:white;padding:8px 16px;border-radius:8px;font-size:12px;font-weight:600;"><i class="fas fa-download" style="margin-right:4px;"></i> T\u00e9l\u00e9charger Excel</div>'
+        bodyHtml += '<div style="margin-top:6px;display:inline-block;background:#ecfdf5;color:#059669;padding:2px 8px;border-radius:99px;font-size:10px;font-weight:700;">RECOMMAND\u00c9</div></div></a>'
+        // HTML
+        bodyHtml += '<a href="/api/pme/framework?format=html" target="_blank" style="text-decoration:none;"><div style="background:white;border-radius:16px;padding:24px;border:1px solid rgba(0,0,0,0.08);text-align:center;transition:all 0.2s;cursor:pointer;">'
+        bodyHtml += '<div style="background:#eff6ff;width:56px;height:56px;border-radius:14px;display:flex;align-items:center;justify-content:center;margin:0 auto 12px;font-size:24px;"><i class="fas fa-chart-line" style="color:#2563eb;"></i></div>'
+        bodyHtml += '<h3 style="font-size:15px;font-weight:700;color:#1a2332;margin-bottom:4px;">Synth\u00e8se HTML</h3>'
+        bodyHtml += '<p style="font-size:12px;color:#64748b;">Aper\u00e7u visuel \u00b7 Imprimable</p>'
+        bodyHtml += '<div style="margin-top:12px;background:#2563eb;color:white;padding:8px 16px;border-radius:8px;font-size:12px;font-weight:600;"><i class="fas fa-external-link-alt" style="margin-right:4px;"></i> Ouvrir</div></div></a>'
+        // JSON
+        bodyHtml += '<a href="/api/pme/framework?format=json" target="_blank" style="text-decoration:none;"><div style="background:white;border-radius:16px;padding:24px;border:1px solid rgba(0,0,0,0.08);text-align:center;transition:all 0.2s;cursor:pointer;">'
+        bodyHtml += '<div style="background:#f5f3ff;width:56px;height:56px;border-radius:14px;display:flex;align-items:center;justify-content:center;margin:0 auto 12px;font-size:24px;"><i class="fas fa-code" style="color:#7c3aed;"></i></div>'
+        bodyHtml += '<h3 style="font-size:15px;font-weight:700;color:#1a2332;margin-bottom:4px;">Donn\u00e9es JSON</h3>'
+        bodyHtml += '<p style="font-size:12px;color:#64748b;">API brute \u00b7 Int\u00e9gration</p>'
+        bodyHtml += '<div style="margin-top:12px;background:#7c3aed;color:white;padding:8px 16px;border-radius:8px;font-size:12px;font-weight:600;"><i class="fas fa-external-link-alt" style="margin-right:4px;"></i> Voir JSON</div></div></a>'
+        bodyHtml += '</div>'
+
+        // Alertes
+        if (alertesHtml) {
+          bodyHtml += '<div style="background:white;border-radius:16px;padding:24px;margin-bottom:24px;border:1px solid rgba(0,0,0,0.08);">'
+          bodyHtml += '<h3 style="font-size:16px;font-weight:700;color:#1a2332;margin-bottom:16px;"><i class="fas fa-exclamation-triangle" style="color:#f59e0b;margin-right:8px;"></i>Alertes & Points de vigilance</h3>'
+          bodyHtml += '<div style="display:flex;flex-direction:column;gap:8px;">' + alertesHtml + '</div></div>'
+        }
+
+        // Forces & Faiblesses
+        bodyHtml += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px;">'
+        bodyHtml += '<div style="background:white;border-radius:16px;padding:24px;border:1px solid rgba(0,0,0,0.08);">'
+        bodyHtml += '<h3 style="font-size:16px;font-weight:700;color:#059669;margin-bottom:12px;"><i class="fas fa-thumbs-up" style="margin-right:8px;"></i> Forces</h3>' + forcesHtml + '</div>'
+        bodyHtml += '<div style="background:white;border-radius:16px;padding:24px;border:1px solid rgba(0,0,0,0.08);">'
+        bodyHtml += '<h3 style="font-size:16px;font-weight:700;color:#d97706;margin-bottom:12px;"><i class="fas fa-exclamation-circle" style="margin-right:8px;"></i> Faiblesses</h3>' + faiblessesHtml + '</div></div>'
+
+        // Feuilles Excel
+        bodyHtml += '<div style="background:white;border-radius:16px;padding:24px;margin-bottom:24px;border:1px solid rgba(0,0,0,0.08);">'
+        bodyHtml += '<h3 style="font-size:16px;font-weight:700;color:#1a2332;margin-bottom:16px;"><i class="fas fa-table" style="color:#2E5090;margin-right:8px;"></i>Contenu du livrable Excel (8 feuilles)</h3>'
+        bodyHtml += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">' + sheetsHtml + '</div></div>'
+
+        // Apercu HTML
+        bodyHtml += '<div style="background:white;border-radius:16px;padding:24px;margin-bottom:24px;border:1px solid rgba(0,0,0,0.08);">'
+        bodyHtml += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">'
+        bodyHtml += '<h3 style="font-size:16px;font-weight:700;color:#1a2332;"><i class="fas fa-eye" style="color:#2E5090;margin-right:8px;"></i>Aper\u00e7u du Framework PME</h3>'
+        bodyHtml += '<div style="display:flex;gap:8px;"><a href="/api/pme/framework?format=html" target="_blank" style="background:#2E5090;color:white;padding:8px 16px;border-radius:8px;font-size:12px;font-weight:600;text-decoration:none;"><i class="fas fa-external-link-alt" style="margin-right:4px;"></i> Ouvrir</a>'
+        bodyHtml += '<button onclick="window.frames[\'pmePreview\'].print()" style="background:#64748b;color:white;padding:8px 16px;border-radius:8px;font-size:12px;font-weight:600;border:none;cursor:pointer;"><i class="fas fa-print" style="margin-right:4px;"></i> Imprimer / PDF</button></div></div>'
+        bodyHtml += '<iframe name="pmePreview" src="/api/pme/framework?format=html" style="width:100%;height:600px;border:2px solid #e5e7eb;border-radius:12px;background:white;" loading="lazy"></iframe></div>'
+
+        // Prochaines etapes
+        bodyHtml += '<div style="background:linear-gradient(135deg,#f0f9ff,#e0f2fe);border-radius:16px;padding:24px;margin-bottom:24px;border:1px solid #bae6fd;">'
+        bodyHtml += '<h3 style="font-size:16px;font-weight:700;color:#0c4a6e;margin-bottom:16px;"><i class="fas fa-route" style="margin-right:8px;"></i> Prochaines \u00e9tapes</h3>'
+        bodyHtml += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">'
+        bodyHtml += '<a href="/module/mod3_inputs/video" style="text-decoration:none;display:flex;gap:12px;padding:16px;border-radius:12px;background:white;align-items:center;"><div style="width:40px;height:40px;border-radius:10px;background:#dbeafe;display:flex;align-items:center;justify-content:center;flex-shrink:0;"><i class="fas fa-edit" style="color:#2563eb;"></i></div><div><div style="font-size:13px;font-weight:600;color:#1a2332;">Modifier les Inputs</div><div style="font-size:11px;color:#64748b;">Ajuster vos donn\u00e9es financi\u00e8res</div></div></a>'
+        bodyHtml += '<a href="/dashboard" style="text-decoration:none;display:flex;gap:12px;padding:16px;border-radius:12px;background:white;align-items:center;"><div style="width:40px;height:40px;border-radius:10px;background:#f3e8ff;display:flex;align-items:center;justify-content:center;flex-shrink:0;"><i class="fas fa-th-large" style="color:#7c3aed;"></i></div><div><div style="font-size:13px;font-weight:600;color:#1a2332;">Retour Dashboard</div><div style="font-size:11px;color:#64748b;">Vue d\'ensemble des modules</div></div></a>'
+        bodyHtml += '</div></div>'
+      }
+
+      return c.html(renderEsanoLayout({
+        pageTitle: 'Framework Analyse PME \u2014 ' + companyName,
+        activeNav: activeNav || 'module_finance_deliverable',
+        navItems: resolvedNavItems,
+        content: <div dangerouslySetInnerHTML={{ __html: bodyHtml }} />,
+        extraScripts
+      }))
+    }
+    // ═══ End Module 4 Framework Analyse PME ═══
 
     let sections: CanvasSection[] | null = null
 
