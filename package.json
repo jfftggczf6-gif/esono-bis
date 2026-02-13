@@ -18,7 +18,8 @@
     "git:commit": "git add . && git commit -m"
   },
   "dependencies": {
-    "hono": "^4.11.7"
+    "hono": "^4.11.7",
+    "playwright": "^1.58.2"
   },
   "devDependencies": {
     "@hono/vite-build": "^1.2.0",

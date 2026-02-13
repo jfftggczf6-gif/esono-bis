@@ -29,6 +29,7 @@ import {
 
 type Bindings = {
   DB: D1Database
+  ANTHROPIC_API_KEY?: string
 }
 
 export const moduleRoutes = new Hono<{ Bindings: Bindings }>()
@@ -2982,6 +2983,8 @@ moduleRoutes.get('/module/:code/analysis', async (c) => {
     let questionsCount: number
     let sectionsNeedingWork: number
     let topSuggestions: Array<{ section: string, questionId: number, message: string, score: number }>
+    let analysisSource: 'claude' | 'fallback' | 'sic_engine' | 'none' = 'none'
+    let syntheseGlobale = ''
 
     if (isSicModule) {
       // ─── Fetch BMC answers for coherence check ───
@@ -3065,94 +3068,187 @@ moduleRoutes.get('/module/:code/analysis', async (c) => {
           `).bind(feedbackPayload, Math.round(sec.score * 10), progress.id, qId).run()
         }
       }
+      analysisSource = 'sic_engine'
     } else {
-      // ─── Generic mock feedback for other modules ───
-      const feedback = generateMockFeedback(answersMap)
-      overallScore = calculateOverallScore(feedback)
-      scoreInfo = getScoreLabel(overallScore)
+      // Check if a Claude analysis exists in module_analyses
+      const claudeRow = await c.env.DB.prepare(`
+        SELECT analysis_json, source FROM module_analyses
+        WHERE user_id = ? AND module_code = ?
+      `).bind(payload.userId, moduleCode).first()
 
-      sectionSummaries = answers.results
-        .filter((a: any) => a.user_response && a.user_response.trim())
-        .map((a: any) => {
-          const sectionName = getSectionName(a.question_number)
-          const details = sectionDetailsMap.get(a.question_number)
-          const sectionFeedbackItems = feedback.filter((item) => item.section === sectionName)
-          const strengths = sectionFeedbackItems.filter((item) => item.type === 'strength')
-          const suggestions = sectionFeedbackItems.filter((item) => item.type === 'suggestion')
-          const questionsItems = sectionFeedbackItems.filter((item) => item.type === 'question')
-          const averageScore = sectionFeedbackItems.length
-            ? Math.round(sectionFeedbackItems.reduce((sum, item) => sum + item.score, 0) / sectionFeedbackItems.length)
-            : 0
-          const percentage = Math.round((averageScore / 5) * 100)
-          const sectionScoreInfo = getScoreLabel(percentage)
+      let claudeAnalysis: any = null
+      if (claudeRow?.analysis_json) {
+        try { claudeAnalysis = JSON.parse(claudeRow.analysis_json as string) } catch {}
+      }
+
+      if (claudeAnalysis && Array.isArray(claudeAnalysis.blocks) && claudeAnalysis.blocks.length > 0) {
+        // ── Use Claude analysis data ──
+        analysisSource = (claudeRow.source as string) === 'claude' ? 'claude' : 'fallback'
+        syntheseGlobale = claudeAnalysis.syntheseGlobale || ''
+        overallScore = typeof claudeAnalysis.globalScore === 'number' ? claudeAnalysis.globalScore : 50
+        scoreInfo = getScoreLabel(overallScore)
+
+        sectionSummaries = claudeAnalysis.blocks.map((block: any) => {
+          const sectionScoreInfo = getScoreLabel(block.score ?? 50)
+          const details = sectionDetailsMap.get(block.questionNumber)
           return {
-            questionId: a.question_number,
-            sectionName,
+            questionId: block.questionNumber,
+            sectionName: block.blockName || details?.section || getSectionName(block.questionNumber),
             questionText: details?.question,
-            answer: a.user_response,
-            strengths,
-            suggestions,
-            questions: questionsItems,
-            percentage,
+            answer: block.answer || '',
+            strengths: (block.forces || []).map((f: string) => ({ message: f, score: 4 })),
+            suggestions: (block.axes || []).map((a: string) => ({ message: a, score: 2 })),
+            questions: (block.questions || []).map((q: string) => ({ message: q, score: 3 })),
+            percentage: block.score ?? 50,
             scoreInfo: sectionScoreInfo,
             palette: getAnalysisPalette(sectionScoreInfo.color)
           }
         })
 
-      strengthsCount = feedback.filter((item) => item.type === 'strength').length
-      suggestionsCount = feedback.filter((item) => item.type === 'suggestion').length
-      questionsCount = feedback.filter((item) => item.type === 'question').length
-      sectionsNeedingWork = sectionSummaries.filter((section) => section.suggestions.length || section.questions.length).length
+        strengthsCount = claudeAnalysis.forcesCount ?? sectionSummaries.reduce((s: number, sec: any) => s + sec.strengths.length, 0)
+        suggestionsCount = claudeAnalysis.axesCount ?? sectionSummaries.reduce((s: number, sec: any) => s + sec.suggestions.length, 0)
+        questionsCount = claudeAnalysis.questionsCount ?? sectionSummaries.reduce((s: number, sec: any) => s + sec.questions.length, 0)
+        sectionsNeedingWork = claudeAnalysis.blocksToConsolidate ?? sectionSummaries.filter((sec: any) => sec.suggestions.length || sec.questions.length).length
 
-      topSuggestions = sectionSummaries
-        .flatMap((section) => section.suggestions.map((item) => ({
-          section: section.sectionName,
-          questionId: section.questionId,
-          message: item.message,
-          score: item.score
-        })))
-        .sort((a, b) => a.score - b.score)
-        .slice(0, 3)
+        topSuggestions = Array.isArray(claudeAnalysis.recommandationsPrioritaires)
+          ? claudeAnalysis.recommandationsPrioritaires.slice(0, 3).map((msg: string, i: number) => ({
+              section: 'Recommandation IA',
+              questionId: i + 1,
+              message: msg,
+              score: 1
+            }))
+          : []
 
-      const summaryPayload = {
-        overallScore,
-        overallLabel: scoreInfo.label,
-        palette: scoreInfo.color,
-        strengthsCount,
-        suggestionsCount,
-        questionsCount,
-        sectionsNeedingWork,
-        topSuggestions
-      }
-
-      const sanitizeItems = (items: any[]) =>
-        items.map((item) => ({ message: item.message, score: item.score }))
-
-      for (const section of sectionSummaries) {
-        const pl = {
-          sectionName: section.sectionName,
-          questionId: section.questionId,
-          questionText: section.questionText,
-          percentage: section.percentage,
-          scoreLabel: section.scoreInfo.label,
-          strengths: sanitizeItems(section.strengths),
-          suggestions: sanitizeItems(section.suggestions),
-          questions: sanitizeItems(section.questions)
+        // Persist to progress
+        const summaryPayload = {
+          overallScore,
+          overallLabel: scoreInfo.label,
+          palette: scoreInfo.color,
+          strengthsCount,
+          suggestionsCount,
+          questionsCount,
+          sectionsNeedingWork,
+          topSuggestions,
+          syntheseGlobale: claudeAnalysis.syntheseGlobale || '',
+          source: claudeRow.source || 'claude'
         }
-        await c.env.DB.prepare(`
-          UPDATE questions SET ai_feedback = ?, quality_score = ?, feedback_updated_at = datetime('now')
-          WHERE progress_id = ? AND question_number = ?
-        `).bind(JSON.stringify(pl), section.percentage, progress.id, section.questionId).run()
-      }
 
-      await c.env.DB.prepare(`
-        UPDATE progress
-        SET ai_score = ?,
-            ai_feedback_json = ?,
-            ai_last_analysis = datetime('now'),
-            updated_at = datetime('now')
-        WHERE id = ?
-      `).bind(overallScore, JSON.stringify(summaryPayload), progress.id).run()
+        await c.env.DB.prepare(`
+          UPDATE progress
+          SET ai_score = ?,
+              ai_feedback_json = ?,
+              ai_last_analysis = datetime('now'),
+              updated_at = datetime('now')
+          WHERE id = ?
+        `).bind(overallScore, JSON.stringify(summaryPayload), progress.id).run()
+
+        // Persist per-question Claude feedback
+        for (const block of claudeAnalysis.blocks) {
+          const pl = {
+            sectionName: block.blockName,
+            questionText: sectionDetailsMap.get(block.questionNumber)?.question,
+            percentage: block.score,
+            scoreLabel: block.level || getScoreLabel(block.score ?? 50).label,
+            strengths: (block.forces || []).map((f: string) => ({ message: f })),
+            suggestions: (block.axes || []).map((a: string) => ({ message: a })),
+            questions: (block.questions || []).map((q: string) => ({ message: q }))
+          }
+          await c.env.DB.prepare(`
+            UPDATE questions SET ai_feedback = ?, quality_score = ?, feedback_updated_at = datetime('now')
+            WHERE progress_id = ? AND question_number = ?
+          `).bind(JSON.stringify(pl), block.score ?? 50, progress.id, block.questionNumber).run()
+        }
+
+      } else {
+        // ── Fallback to original rule-based mock ──
+        analysisSource = 'fallback'
+        const feedback = generateMockFeedback(answersMap)
+        overallScore = calculateOverallScore(feedback)
+        scoreInfo = getScoreLabel(overallScore)
+
+        sectionSummaries = answers.results
+          .filter((a: any) => a.user_response && a.user_response.trim())
+          .map((a: any) => {
+            const sectionName = getSectionName(a.question_number)
+            const details = sectionDetailsMap.get(a.question_number)
+            const sectionFeedbackItems = feedback.filter((item) => item.section === sectionName)
+            const strengths = sectionFeedbackItems.filter((item) => item.type === 'strength')
+            const suggestions = sectionFeedbackItems.filter((item) => item.type === 'suggestion')
+            const questionsItems = sectionFeedbackItems.filter((item) => item.type === 'question')
+            const averageScore = sectionFeedbackItems.length
+              ? Math.round(sectionFeedbackItems.reduce((sum, item) => sum + item.score, 0) / sectionFeedbackItems.length)
+              : 0
+            const percentage = Math.round((averageScore / 5) * 100)
+            const sectionScoreInfo = getScoreLabel(percentage)
+            return {
+              questionId: a.question_number,
+              sectionName,
+              questionText: details?.question,
+              answer: a.user_response,
+              strengths,
+              suggestions,
+              questions: questionsItems,
+              percentage,
+              scoreInfo: sectionScoreInfo,
+              palette: getAnalysisPalette(sectionScoreInfo.color)
+            }
+          })
+
+        strengthsCount = feedback.filter((item) => item.type === 'strength').length
+        suggestionsCount = feedback.filter((item) => item.type === 'suggestion').length
+        questionsCount = feedback.filter((item) => item.type === 'question').length
+        sectionsNeedingWork = sectionSummaries.filter((section) => section.suggestions.length || section.questions.length).length
+
+        topSuggestions = sectionSummaries
+          .flatMap((section) => section.suggestions.map((item) => ({
+            section: section.sectionName,
+            questionId: section.questionId,
+            message: item.message,
+            score: item.score
+          })))
+          .sort((a, b) => a.score - b.score)
+          .slice(0, 3)
+
+        const summaryPayload = {
+          overallScore,
+          overallLabel: scoreInfo.label,
+          palette: scoreInfo.color,
+          strengthsCount,
+          suggestionsCount,
+          questionsCount,
+          sectionsNeedingWork,
+          topSuggestions
+        }
+
+        const sanitizeItems = (items: any[]) =>
+          items.map((item) => ({ message: item.message, score: item.score }))
+
+        for (const section of sectionSummaries) {
+          const pl = {
+            sectionName: section.sectionName,
+            questionId: section.questionId,
+            questionText: section.questionText,
+            percentage: section.percentage,
+            scoreLabel: section.scoreInfo.label,
+            strengths: sanitizeItems(section.strengths),
+            suggestions: sanitizeItems(section.suggestions),
+            questions: sanitizeItems(section.questions)
+          }
+          await c.env.DB.prepare(`
+            UPDATE questions SET ai_feedback = ?, quality_score = ?, feedback_updated_at = datetime('now')
+            WHERE progress_id = ? AND question_number = ?
+          `).bind(JSON.stringify(pl), section.percentage, progress.id, section.questionId).run()
+        }
+
+        await c.env.DB.prepare(`
+          UPDATE progress
+          SET ai_score = ?,
+              ai_feedback_json = ?,
+              ai_last_analysis = datetime('now'),
+              updated_at = datetime('now')
+          WHERE id = ?
+        `).bind(overallScore, JSON.stringify(summaryPayload), progress.id).run()
+      }
     }
 
     const moduleTitle = module.title as string
@@ -3169,6 +3265,37 @@ moduleRoutes.get('/module/:code/analysis', async (c) => {
               <p class="esono-hero__description">
                 L’IA a passé en revue vos réponses et met en évidence vos forces ainsi que les axes à renforcer avant validation.
               </p>
+              {/* Source indicator + Regenerate button */}
+              <div style="display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap;">
+                {analysisSource === 'claude' && (
+                  <span class="esono-badge" style="background: linear-gradient(135deg, #7c3aed20, #6d28d920); color: #7c3aed; border: 1px solid #7c3aed30; font-size: 11px;">
+                    <i class="fas fa-brain" style="margin-right: 4px;"></i>
+                    Analyse par Claude IA
+                  </span>
+                )}
+                {analysisSource === 'sic_engine' && (
+                  <span class="esono-badge" style="background: #06b6d415; color: #0891b2; border: 1px solid #0891b230; font-size: 11px;">
+                    <i class="fas fa-cogs" style="margin-right: 4px;"></i>
+                    Moteur SIC spécialisé
+                  </span>
+                )}
+                {analysisSource === 'fallback' && (
+                  <span class="esono-badge" style="background: #f59e0b15; color: #d97706; border: 1px solid #d9770630; font-size: 11px;">
+                    <i class="fas fa-calculator" style="margin-right: 4px;"></i>
+                    Analyse règles automatiques
+                  </span>
+                )}
+                {!isSicModule && moduleCode !== 'mod3_inputs' && (
+                  <button
+                    id="btn-regenerate-ai"
+                    class="esono-btn esono-btn--ghost esono-btn--sm"
+                    style="font-size: 12px; padding: 4px 12px; cursor: pointer;"
+                  >
+                    <i class="fas fa-rotate"></i>
+                    {analysisSource === 'none' || analysisSource === 'fallback' ? " Lancer l’analyse IA" : " Relancer l’analyse IA"}
+                  </button>
+                )}
+              </div>
             </div>
             <span class="esono-hero__badge">
               <i class="fas fa-robot"></i>
@@ -3254,6 +3381,19 @@ moduleRoutes.get('/module/:code/analysis', async (c) => {
                 </div>
               </div>
             </div>
+
+            {/* Synthèse globale Claude */}
+            {syntheseGlobale && (
+              <div class="esono-note esono-note--info" style="margin-bottom: var(--spacing-lg); border-left: 4px solid #7c3aed; background: #7c3aed08;">
+                <div style="display: flex; align-items: flex-start; gap: var(--spacing-md);">
+                  <i class="fas fa-brain" style="color: #7c3aed; font-size: 1.25rem; margin-top: 2px; flex-shrink: 0;"></i>
+                  <div>
+                    <strong style="display: block; margin-bottom: 4px; color: #7c3aed;">Synthèse globale IA</strong>
+                    <p class="esono-text-sm" style="margin: 0; line-height: 1.6; white-space: pre-line;">{syntheseGlobale}</p>
+                  </div>
+                </div>
+              </div>
+            )}
 
             <div class="esono-split esono-split--3-2">
               <div style="display: flex; flex-direction: column; gap: var(--spacing-lg);">
@@ -3622,6 +3762,49 @@ moduleRoutes.get('/module/:code/analysis', async (c) => {
             </div>
           </div>
         </section>
+
+        {/* Spinner overlay for regeneration */}
+        <div
+          id="ai-spinner-overlay"
+          style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 9999; justify-content: center; align-items: center;"
+        >
+          <div style="background: white; border-radius: 16px; padding: 48px; text-align: center; box-shadow: 0 25px 50px -12px rgba(0,0,0,.25); max-width: 400px;">
+            <div style="width: 56px; height: 56px; border: 4px solid #e5e7eb; border-top-color: #7c3aed; border-radius: 50%; animation: esono-spin 0.8s linear infinite; margin: 0 auto 20px;"></div>
+            <h3 style="font-size: 18px; font-weight: 700; color: #1f2937; margin: 0 0 8px;">Analyse IA en cours…</h3>
+            <p style="font-size: 14px; color: #6b7280; margin: 0;">Claude analyse vos réponses bloc par bloc. Cela peut prendre 15–30 secondes.</p>
+          </div>
+        </div>
+        <style>{`@keyframes esono-spin { to { transform: rotate(360deg) } }`}</style>
+        <script dangerouslySetInnerHTML={{__html: `
+          (function() {
+            var btn = document.getElementById('btn-regenerate-ai');
+            if (!btn) return;
+            btn.addEventListener('click', function() {
+              btn.disabled = true;
+              btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Analyse en cours…';
+              var spinner = document.getElementById('ai-spinner-overlay');
+              if (spinner) spinner.style.display = 'flex';
+              fetch('/api/module/${moduleCode}/regenerate', { method: 'POST', credentials: 'include' })
+                .then(function(r) { return r.json() })
+                .then(function(data) {
+                  if (data.error) {
+                    alert(data.error);
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="fas fa-rotate"></i> Relancer l\'analyse IA';
+                    if (spinner) spinner.style.display = 'none';
+                  } else {
+                    window.location.reload();
+                  }
+                })
+                .catch(function(e) {
+                  alert('Erreur réseau : ' + e.message);
+                  btn.disabled = false;
+                  btn.innerHTML = '<i class="fas fa-rotate"></i> Relancer l\'analyse IA';
+                  if (spinner) spinner.style.display = 'none';
+                });
+            });
+          })();
+        `}} />
       </div>
     )
 

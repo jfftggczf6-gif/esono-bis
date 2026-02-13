@@ -21,6 +21,7 @@ import {
   type LearningModuleDefinition,
 } from './module-content'
 import { getScoreLabel, getSectionName } from './ai-feedback'
+import { analyzeWithClaude, type AnalysisResult, type AnswerInput } from './services/ai-analysis'
 import { analyzeSIC, generateSicDiagnosticHtml, getSicScoreLabel, QUESTION_SECTION_MAP, SIC_SECTION_LABELS, type SicAnalysisResult } from './sic-engine'
 import { generateFullSicDeliverable, type SicDeliverableData } from './sic-deliverable-engine'
 import { generateFullBmcDeliverable, generateBmcDiagnosticHtml, type BmcDeliverableData } from './bmc-deliverable-engine'
@@ -33,6 +34,7 @@ import { analyzePme, generatePmeExcelXml, generatePmePreviewHtml, type PmeInputD
 
 type Bindings = {
   DB: D1Database
+  ANTHROPIC_API_KEY?: string
 }
 
 const MIN_VALIDATION_SCORE = 60
@@ -2321,7 +2323,55 @@ app.post('/api/module/submit-answers', async (c) => {
       WHERE id = ?
     `).bind(progress.id).run()
 
-    return c.json({ success: true })
+    // ── Trigger Claude AI analysis (non-blocking on failure) ──
+    let analysisReady = false
+    let analysisError: string | undefined
+    try {
+      const aiAnswers: AnswerInput[] = answers.map((a: any) => ({
+        question_number: a.question_number,
+        answer: a.answer || ''
+      }))
+
+      const { analysis, source, error } = await analyzeWithClaude(
+        c.env.ANTHROPIC_API_KEY,
+        module_code,
+        aiAnswers
+      )
+
+      // Store analysis in module_analyses table
+      await c.env.DB.prepare(`
+        INSERT INTO module_analyses (user_id, module_code, global_score, global_level, analysis_json, source, error_message, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        ON CONFLICT(user_id, module_code) DO UPDATE SET
+          global_score = excluded.global_score,
+          global_level = excluded.global_level,
+          analysis_json = excluded.analysis_json,
+          source = excluded.source,
+          error_message = excluded.error_message,
+          updated_at = datetime('now')
+      `).bind(
+        payload.userId,
+        module_code,
+        analysis.globalScore,
+        analysis.globalLevel,
+        JSON.stringify(analysis),
+        source,
+        error || null
+      ).run()
+
+      // Also update progress.ai_score
+      await c.env.DB.prepare(`
+        UPDATE progress SET ai_score = ?, ai_last_analysis = datetime('now'), updated_at = datetime('now') WHERE id = ?
+      `).bind(analysis.globalScore, progress.id).run()
+
+      analysisReady = true
+      if (error) analysisError = error
+    } catch (aiErr: any) {
+      console.error('Claude analysis error on submit:', aiErr.message || aiErr)
+      analysisError = 'Analyse IA temporairement indisponible'
+    }
+
+    return c.json({ success: true, analysisReady, analysisError })
   } catch (error) {
     console.error('Submit answers error:', error)
     return c.json({ error: 'Erreur serveur' }, 500)
@@ -5089,6 +5139,200 @@ app.get('/api/inputs/diagnostic', async (c) => {
   } catch (error) {
     console.error('Inputs diagnostic error:', error)
     return c.json({ error: 'Erreur serveur' }, 500)
+  }
+})
+
+// ═══════════════════════════════════════════════════════════════════
+// Claude AI Analysis Endpoints
+// ═══════════════════════════════════════════════════════════════════
+
+// GET /api/module/:moduleCode/analysis — Retrieve stored Claude analysis
+app.get('/api/module/:moduleCode/analysis', async (c) => {
+  try {
+    const token = getCookie(c, 'auth_token')
+    if (!token) return c.json({ error: 'Non authentifie' }, 401)
+    const payload = await verifyToken(token)
+    if (!payload) return c.json({ error: 'Token invalide' }, 401)
+
+    const moduleCode = c.req.param('moduleCode')
+
+    const row = await c.env.DB.prepare(`
+      SELECT id, global_score, global_level, analysis_json, source, error_message, created_at, updated_at
+      FROM module_analyses
+      WHERE user_id = ? AND module_code = ?
+    `).bind(payload.userId, moduleCode).first()
+
+    if (!row) {
+      return c.json({
+        success: true,
+        analysis: null,
+        generatedAt: null,
+        message: 'Aucune analyse disponible. Soumettez vos reponses ou lancez une analyse.'
+      })
+    }
+
+    let analysis: AnalysisResult | null = null
+    try {
+      analysis = JSON.parse(row.analysis_json as string)
+    } catch {
+      return c.json({ error: 'Analyse corrompue en base' }, 500)
+    }
+
+    return c.json({
+      success: true,
+      analysis,
+      source: row.source,
+      globalScore: row.global_score,
+      globalLevel: row.global_level,
+      generatedAt: row.updated_at || row.created_at,
+      errorMessage: row.error_message || null
+    })
+  } catch (error) {
+    console.error('GET analysis error:', error)
+    return c.json({ error: 'Erreur serveur' }, 500)
+  }
+})
+
+// POST /api/module/:moduleCode/regenerate — Re-run Claude analysis
+app.post('/api/module/:moduleCode/regenerate', async (c) => {
+  try {
+    const token = getCookie(c, 'auth_token')
+    if (!token) return c.json({ error: 'Non authentifie' }, 401)
+    const payload = await verifyToken(token)
+    if (!payload) return c.json({ error: 'Token invalide' }, 401)
+
+    const moduleCode = c.req.param('moduleCode')
+
+    // ── Rate limiting: max 3 regenerations per module per hour ──
+    const existing = await c.env.DB.prepare(`
+      SELECT regenerate_count, last_regenerate_at
+      FROM module_analyses
+      WHERE user_id = ? AND module_code = ?
+    `).bind(payload.userId, moduleCode).first()
+
+    if (existing && existing.last_regenerate_at) {
+      const lastRegen = new Date(existing.last_regenerate_at as string).getTime()
+      const oneHourAgo = Date.now() - 3600_000
+      if (lastRegen > oneHourAgo && (existing.regenerate_count as number) >= 3) {
+        return c.json({
+          error: 'Limite atteinte : maximum 3 analyses par heure par module. Reessayez plus tard.',
+          retryAfter: Math.ceil((lastRegen + 3600_000 - Date.now()) / 1000)
+        }, 429)
+      }
+      // Reset counter if last regen was more than 1 hour ago
+      if (lastRegen <= oneHourAgo) {
+        await c.env.DB.prepare(`
+          UPDATE module_analyses SET regenerate_count = 0 WHERE user_id = ? AND module_code = ?
+        `).bind(payload.userId, moduleCode).run()
+      }
+    }
+
+    // ── Fetch current answers from DB ──
+    const module = await c.env.DB.prepare(`SELECT id FROM modules WHERE module_code = ?`).bind(moduleCode).first()
+    if (!module) return c.json({ error: 'Module non trouve' }, 404)
+
+    const progress = await c.env.DB.prepare(`
+      SELECT id FROM progress WHERE user_id = ? AND module_id = ?
+    `).bind(payload.userId, module.id).first()
+    if (!progress) return c.json({ error: 'Aucune progression trouvee. Completez d\'abord le module.' }, 404)
+
+    const answersResult = await c.env.DB.prepare(`
+      SELECT question_number, user_response
+      FROM questions
+      WHERE progress_id = ?
+      ORDER BY question_number
+    `).bind(progress.id).all()
+
+    const aiAnswers: AnswerInput[] = (answersResult.results ?? [])
+      .filter((r: any) => r.user_response && r.user_response.trim())
+      .map((r: any) => ({
+        question_number: Number(r.question_number),
+        answer: r.user_response as string
+      }))
+
+    if (aiAnswers.length === 0) {
+      return c.json({ error: 'Aucune reponse trouvee. Remplissez vos blocs avant de lancer l\'analyse.' }, 400)
+    }
+
+    // ── Call Claude ──
+    const { analysis, source, error } = await analyzeWithClaude(
+      c.env.ANTHROPIC_API_KEY,
+      moduleCode,
+      aiAnswers
+    )
+
+    // ── Store result ──
+    await c.env.DB.prepare(`
+      INSERT INTO module_analyses (user_id, module_code, global_score, global_level, analysis_json, source, error_message, regenerate_count, last_regenerate_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'))
+      ON CONFLICT(user_id, module_code) DO UPDATE SET
+        global_score = excluded.global_score,
+        global_level = excluded.global_level,
+        analysis_json = excluded.analysis_json,
+        source = excluded.source,
+        error_message = excluded.error_message,
+        regenerate_count = module_analyses.regenerate_count + 1,
+        last_regenerate_at = datetime('now'),
+        updated_at = datetime('now')
+    `).bind(
+      payload.userId,
+      moduleCode,
+      analysis.globalScore,
+      analysis.globalLevel,
+      JSON.stringify(analysis),
+      source,
+      error || null
+    ).run()
+
+    // Update progress score
+    await c.env.DB.prepare(`
+      UPDATE progress SET ai_score = ?, ai_last_analysis = datetime('now'), updated_at = datetime('now') WHERE id = ?
+    `).bind(analysis.globalScore, progress.id).run()
+
+    // Also persist per-question feedback from Claude analysis
+    for (const block of analysis.blocks) {
+      const feedbackPayload = JSON.stringify({
+        sectionName: block.blockName,
+        strengths: block.forces,
+        suggestions: block.axes,
+        questions: block.questions,
+        percentage: block.score,
+        scoreLabel: block.level
+      })
+      await c.env.DB.prepare(`
+        UPDATE questions SET ai_feedback = ?, quality_score = ?, feedback_updated_at = datetime('now')
+        WHERE progress_id = ? AND question_number = ?
+      `).bind(feedbackPayload, block.score, progress.id, block.questionNumber).run()
+    }
+
+    // Update global feedback
+    await c.env.DB.prepare(`
+      UPDATE progress SET ai_feedback_json = ?, updated_at = datetime('now') WHERE id = ?
+    `).bind(JSON.stringify({
+      overallScore: analysis.globalScore,
+      overallLabel: analysis.globalLevel,
+      strengthsCount: analysis.forcesCount,
+      suggestionsCount: analysis.axesCount,
+      questionsCount: analysis.questionsCount,
+      sectionsNeedingWork: analysis.blocksToConsolidate,
+      topSuggestions: analysis.recommandationsPrioritaires.slice(0, 3).map((msg, i) => ({
+        section: 'Recommandation',
+        questionId: i + 1,
+        message: msg,
+        score: 1
+      }))
+    }), progress.id).run()
+
+    return c.json({
+      success: true,
+      analysis,
+      source,
+      generatedAt: new Date().toISOString(),
+      errorMessage: error || null
+    })
+  } catch (error: any) {
+    console.error('Regenerate analysis error:', error)
+    return c.json({ error: error.message || 'Erreur serveur' }, 500)
   }
 })
 
