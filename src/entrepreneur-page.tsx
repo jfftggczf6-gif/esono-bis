@@ -1405,6 +1405,7 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
       btnSub = '(3/3 inputs — 7/7 livrables · Analyse complète)'; btnClass = 'ev2-btn--green'; btnDisabled = false; btnTooltip = 'Tous les documents sont uploadés. Génération complète des 7 livrables.'
     }
 
+    // ── Build inline module cards HTML (pre-computed to avoid nested template literals) ──
     // ── Build HTML ──
     const html = `<!DOCTYPE html>
 <html lang="fr">
@@ -1520,10 +1521,10 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
     
     /* ═══ 3-COLUMN LAYOUT — fills remaining viewport ═══ */
     .ev2-layout { display: none; }
-    .ev2-layout--active { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+    .ev2-layout--active { display: flex; height: calc(100vh - 160px); overflow: hidden; }
     
-    /* ── App shell (post-generation): viewport-locked, no page scroll ── */
-    .ev2-app-shell { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+    /* ── App shell (post-generation): flex layout, page scrollable for module cards below ── */
+    .ev2-app-shell { display: flex; flex-direction: column; min-height: 100vh; }
     
     /* ── Left: Chat & Iterations ── */
     .ev2-left { width: 270px; min-width: 270px; background: #ffffff; border-right: 1px solid #e5e7eb; display: flex; flex-direction: column; overflow: hidden; }
@@ -1871,7 +1872,7 @@ ${hasGenerated ? `<body class="ev2-app-shell">` : `<body>`}
   </section>
 
   <!-- ═══ MODULE CARDS (only shown pre-generation) ═══ -->
-  <section class="ev2-modules ${hasGenerated ? 'ev2-modules--hidden' : ''}">
+  <section class="ev2-modules">
     <div class="ev2-modules__title">📚 Détails par module</div>
     <div class="ev2-modules__grid">
       ${renderModuleCard({
