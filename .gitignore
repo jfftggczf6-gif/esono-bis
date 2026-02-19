@@ -44,3 +44,5 @@ pids/
 *.bak
 *.tar.gz
 *.zip
+ANTHROPIC_API_KEY=sk-ant-api03-***
+.dev.vars

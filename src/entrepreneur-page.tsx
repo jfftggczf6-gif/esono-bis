@@ -5,6 +5,7 @@
 import { Hono } from 'hono'
 import { getCookie } from 'hono/cookie'
 import { verifyToken } from './auth'
+import { orchestrateGeneration, loadKBContext, type OrchestrationResult } from './agents/ai-agents'
 
 type Bindings = {
   DB: D1Database
@@ -524,8 +525,9 @@ entrepreneurRoutes.post('/api/ai/generate-all', async (c) => {
       .map(dt => ({ type: dt.type, label: dt.label, missing: missingDeps(dt.deps, uploadedCats) }))
 
     // Get user info
-    const user = await c.env.DB.prepare('SELECT name, email FROM users WHERE id = ?').bind(payload.userId).first()
-    const userName = user?.name || 'Entrepreneur'
+    const user = await c.env.DB.prepare('SELECT name, email, country FROM users WHERE id = ?').bind(payload.userId).first()
+    const userName = (user?.name as string) || 'Entrepreneur'
+    const userCountry = (user?.country as string) || undefined
 
     // Get current version
     const lastIter = await c.env.DB.prepare(
@@ -533,128 +535,51 @@ entrepreneurRoutes.post('/api/ai/generate-all', async (c) => {
     ).bind(payload.userId).first()
     const newVersion = ((lastIter?.maxV as number) || 0) + 1
 
-    // Build context from uploads
-    const uploadContext = uploadData.map(u => {
+    // Build document texts from uploads
+    const documentTexts: Record<string, string> = {}
+    for (const u of uploadData) {
       const text = u.extracted_text || ''
-      const preview = text.startsWith('base64:') ? `[Fichier binaire: ${u.filename}]` : text.slice(0, 2000)
-      return `=== ${u.category.toUpperCase()}: ${u.filename} ===\n${preview}`
-    }).join('\n\n')
-
-    // Build mega-prompt for Claude
-    const systemPrompt = `Tu es un expert en Investment Readiness pour les PME africaines. Tu analyses les documents fournis (BMC, SIC, Inputs Financiers) et génères 7 livrables structurés.
-
-IMPORTANT: Tu DOIS répondre uniquement avec un JSON valide (pas de markdown, pas de commentaires).
-
-Le JSON doit avoir cette structure exacte:
-{
-  "score_global": <number 0-100>,
-  "scores_dimensions": {
-    "modele_economique": <number 0-100>,
-    "impact_social": <number 0-100>,
-    "viabilite_financiere": <number 0-100>,
-    "equipe_gouvernance": <number 0-100>,
-    "maturite_operationnelle": <number 0-100>
-  },
-  "deliverables": {
-    "diagnostic": {
-      "score": <number>,
-      "strengths": ["...", "..."],
-      "weaknesses": ["...", "..."],
-      "recommendations": ["...", "..."],
-      "dimensions": [
-        {"name": "Modèle Économique", "score": <number>, "analysis": "..."},
-        {"name": "Impact Social", "score": <number>, "analysis": "..."},
-        {"name": "Viabilité Financière", "score": <number>, "analysis": "..."},
-        {"name": "Équipe & Gouvernance", "score": <number>, "analysis": "..."},
-        {"name": "Maturité Opérationnelle", "score": <number>, "analysis": "..."}
-      ]
-    },
-    "framework": {
-      "score": <number>,
-      "sections": [{"title": "...", "content": "...", "score": <number>}]
-    },
-    "bmc_analysis": {
-      "score": <number>,
-      "blocks": [{"name": "...", "analysis": "...", "score": <number>, "recommendations": ["..."]}]
-    },
-    "sic_analysis": {
-      "score": <number>,
-      "pillars": [{"name": "...", "analysis": "...", "score": <number>, "recommendations": ["..."]}]
-    },
-    "plan_ovo": {
-      "score": <number>,
-      "projections": {"year1": {}, "year3": {}, "year5": {}},
-      "analysis": "..."
-    },
-    "business_plan": {
-      "score": <number>,
-      "sections": [{"title": "...", "content": "..."}]
-    },
-    "odd": {
-      "score": <number>,
-      "criteria": [{"name": "...", "status": "...", "comment": "..."}]
+      documentTexts[u.category] = text.startsWith('base64:') ? `[Fichier binaire: ${u.filename}]` : text.slice(0, 6000)
     }
-  }
-}`
 
-    const userPrompt = `Entrepreneur: ${userName}
-Documents fournis:
-${uploadContext}
-
-Analyse ces documents et génère les 7 livrables Investment Readiness. Score global sur 100.`
-
+    // ═══ MULTI-AGENT ORCHESTRATION ═══
+    const apiKey = c.env.ANTHROPIC_API_KEY
     let result: any = null
     let source = 'fallback'
+    let agentsUsed: string[] = []
+    let agentErrors: string[] = []
 
-    // Try Claude API
-    const apiKey = c.env.ANTHROPIC_API_KEY
-    if (apiKey && apiKey !== 'sk-ant-PLACEHOLDER') {
-      try {
-        const controller = new AbortController()
-        const timeout = setTimeout(() => controller.abort(), 30000)
+    try {
+      const orchestration: OrchestrationResult = await orchestrateGeneration(
+        c.env.DB,
+        apiKey,
+        payload.userId,
+        userName,
+        userCountry,
+        documentTexts,
+        uploadedCats,
+      )
 
-        const response = await fetch('https://api.anthropic.com/v1/messages', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': apiKey,
-            'anthropic-version': '2023-06-01'
-          },
-          body: JSON.stringify({
-            model: 'claude-sonnet-4-20250514',
-            max_tokens: 8192,
-            system: systemPrompt,
-            messages: [{ role: 'user', content: userPrompt }]
-          }),
-          signal: controller.signal
-        })
-
-        clearTimeout(timeout)
-
-        if (response.ok) {
-          const data = await response.json() as any
-          const text = data?.content?.[0]?.text || ''
-          // Extract JSON from response
-          let jsonStr = text
-          const jsonMatch = text.match(/\{[\s\S]*\}/)
-          if (jsonMatch) jsonStr = jsonMatch[0]
-          
-          try {
-            result = JSON.parse(jsonStr)
-            source = 'claude'
-          } catch {
-            console.error('Failed to parse Claude JSON response')
-          }
+      if (orchestration.source !== 'fallback' && Object.keys(orchestration.deliverables).length > 0) {
+        result = {
+          score_global: orchestration.score_global,
+          scores_dimensions: orchestration.scores_dimensions,
+          deliverables: orchestration.deliverables,
         }
-      } catch (err: any) {
-        console.error('Claude API error:', err.message)
+        source = orchestration.source
+        agentsUsed = orchestration.agentsUsed
+        agentErrors = orchestration.errors
       }
+    } catch (err: any) {
+      console.error('Orchestration error:', err.message)
+      agentErrors.push(`orchestration: ${err.message}`)
     }
 
-    // Fallback: rich rule-based generation
+    // Fallback: rich rule-based generation (if agents failed or no API key)
     if (!result) {
       source = 'fallback'
       result = buildFallbackResult(hasBmc, hasSic, hasInputs, userName, uploadData.length)
+      agentsUsed = ['fallback']
     }
 
     // Store iteration
@@ -662,7 +587,7 @@ Analyse ces documents et génère les 7 livrables Investment Readiness. Score gl
     await c.env.DB.prepare(`
       INSERT INTO iterations (id, user_id, version, score_global, scores_dimensions, trigger_type, trigger_message, created_at)
       VALUES (?, ?, ?, ?, ?, 'initial', ?, datetime('now'))
-    `).bind(iterationId, payload.userId, newVersion, result.score_global, JSON.stringify(result.scores_dimensions), `Génération v${newVersion} (${source})`).run()
+    `).bind(iterationId, payload.userId, newVersion, result.score_global, JSON.stringify(result.scores_dimensions), `Génération v${newVersion} (${source}) | Agents: ${agentsUsed.join(', ')}`).run()
 
     // Store only deliverables whose dependencies are met
     let generatedCount = 0
@@ -681,6 +606,8 @@ Analyse ces documents et génère les 7 livrables Investment Readiness. Score gl
       success: true,
       iteration: { id: iterationId, version: newVersion, score_global: result.score_global },
       source,
+      agentsUsed,
+      agentErrors: agentErrors.length > 0 ? agentErrors : undefined,
       deliverableCount: generatedCount,
       totalPossible: 7,
       generated: generableTypes,
@@ -744,7 +671,7 @@ entrepreneurRoutes.post('/api/chat/message', async (c) => {
 
     // Get uploads to know which categories are present
     const uploadsRes = await c.env.DB.prepare(
-      'SELECT category FROM uploads WHERE user_id = ?'
+      'SELECT category, filename, extracted_text FROM uploads WHERE user_id = ?'
     ).bind(payload.userId).all()
     const uploadedCats = new Set(((uploadsRes.results || []) as any[]).map(u => u.category))
 
@@ -761,77 +688,60 @@ entrepreneurRoutes.post('/api/chat/message', async (c) => {
       let toRegenerate: string[] = []
       
       if (targetDeliv) {
-        // Regenerate the specific deliverable mentioned
         toRegenerate = [targetDeliv]
       } else {
-        // For generic corrections, regenerate cross-cutting deliverables
         toRegenerate = ['diagnostic', 'framework', 'business_plan']
         if (uploadedCats.has('inputs')) toRegenerate.push('plan_ovo')
       }
 
-      // Filter to only deliverables whose deps are met
       toRegenerate = toRegenerate.filter(dt => {
         const def = DELIVERABLE_TYPES.find(d => d.type === dt)
         return def ? canGenerate(def.deps, uploadedCats) : false
       })
 
       if (toRegenerate.length > 0) {
-        // Get user info
-        const user = await c.env.DB.prepare('SELECT name FROM users WHERE id = ?').bind(payload.userId).first()
+        const user = await c.env.DB.prepare('SELECT name, country FROM users WHERE id = ?').bind(payload.userId).first()
         const userName = (user?.name as string) || 'Entrepreneur'
+        const userCountry = (user?.country as string) || undefined
 
-        // Build new result for the affected deliverables
         const hasBmc = uploadedCats.has('bmc')
         const hasSic = uploadedCats.has('sic')
         const hasInputs = uploadedCats.has('inputs')
 
-        // Try Claude for targeted regeneration
-        let regenResult: any = null
-        if (apiKey && apiKey !== 'sk-ant-PLACEHOLDER') {
-          try {
-            const controller = new AbortController()
-            const timeout = setTimeout(() => controller.abort(), 25000)
-
-            const regenPrompt = `L'entrepreneur "${userName}" demande une ${intent === 'correction' ? 'correction' : 'amélioration avec plus de détails'} sur ses livrables.
-Son message : "${message}"
-Contexte : ${context || 'diagnostic'}
-Livrables actuels : ${delivContext}
-
-Génère UNIQUEMENT les livrables suivants au format JSON : ${toRegenerate.join(', ')}
-Utilise le même format JSON que la génération initiale. Ne génère QUE les types demandés.
-IMPORTANT : Améliore les scores et le contenu en tenant compte de la demande.`
-
-            const res = await fetch('https://api.anthropic.com/v1/messages', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'x-api-key': apiKey,
-                'anthropic-version': '2023-06-01'
-              },
-              body: JSON.stringify({
-                model: 'claude-sonnet-4-20250514',
-                max_tokens: 4096,
-                system: `Tu es un expert Investment Readiness. Réponds UNIQUEMENT avec un JSON valide contenant un objet "deliverables" avec les types demandés et un "score_global" mis à jour.`,
-                messages: [{ role: 'user', content: regenPrompt }]
-              }),
-              signal: controller.signal
-            })
-            clearTimeout(timeout)
-
-            if (res.ok) {
-              const data = await res.json() as any
-              const text = data?.content?.[0]?.text || ''
-              const jsonMatch = text.match(/\{[\s\S]*\}/)
-              if (jsonMatch) {
-                try { regenResult = JSON.parse(jsonMatch[0]) } catch {}
-              }
-            }
-          } catch (err: any) {
-            console.error('Chat regen Claude error:', err.message)
-          }
+        // Build document texts
+        const uploadData = (uploadsRes.results || []) as any[]
+        const documentTexts: Record<string, string> = {}
+        for (const u of uploadData) {
+          const text = u.extracted_text || ''
+          documentTexts[u.category] = text.startsWith('base64:') ? `[Fichier binaire: ${u.filename}]` : text.slice(0, 6000)
         }
 
-        // Fallback regeneration: use buildFallbackResult and pick only affected types
+        // ═══ USE MULTI-AGENT ORCHESTRATION FOR REGENERATION ═══
+        let regenResult: any = null
+        try {
+          const orchestration = await orchestrateGeneration(
+            c.env.DB, apiKey, payload.userId, userName, userCountry,
+            documentTexts, uploadedCats, message // pass user message as custom instructions
+          )
+
+          if (orchestration.source !== 'fallback' && Object.keys(orchestration.deliverables).length > 0) {
+            regenResult = {
+              score_global: orchestration.score_global,
+              scores_dimensions: orchestration.scores_dimensions,
+              deliverables: {} as any,
+            }
+            // Only pick the deliverables we want to regenerate
+            for (const t of toRegenerate) {
+              if (orchestration.deliverables[t]) {
+                regenResult.deliverables[t] = orchestration.deliverables[t]
+              }
+            }
+          }
+        } catch (err: any) {
+          console.error('Chat regen orchestration error:', err.message)
+        }
+
+        // Fallback regeneration
         if (!regenResult) {
           const full = buildFallbackResult(hasBmc, hasSic, hasInputs, userName, uploadedCats.size)
           regenResult = {
@@ -881,8 +791,21 @@ IMPORTANT : Améliore les scores et le contenu en tenant compte de la demande.`
         responseText = `Je comprends votre demande de ${intent === 'correction' ? 'correction' : 'détail supplémentaire'}, mais les documents nécessaires ne sont pas encore tous uploadés. Veuillez compléter vos uploads puis relancez la génération.`
       }
     }
-    // ── Case 3: Simple question → Answer without regeneration ──
+    // ── Case 3: Simple question → Answer with KB context ──
     else {
+      // Load KB context for enriched answers
+      let kbSummary = ''
+      try {
+        const kbContext = await loadKBContext(c.env.DB)
+        if (kbContext.funders.length > 0) {
+          kbSummary = `\n\nBAILLEURS DISPONIBLES: ${kbContext.funders.map((f: any) => `${f.name} (${f.type}, ticket ${f.typical_ticket_min}-${f.typical_ticket_max} EUR)`).join('; ')}`
+        }
+        if (kbContext.benchmarks.length > 0) {
+          const sectors = [...new Set(kbContext.benchmarks.map((b: any) => b.sector))]
+          kbSummary += `\nBENCHMARKS SECTORIELS: ${sectors.join(', ')}`
+        }
+      } catch { /* KB not available, continue */ }
+
       if (apiKey && apiKey !== 'sk-ant-PLACEHOLDER') {
         try {
           const controller = new AbortController()
@@ -903,7 +826,7 @@ IMPORTANT : Améliore les scores et le contenu en tenant compte de la demande.`
             body: JSON.stringify({
               model: 'claude-sonnet-4-20250514',
               max_tokens: 2048,
-              system: `Tu es un conseiller Investment Readiness pour PME africaines. L'entrepreneur te pose des questions sur ses livrables. Contexte livrables: ${delivContext}. Documents uploadés : ${Array.from(uploadedCats).join(', ') || 'Aucun'}. Réponds en français, de manière concise et actionnable. ${context ? `Livrable actuellement consulté: ${context}` : ''}`,
+              system: `Tu es un conseiller Investment Readiness pour PME africaines. L'entrepreneur te pose des questions sur ses livrables. Contexte livrables: ${delivContext}. Documents uploadés : ${Array.from(uploadedCats).join(', ') || 'Aucun'}. ${kbSummary}\n\nRéponds en français, de manière concise et actionnable. ${context ? `Livrable actuellement consulté: ${context}` : ''}`,
               messages
             }),
             signal: controller.signal
@@ -920,7 +843,7 @@ IMPORTANT : Améliore les scores et le contenu en tenant compte de la demande.`
         }
       }
 
-      // Fallback response
+      // Fallback response (enhanced with KB data)
       if (!responseText) {
         const lowerMsg = message.toLowerCase()
         if (lowerMsg.includes('score') || lowerMsg.includes('note')) {
@@ -931,16 +854,18 @@ IMPORTANT : Améliore les scores et le contenu en tenant compte de la demande.`
           responseText = `Pour renforcer votre volet financier :\n\n- **Projections** : Fournissez des projections sur 3-5 ans\n- **Hypothèses** : Documentez vos hypothèses de base\n- **KPIs** : Identifiez vos métriques clés\n- **Break-even** : Calculez votre seuil de rentabilité\n\nUn fichier Excel structuré est recommandé.`
         } else if (lowerMsg.includes('sic') || lowerMsg.includes('impact')) {
           responseText = `Pour renforcer votre SIC :\n\n- **Vision/Mission** : Alignez avec les ODD prioritaires\n- **Indicateurs d'impact** : Définissez des indicateurs SMART\n- **Théorie du changement** : Formalisez le lien action → résultat\n- **Plan de déploiement** : Détaillez les phases sur 36 mois\n\nRe-uploadez votre SIC mis à jour pour une nouvelle analyse.`
+        } else if (lowerMsg.includes('bailleur') || lowerMsg.includes('financement') || lowerMsg.includes('funder') || lowerMsg.includes('subvention')) {
+          responseText = `🏦 **Bailleurs adaptés aux PME africaines :**\n\n- **Enabel** : Subventions 10K-500K EUR, forte présence Afrique de l'Ouest\n- **GIZ** : Matching funds + assistance technique, programme Make-IT in Africa\n- **BAD** : Prêts/equity 50K-10M EUR, programme AFAWA (femmes entrepreneures)\n- **AFD/Proparco** : 25K-5M EUR, programme Choose Africa\n- **Banque Mondiale** : Via IFC pour le secteur privé\n\n💡 Votre score d'Investment Readiness détermine votre éligibilité. Un score >70/100 ouvre les portes des financements les plus compétitifs.\n\nPosez-moi une question spécifique sur un bailleur pour plus de détails.`
         } else if (lowerMsg.includes('dépendance') || lowerMsg.includes('manque') || lowerMsg.includes('quoi uploader')) {
           const missing = []
           if (!uploadedCats.has('bmc')) missing.push('BMC (Business Model Canvas)')
           if (!uploadedCats.has('sic')) missing.push('SIC (Stratégie d\'Impact & Croissance)')
           if (!uploadedCats.has('inputs')) missing.push('Inputs Financiers')
           responseText = missing.length > 0
-            ? `Il vous manque : **${missing.join(', ')}**.\n\nAvec les 3 documents obligatoires, l'IA pourra générer les 7 livrables complets. Actuellement, seuls les livrables dont les dépendances sont satisfaites peuvent être générés.`
+            ? `Il vous manque : **${missing.join(', ')}**.\n\nAvec les 3 documents obligatoires, l'IA pourra générer les 7 livrables complets.`
             : `Tous les documents obligatoires sont uploadés ! ✅ Vous pouvez générer ou re-générer l'ensemble des 7 livrables.`
         } else {
-          responseText = `Merci pour votre message. Voici mes recommandations :\n\n1. Assurez-vous que tous vos documents sont à jour\n2. Vérifiez la cohérence entre votre BMC, votre SIC et vos projections financières\n3. Utilisez le bouton "Générer" pour obtenir une nouvelle analyse après mise à jour\n\nPosez-moi une question spécifique sur un livrable pour des conseils plus ciblés.\n\n💡 **Astuce** : Vous pouvez me demander de "corriger" ou "détailler" un livrable spécifique et je relancerai la génération automatiquement.`
+          responseText = `Merci pour votre message. Voici mes recommandations :\n\n1. Assurez-vous que tous vos documents sont à jour\n2. Vérifiez la cohérence entre votre BMC, SIC et projections financières\n3. Utilisez le bouton "Générer" pour obtenir une nouvelle analyse\n\n💡 **Astuce** : Demandez-moi des infos sur les **bailleurs de fonds**, les **benchmarks sectoriels**, ou demandez de "corriger" un livrable spécifique.`
         }
       }
     }

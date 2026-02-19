@@ -7,6 +7,7 @@ import { getUserWithProgress } from './dashboard'
 import { getCookieOptions } from './cookies'
 import { moduleRoutes, renderEsanoLayout } from './module-routes'
 import { entrepreneurRoutes } from './entrepreneur-page'
+import { kbRoutes } from './agents/kb-routes'
 import {
   getGuidedQuestionsForModule,
   getLearningStageKeysForModule,
@@ -891,6 +892,9 @@ app.route('/', moduleRoutes)
 
 // Mount entrepreneur V2 routes
 app.route('/', entrepreneurRoutes)
+
+// Mount Knowledge Base routes
+app.route('/', kbRoutes)
 
 // Landing Page - A1
 app.get('/', (c) => {
