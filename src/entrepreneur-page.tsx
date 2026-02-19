@@ -1422,7 +1422,7 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
     a:hover { text-decoration: underline; color: #2a4d7a; }
     
     /* ── App Header ── */
-    .ev2-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 20px; background: #ffffff; border-bottom: 1px solid #e5e7eb; position: sticky; top: 0; z-index: 100; box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05); }
+    .ev2-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 20px; background: #ffffff; border-bottom: 1px solid #e5e7eb; position: sticky; top: 0; z-index: 100; box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05); flex-shrink: 0; }
     .ev2-header__brand { font-size: 18px; font-weight: 800; color: #1e3a5f; letter-spacing: 1px; text-decoration: none; }
     .ev2-header__right { display: flex; align-items: center; gap: 14px; }
     .ev2-header__user { font-size: 12px; color: #6b7280; }
@@ -1431,7 +1431,7 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
     .ev2-btn-sm:hover { border-color: #1e3a5f; color: #1e3a5f; background: #f3f4f6; }
     .ev2-btn-sm--danger:hover { border-color: #dc2626; color: #dc2626; background: #fee2e2; }
     
-    /* ── Score Banner ── */
+    /* ── Score Banner (full — pre-generation) ── */
     .ev2-score { background: linear-gradient(135deg, #1e3a5f 0%, #2a4d7a 100%); border-radius: 12px; padding: 28px 32px; margin: 16px 20px; text-align: center; position: relative; overflow: hidden; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); }
     .ev2-score::before { content: ''; position: absolute; inset: 0; background: radial-gradient(circle at 30% 50%, rgba(201,169,98,0.12) 0%, transparent 60%); }
     .ev2-score * { position: relative; }
@@ -1444,17 +1444,28 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
     .ev2-score__placeholder { font-size: 44px; font-weight: 800; color: rgba(255,255,255,0.3); }
     .ev2-score__placeholder-text { font-size: 13px; color: rgba(255,255,255,0.5); margin-top: 6px; }
     
-    /* ── Upload Section (collapsible when generated) ── */
+    /* ── Score Banner COMPACT (post-generation — thin strip) ── */
+    .ev2-score--compact { padding: 8px 20px; margin: 0; border-radius: 0; display: flex; align-items: center; justify-content: center; gap: 16px; flex-shrink: 0; }
+    .ev2-score--compact::before { display: none; }
+    .ev2-score--compact .ev2-score__title { margin-bottom: 0; font-size: 10px; letter-spacing: 2px; }
+    .ev2-score--compact .ev2-score__value { font-size: 22px; margin-bottom: 0; }
+    .ev2-score--compact .ev2-score__bar { max-width: 120px; margin: 0; height: 4px; }
+    .ev2-score--compact .ev2-score__meta { margin-top: 0; font-size: 10px; }
+    
+    /* ── Upload Section ── */
     .ev2-upload-section { padding: 0 20px 16px; }
+    .ev2-upload-section--compact { padding: 0; flex-shrink: 0; }
     .ev2-upload-toggle { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: #ffffff; border-radius: 10px; cursor: pointer; margin-bottom: 12px; border: 1px solid #e5e7eb; transition: all 0.2s; box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05); }
     .ev2-upload-toggle:hover { border-color: #d1d5db; }
+    .ev2-upload-toggle--bar { margin: 0; border-radius: 0; border-left: 0; border-right: 0; border-top: 0; padding: 6px 20px; font-size: 12px; box-shadow: none; border-bottom: 1px solid #e5e7eb; }
     .ev2-upload-toggle__left { display: flex; align-items: center; gap: 10px; font-size: 13px; font-weight: 600; color: #1f2937; }
     .ev2-upload-toggle__badge { background: #059669; color: white; padding: 2px 8px; border-radius: 99px; font-size: 11px; font-weight: 600; }
     .ev2-upload-toggle__chevron { color: #9ca3af; transition: transform 0.3s; font-size: 12px; }
     .ev2-upload-toggle--open .ev2-upload-toggle__chevron { transform: rotate(180deg); }
     .ev2-upload-body { overflow: hidden; transition: max-height 0.4s ease; }
-    .ev2-upload-body--collapsed { max-height: 0; }
+    .ev2-upload-body--collapsed { max-height: 0; padding: 0; }
     .ev2-upload-body--open { max-height: 800px; }
+    .ev2-upload-body--compact { padding: 0 20px; }
     
     .ev2-upload-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 12px; }
     .ev2-upload-card { background: #ffffff; border: 2px dashed #d1d5db; border-radius: 10px; padding: 20px; text-align: center; cursor: pointer; transition: all 0.25s; position: relative; min-height: 160px; display: flex; flex-direction: column; align-items: center; justify-content: center; }
@@ -1485,6 +1496,8 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
     
     /* ── Generate Button ── */
     .ev2-gen { text-align: center; padding: 4px 20px 24px; }
+    .ev2-gen--compact { padding: 0; flex-shrink: 0; border-bottom: 1px solid #e5e7eb; }
+    .ev2-gen--compact .ev2-gen__btn { border-radius: 0; width: 100%; font-size: 12px; padding: 8px 20px; letter-spacing: 0; }
     .ev2-gen__btn { display: inline-flex; flex-direction: column; align-items: center; gap: 3px; padding: 14px 44px; border: none; border-radius: 8px; font-family: inherit; cursor: pointer; transition: all 0.3s; font-size: 15px; font-weight: 700; letter-spacing: 0.5px; }
     .ev2-gen__btn:disabled { cursor: not-allowed; }
     .ev2-gen__sub { font-size: 11px; font-weight: 400; opacity: 0.8; }
@@ -1505,17 +1518,20 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
     .ev2-loading__step--done { color: #059669; }
     @keyframes ev2spin { to { transform: rotate(360deg); } }
     
-    /* ═══ 3-COLUMN LAYOUT ═══ */
-    .ev2-layout { display: none; height: calc(100vh - 52px - 130px); }
-    .ev2-layout--active { display: flex; }
+    /* ═══ 3-COLUMN LAYOUT — fills remaining viewport ═══ */
+    .ev2-layout { display: none; }
+    .ev2-layout--active { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+    
+    /* ── App shell (post-generation): viewport-locked, no page scroll ── */
+    .ev2-app-shell { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
     
     /* ── Left: Chat & Iterations ── */
-    .ev2-left { width: 25%; min-width: 280px; background: #ffffff; border-right: 1px solid #e5e7eb; display: flex; flex-direction: column; }
-    .ev2-left__section-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 2px; color: #6b7280; padding: 14px 16px 8px; }
+    .ev2-left { width: 270px; min-width: 270px; background: #ffffff; border-right: 1px solid #e5e7eb; display: flex; flex-direction: column; overflow: hidden; }
+    .ev2-left__section-title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 2px; color: #6b7280; padding: 12px 14px 6px; flex-shrink: 0; }
     
     /* Iterations list */
-    .ev2-iterations { overflow-y: auto; max-height: 180px; padding: 0 12px 8px; }
-    .ev2-iteration { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-radius: 8px; margin-bottom: 4px; cursor: pointer; transition: background 0.2s; font-size: 12px; }
+    .ev2-iterations { overflow-y: auto; max-height: 160px; padding: 0 10px 6px; flex-shrink: 0; }
+    .ev2-iteration { display: flex; align-items: center; justify-content: space-between; padding: 7px 10px; border-radius: 8px; margin-bottom: 3px; cursor: pointer; transition: background 0.2s; font-size: 12px; }
     .ev2-iteration:hover { background: #f3f4f6; }
     .ev2-iteration--active { background: #e0f2fe; border: 1px solid #0284c7; }
     .ev2-iteration__ver { font-weight: 700; color: #1f2937; }
@@ -1523,25 +1539,25 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
     .ev2-iteration__time { color: #9ca3af; font-size: 11px; }
     .ev2-iteration__badge { background: #1e3a5f; color: white; font-size: 9px; padding: 1px 6px; border-radius: 99px; font-weight: 600; }
     
-    /* Chat area */
-    .ev2-chat { flex: 1; display: flex; flex-direction: column; border-top: 1px solid #e5e7eb; }
-    .ev2-chat__messages { flex: 1; overflow-y: auto; padding: 12px; background: #f9fafb; }
-    .ev2-chat__bubble { max-width: 85%; margin-bottom: 10px; padding: 10px 14px; border-radius: 12px; font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+    /* Chat area — fills remaining space in left column */
+    .ev2-chat { flex: 1; display: flex; flex-direction: column; border-top: 1px solid #e5e7eb; min-height: 0; overflow: hidden; }
+    .ev2-chat__messages { flex: 1; overflow-y: auto; padding: 10px; background: #f9fafb; min-height: 0; }
+    .ev2-chat__bubble { max-width: 88%; margin-bottom: 8px; padding: 9px 12px; border-radius: 12px; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
     .ev2-chat__bubble--user { background: #1e3a5f; color: white; margin-left: auto; border-bottom-right-radius: 4px; }
     .ev2-chat__bubble--ai { background: #ffffff; color: #374151; margin-right: auto; border-bottom-left-radius: 4px; border: 1px solid #e5e7eb; box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05); }
-    .ev2-chat__input-area { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid #e5e7eb; background: #ffffff; }
-    .ev2-chat__input { flex: 1; background: #f9fafb; border: 1px solid #d1d5db; border-radius: 8px; padding: 10px 14px; color: #374151; font-size: 13px; font-family: inherit; resize: none; outline: none; min-height: 40px; max-height: 100px; }
+    .ev2-chat__input-area { display: flex; gap: 6px; padding: 8px 10px; border-top: 1px solid #e5e7eb; background: #ffffff; flex-shrink: 0; }
+    .ev2-chat__input { flex: 1; background: #f9fafb; border: 1px solid #d1d5db; border-radius: 8px; padding: 8px 12px; color: #374151; font-size: 12px; font-family: inherit; resize: none; outline: none; min-height: 36px; max-height: 80px; }
     .ev2-chat__input:focus { border-color: #1e3a5f; box-shadow: 0 0 0 2px rgba(30,58,95,0.1); }
-    .ev2-chat__send { background: #1e3a5f; border: none; color: white; padding: 0 16px; border-radius: 8px; cursor: pointer; font-size: 14px; transition: background 0.2s; }
+    .ev2-chat__send { background: #1e3a5f; border: none; color: white; padding: 0 14px; border-radius: 8px; cursor: pointer; font-size: 13px; transition: background 0.2s; }
     .ev2-chat__send:hover { background: #2a4d7a; }
     .ev2-chat__send:disabled { background: #d1d5db; cursor: not-allowed; }
     
-    /* ── Center: Visualization ── */
-    .ev2-center { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: #f9fafb; }
-    .ev2-center__header { display: flex; align-items: center; justify-content: space-between; padding: 12px 20px; background: #ffffff; border-bottom: 1px solid #e5e7eb; }
-    .ev2-center__title { font-size: 15px; font-weight: 700; color: #1e3a5f; display: flex; align-items: center; gap: 8px; }
-    .ev2-center__actions { display: flex; gap: 8px; }
-    .ev2-center__content { flex: 1; overflow-y: auto; padding: 20px; }
+    /* ── Center: Visualization — fills remaining horizontal space ── */
+    .ev2-center { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: #f9fafb; min-width: 0; }
+    .ev2-center__header { display: flex; align-items: center; justify-content: space-between; padding: 10px 20px; background: #ffffff; border-bottom: 1px solid #e5e7eb; flex-shrink: 0; }
+    .ev2-center__title { font-size: 14px; font-weight: 700; color: #1e3a5f; display: flex; align-items: center; gap: 8px; }
+    .ev2-center__actions { display: flex; gap: 6px; }
+    .ev2-center__content { flex: 1; overflow-y: auto; padding: 16px 20px; min-height: 0; }
     
     /* Diagnostic view */
     .ev2-diag { }
@@ -1571,22 +1587,22 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
     .ev2-deliv-view__tag { display: inline-block; background: #e0f2fe; color: #0284c7; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin: 2px 2px 2px 0; }
     
     /* ── Right: Navigation ── */
-    .ev2-right { width: 25%; min-width: 240px; background: #ffffff; border-left: 1px solid #e5e7eb; display: flex; flex-direction: column; }
-    .ev2-right__title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 2px; color: #6b7280; padding: 14px 16px 8px; }
-    .ev2-right__list { flex: 1; overflow-y: auto; padding: 0 12px; }
-    .ev2-nav-item { display: flex; align-items: center; gap: 12px; padding: 12px; border-radius: 10px; margin-bottom: 6px; cursor: pointer; transition: all 0.2s; border: 1px solid transparent; }
+    .ev2-right { width: 250px; min-width: 250px; background: #ffffff; border-left: 1px solid #e5e7eb; display: flex; flex-direction: column; overflow: hidden; }
+    .ev2-right__title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 2px; color: #6b7280; padding: 12px 14px 6px; flex-shrink: 0; }
+    .ev2-right__list { flex: 1; overflow-y: auto; padding: 0 10px; min-height: 0; }
+    .ev2-nav-item { display: flex; align-items: center; gap: 10px; padding: 10px; border-radius: 8px; margin-bottom: 4px; cursor: pointer; transition: all 0.2s; border: 1px solid transparent; }
     .ev2-nav-item:hover { background: #f3f4f6; }
     .ev2-nav-item--active { background: #e0f2fe; border-color: #0284c7; }
-    .ev2-nav-item__icon { width: 36px; height: 36px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 15px; flex-shrink: 0; }
+    .ev2-nav-item__icon { width: 32px; height: 32px; border-radius: 7px; display: flex; align-items: center; justify-content: center; font-size: 14px; flex-shrink: 0; }
     .ev2-nav-item__icon--available { background: #d1fae5; color: #059669; }
     .ev2-nav-item__icon--pending { background: #fef3c7; color: #d97706; }
     .ev2-nav-item__icon--none { background: #f3f4f6; color: #9ca3af; }
     .ev2-nav-item__info { flex: 1; min-width: 0; }
-    .ev2-nav-item__name { font-size: 13px; font-weight: 600; color: #1f2937; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .ev2-nav-item__status { font-size: 11px; color: #9ca3af; }
-    .ev2-nav-item__score { font-size: 14px; font-weight: 700; }
-    .ev2-right__actions { padding: 12px; border-top: 1px solid #e5e7eb; }
-    .ev2-download-all { width: 100%; padding: 10px; background: #ffffff; border: 1px solid #d1d5db; border-radius: 8px; color: #374151; font-size: 12px; font-weight: 600; font-family: inherit; cursor: pointer; transition: all 0.2s; display: flex; align-items: center; justify-content: center; gap: 8px; }
+    .ev2-nav-item__name { font-size: 12px; font-weight: 600; color: #1f2937; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .ev2-nav-item__status { font-size: 10px; color: #9ca3af; }
+    .ev2-nav-item__score { font-size: 13px; font-weight: 700; }
+    .ev2-right__actions { padding: 10px; border-top: 1px solid #e5e7eb; flex-shrink: 0; }
+    .ev2-download-all { width: 100%; padding: 8px; background: #ffffff; border: 1px solid #d1d5db; border-radius: 8px; color: #374151; font-size: 11px; font-weight: 600; font-family: inherit; cursor: pointer; transition: all 0.2s; display: flex; align-items: center; justify-content: center; gap: 6px; }
     .ev2-download-all:hover { border-color: #1e3a5f; color: #1e3a5f; background: #f3f4f6; }
     
     /* ── Mobile Chat Drawer ── */
@@ -1599,8 +1615,9 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
     .ev2-empty__text { font-size: 15px; color: #6b7280; margin-bottom: 8px; }
     .ev2-empty__sub { font-size: 13px; color: #9ca3af; }
     
-    /* ── Module cards (Prompt 3) ── */
+    /* ── Module cards (pre-generation only) ── */
     .ev2-modules { padding: 0 20px 32px; }
+    .ev2-modules--hidden { display: none; }
     .ev2-modules__title { font-size: 14px; font-weight: 700; text-transform: uppercase; letter-spacing: 2px; color: #1e3a5f; margin-bottom: 16px; padding-bottom: 8px; border-bottom: 2px solid #e5e7eb; }
     .ev2-modules__grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
     .ev2-mod-card { background: #ffffff; border-radius: 12px; padding: 24px 18px 18px; text-align: center; transition: all 0.3s; cursor: pointer; border: 1px solid #e5e7eb; text-decoration: none; box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.06); position: relative; display: flex; flex-direction: column; align-items: center; }
@@ -1624,10 +1641,11 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
     /* ── Responsive ── */
     @media (max-width: 768px) {
       .ev2-upload-grid { grid-template-columns: 1fr; }
-      .ev2-layout--active { flex-direction: column; height: auto; }
+      .ev2-app-shell { height: auto; overflow: auto; }
+      .ev2-layout--active { flex-direction: column; height: auto; overflow: visible; }
       .ev2-left { display: none; }
       .ev2-right { width: 100%; min-width: unset; border-left: none; border-top: 1px solid #e5e7eb; }
-      .ev2-right__list { display: flex; overflow-x: auto; padding: 8px 12px; gap: 8px; }
+      .ev2-right__list { display: flex; overflow-x: auto; padding: 8px 12px; gap: 8px; flex-shrink: 0; }
       .ev2-nav-item { min-width: 140px; flex-direction: column; text-align: center; gap: 6px; }
       .ev2-center { min-height: 60vh; }
       .ev2-chat-fab { display: flex; align-items: center; justify-content: center; }
@@ -1638,17 +1656,17 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
       .ev2-modules__grid { grid-template-columns: repeat(2, 1fr); }
       .ev2-score { margin: 12px 16px; padding: 20px; }
       .ev2-score__value { font-size: 36px; }
+      .ev2-score--compact { flex-wrap: wrap; gap: 8px; padding: 8px 16px; }
     }
     @media (min-width: 769px) and (max-width: 1200px) {
-      .ev2-left { position: fixed; left: -300px; top: 52px; bottom: 0; width: 300px; z-index: 80; transition: left 0.3s; background: #ffffff; }
-      .ev2-left--open { left: 0; box-shadow: 4px 0 12px rgba(0,0,0,0.1); }
-      .ev2-chat-fab { display: flex; align-items: center; justify-content: center; }
-      .ev2-layout--active { }
+      .ev2-left { width: 220px; min-width: 220px; }
+      .ev2-right { width: 210px; min-width: 210px; }
+      .ev2-chat-fab { display: none; }
       .ev2-modules__grid { grid-template-columns: repeat(3, 1fr); }
     }
   </style>
 </head>
-<body>
+${hasGenerated ? `<body class="ev2-app-shell">` : `<body>`}
   <!-- ═══ HEADER ═══ -->
   <header class="ev2-header">
     <a href="/entrepreneur" class="ev2-header__brand">ESONO</a>
@@ -1661,7 +1679,45 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
     </div>
   </header>
 
-  <!-- ═══ SCORE BANNER ═══ -->
+
+  ${hasGenerated ? `
+  <!-- compact score banner -->
+  <section class="ev2-score ev2-score--compact">
+    <div class="ev2-score__title">Investment Readiness</div>
+    <div class="ev2-score__value" style="color:${scoreColor}">${score}/100</div>
+    <div class="ev2-score__bar"><div class="ev2-score__bar-fill" style="width:${score}%;background:${scoreColor};"></div></div>
+    <div class="ev2-score__meta">
+      <span><i class="fas fa-code-branch"></i> v${version}</span>
+      <span><i class="fas fa-robot"></i> ${getScoreLabel(score)}</span>
+    </div>
+  </section>
+
+  <section class="ev2-upload-section ev2-upload-section--compact">
+    <div class="ev2-upload-toggle ev2-upload-toggle--bar" id="upload-toggle" onclick="toggleUpload()">
+      <div class="ev2-upload-toggle__left">
+        <i class="fas fa-cloud-arrow-up"></i>
+        <span>Documents</span>
+        <span class="ev2-upload-toggle__badge">${uploadCount}/3</span>
+      </div>
+      <i class="fas fa-chevron-down ev2-upload-toggle__chevron"></i>
+    </div>
+    <div class="ev2-upload-body ev2-upload-body--collapsed ev2-upload-body--compact" id="upload-body">
+      <div class="ev2-upload-grid" style="padding-top:12px;">
+        ${renderUploadCard('bmc', 'Business Model Canvas', 'fa-map', 'Word, PDF', '.doc,.docx,.pdf', uploadsByCategory.bmc)}
+        ${renderUploadCard('sic', "Stratégie d'Impact & Croissance", 'fa-seedling', 'Word, Excel, PDF', '.doc,.docx,.xls,.xlsx,.pdf', uploadsByCategory.sic)}
+        ${renderUploadCard('inputs', 'Inputs Financiers', 'fa-chart-line', 'Excel (recommandé)', '.xls,.xlsx,.csv,.pdf', uploadsByCategory.inputs)}
+      </div>
+    </div>
+  </section>
+
+  <section class="ev2-gen ev2-gen--compact" id="gen-section">
+    <button class="ev2-gen__btn ${btnClass}" id="btn-gen" ${btnDisabled ? 'disabled' : ''} title="${btnTooltip}" onclick="generateAll()">
+      <span><i class="fas fa-wand-magic-sparkles"></i> ${btnLabel}</span>
+      <span class="ev2-gen__sub">${btnSub}</span>
+    </button>
+  </section>
+  ` : `
+  <!-- full score banner (pre-generation) -->
   <section class="ev2-score">
     <div class="ev2-score__title">Investment Readiness</div>
     ${score >= 0 ? `
@@ -1675,11 +1731,10 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
     ` : `
       <div class="ev2-score__placeholder">— /100</div>
       <div class="ev2-score__bar"><div class="ev2-score__bar-fill" style="width:0%;background:#d1d5db;"></div></div>
-      <div class="ev2-score__placeholder-text">Uploadez 3 documents — l’IA génère 7 livrables et un score 0-100</div>
+      <div class="ev2-score__placeholder-text">Uploadez 3 documents — l'IA génère 7 livrables et un score 0-100</div>
     `}
   </section>
 
-  <!-- ═══ UPLOAD SECTION (collapsible after generation) ═══ -->
   <section class="ev2-upload-section">
     <div style="padding: 12px 16px; display: flex; align-items: center; gap: 10px; font-size: 13px; font-weight: 600; color: #1f2937;">
       <i class="fas fa-cloud-arrow-up"></i>
@@ -1709,13 +1764,13 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
     </div>
   </section>
 
-  <!-- ═══ GENERATE BUTTON ═══ -->
   <section class="ev2-gen" id="gen-section">
     <button class="ev2-gen__btn ${btnClass}" id="btn-gen" ${btnDisabled ? 'disabled' : ''} title="${btnTooltip}" onclick="generateAll()">
       <span><i class="fas fa-wand-magic-sparkles"></i> ${btnLabel}</span>
       <span class="ev2-gen__sub">${btnSub}</span>
     </button>
   </section>
+  `}
 
   <!-- ═══ LOADING ═══ -->
   <section class="ev2-loading" id="loading-section">
@@ -1815,8 +1870,8 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
     </div>
   </section>
 
-  <!-- ═══ MODULE CARDS (Prompt 3) — Détails par module ═══ -->
-  <section class="ev2-modules">
+  <!-- ═══ MODULE CARDS (only shown pre-generation) ═══ -->
+  <section class="ev2-modules ${hasGenerated ? 'ev2-modules--hidden' : ''}">
     <div class="ev2-modules__title">📚 Détails par module</div>
     <div class="ev2-modules__grid">
       ${renderModuleCard({
