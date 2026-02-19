@@ -622,6 +622,15 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
       'SELECT id, role, content, created_at FROM chat_messages WHERE user_id = ? ORDER BY created_at ASC LIMIT 50'
     ).bind(payload.userId).all()
 
+    // Fetch module progress for card status (join with modules table to get module_code)
+    const progressData = await c.env.DB.prepare(
+      'SELECT m.module_code, p.status, p.ai_score FROM progress p JOIN modules m ON p.module_id = m.id WHERE p.user_id = ?'
+    ).bind(payload.userId).all()
+    const progressMap: Record<string, any> = {}
+    for (const p of (progressData.results || []) as any[]) {
+      progressMap[p.module_code] = p
+    }
+
     const score = latestIteration?.score_global ?? -1
     const version = latestIteration?.version ?? 0
     const hasGenerated = !!latestIteration
@@ -842,14 +851,26 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
     .ev2-empty__sub { font-size: 13px; color: #9ca3af; }
     
     /* ── Module cards (Prompt 3) ── */
-    .ev2-modules { padding: 0 20px 24px; }
-    .ev2-modules__title { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 2px; color: #6b7280; margin-bottom: 12px; }
-    .ev2-modules__grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
-    .ev2-mod-card { background: #ffffff; border-radius: 10px; padding: 18px; text-align: center; transition: all 0.25s; cursor: pointer; border: 1px solid #e5e7eb; text-decoration: none; box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05); }
-    .ev2-mod-card:hover { border-color: #4a6fa5; transform: translateY(-2px); text-decoration: none; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); }
-    .ev2-mod-card__icon { font-size: 24px; color: #1e3a5f; margin-bottom: 8px; }
-    .ev2-mod-card__name { font-size: 13px; font-weight: 600; color: #1f2937; margin-bottom: 4px; }
-    .ev2-mod-card__desc { font-size: 11px; color: #9ca3af; }
+    .ev2-modules { padding: 0 20px 32px; }
+    .ev2-modules__title { font-size: 14px; font-weight: 700; text-transform: uppercase; letter-spacing: 2px; color: #1e3a5f; margin-bottom: 16px; padding-bottom: 8px; border-bottom: 2px solid #e5e7eb; }
+    .ev2-modules__grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+    .ev2-mod-card { background: #ffffff; border-radius: 12px; padding: 24px 18px 18px; text-align: center; transition: all 0.3s; cursor: pointer; border: 1px solid #e5e7eb; text-decoration: none; box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.06); position: relative; display: flex; flex-direction: column; align-items: center; }
+    .ev2-mod-card:hover { border-color: #4a6fa5; transform: translateY(-3px); text-decoration: none; box-shadow: 0 8px 16px -4px rgb(30 58 95 / 0.15); }
+    .ev2-mod-card--inactive { opacity: 0.55; }
+    .ev2-mod-card--inactive:hover { opacity: 0.75; }
+    .ev2-mod-card__badge { position: absolute; top: 10px; right: 10px; width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; }
+    .ev2-mod-card__badge--ok { background: #d1fae5; color: #059669; }
+    .ev2-mod-card__badge--wait { background: #fef3c7; color: #d97706; }
+    .ev2-mod-card__icon { font-size: 32px; color: #1e3a5f; margin-bottom: 12px; width: 56px; height: 56px; background: #f3f4f6; border-radius: 12px; display: flex; align-items: center; justify-content: center; }
+    .ev2-mod-card--inactive .ev2-mod-card__icon { color: #9ca3af; background: #f9fafb; }
+    .ev2-mod-card__name { font-size: 14px; font-weight: 700; color: #1f2937; margin-bottom: 6px; }
+    .ev2-mod-card__desc { font-size: 11px; color: #6b7280; line-height: 1.4; margin-bottom: 10px; min-height: 30px; }
+    .ev2-mod-card__status { font-size: 10px; font-weight: 600; padding: 3px 10px; border-radius: 99px; margin-bottom: 10px; }
+    .ev2-mod-card__status--ok { background: #d1fae5; color: #059669; }
+    .ev2-mod-card__status--wait { background: #fef3c7; color: #d97706; }
+    .ev2-mod-card__btn { font-size: 12px; font-weight: 600; color: #1e3a5f; display: flex; align-items: center; gap: 4px; }
+    .ev2-mod-card__btn i { font-size: 10px; transition: transform 0.2s; }
+    .ev2-mod-card:hover .ev2-mod-card__btn i { transform: translateX(3px); }
     
     /* ── Responsive ── */
     @media (max-width: 768px) {
@@ -1039,18 +1060,82 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
     </div>
   </section>
 
-  <!-- ═══ MODULE CARDS (Prompt 3) ═══ -->
+  <!-- ═══ MODULE CARDS (Prompt 3) — Détails par module ═══ -->
   <section class="ev2-modules">
-    <div class="ev2-modules__title">Modules détaillés</div>
+    <div class="ev2-modules__title"><i class="fas fa-th-large" style="margin-right:8px;opacity:0.6"></i> Détails par module</div>
     <div class="ev2-modules__grid">
-      <a href="/module/mod1_bmc/questions" class="ev2-mod-card"><div class="ev2-mod-card__icon"><i class="fas fa-map"></i></div><div class="ev2-mod-card__name">BMC</div><div class="ev2-mod-card__desc">Business Model Canvas</div></a>
-      <a href="/module/mod2_sic/questions" class="ev2-mod-card"><div class="ev2-mod-card__icon"><i class="fas fa-seedling"></i></div><div class="ev2-mod-card__name">SIC</div><div class="ev2-mod-card__desc">Stratégie d'Impact</div></a>
-      <a href="/module/mod3_inputs/inputs" class="ev2-mod-card"><div class="ev2-mod-card__icon"><i class="fas fa-chart-line"></i></div><div class="ev2-mod-card__name">Inputs</div><div class="ev2-mod-card__desc">Données Financières</div></a>
-      <a href="/module/mod4_framework/questions" class="ev2-mod-card"><div class="ev2-mod-card__icon"><i class="fas fa-table-cells"></i></div><div class="ev2-mod-card__name">Framework</div><div class="ev2-mod-card__desc">Analyse PME</div></a>
-      <a href="/module/mod1_bmc/analysis" class="ev2-mod-card"><div class="ev2-mod-card__icon"><i class="fas fa-magnifying-glass-chart"></i></div><div class="ev2-mod-card__name">Diagnostic</div><div class="ev2-mod-card__desc">Évaluation globale</div></a>
-      <a href="/module/mod3_inputs/inputs" class="ev2-mod-card"><div class="ev2-mod-card__icon"><i class="fas fa-coins"></i></div><div class="ev2-mod-card__name">Plan OVO</div><div class="ev2-mod-card__desc">Projections financières</div></a>
-      <a href="/module/mod1_bmc/deliverable" class="ev2-mod-card"><div class="ev2-mod-card__icon"><i class="fas fa-file-contract"></i></div><div class="ev2-mod-card__name">Business Plan</div><div class="ev2-mod-card__desc">Document synthèse</div></a>
-      <a href="/module/mod2_sic/deliverable" class="ev2-mod-card"><div class="ev2-mod-card__icon"><i class="fas fa-shield-halved"></i></div><div class="ev2-mod-card__name">ODD</div><div class="ev2-mod-card__desc">Due Diligence</div></a>
+      ${renderModuleCard({
+        icon: 'fa-map', emoji: '📝',
+        name: 'Business Model Canvas',
+        desc: 'Cartographie complète de votre modèle économique : segments clients, proposition de valeur, canaux, revenus.',
+        href: '/module/mod1_bmc/download',
+        delivKey: 'bmc_analysis',
+        altHref: '/module/mod1_bmc/questions',
+        delivMap, progressMap
+      })}
+      ${renderModuleCard({
+        icon: 'fa-seedling', emoji: '🚀',
+        name: "Stratégie d'Impact & Croissance",
+        desc: "Analyse de votre stratégie d'impact social et de votre plan de croissance durable.",
+        href: '/module/mod2_sic/download',
+        delivKey: 'sic_analysis',
+        altHref: '/module/mod2_sic/questions',
+        delivMap, progressMap
+      })}
+      ${renderModuleCard({
+        icon: 'fa-chart-bar', emoji: '📊',
+        name: 'Inputs Financiers',
+        desc: 'Données financières clés : revenus, charges, investissements et hypothèses de base.',
+        href: '/module/mod3_inputs/download',
+        delivKey: 'plan_ovo',
+        altHref: '/module/mod3_inputs/inputs',
+        delivMap, progressMap
+      })}
+      ${renderModuleCard({
+        icon: 'fa-table-cells', emoji: '📈',
+        name: "Framework d'Analyse",
+        desc: "Cadre d'analyse structuré pour l'évaluation de la maturité et de la performance PME.",
+        href: '/module/mod4_framework/download',
+        delivKey: 'framework',
+        altHref: '/module/mod4_framework/questions',
+        delivMap, progressMap
+      })}
+      ${renderModuleCard({
+        icon: 'fa-stethoscope', emoji: '🏆',
+        name: 'Diagnostic Expert',
+        desc: "Évaluation globale multi-dimensionnelle : forces, faiblesses et recommandations par un expert IA.",
+        href: '/module/mod1_bmc/download',
+        delivKey: 'diagnostic',
+        altHref: '/module/mod1_bmc/analysis',
+        delivMap, progressMap
+      })}
+      ${renderModuleCard({
+        icon: 'fa-coins', emoji: '💰',
+        name: 'Plan Financier OVO',
+        desc: 'Projections financières sur 5 ans : chiffre d\'affaires, rentabilité, trésorerie et valorisation.',
+        href: '/module/mod3_inputs/download',
+        delivKey: 'plan_ovo',
+        altHref: '/module/mod3_inputs/inputs',
+        delivMap, progressMap
+      })}
+      ${renderModuleCard({
+        icon: 'fa-file-contract', emoji: '📄',
+        name: 'Business Plan',
+        desc: 'Document de synthèse complet pour les investisseurs : executive summary, stratégie, financier.',
+        href: '/module/mod1_bmc/download',
+        delivKey: 'business_plan',
+        altHref: '/module/mod1_bmc/questions',
+        delivMap, progressMap
+      })}
+      ${renderModuleCard({
+        icon: 'fa-shield-halved', emoji: '🔍',
+        name: 'Due Diligence Opérationnelle',
+        desc: "Audit ODD complet : conformité, risques opérationnels, gouvernance et critères d'investissement.",
+        href: '/module/mod2_sic/download',
+        delivKey: 'odd',
+        altHref: '/module/mod2_sic/questions',
+        delivMap, progressMap
+      })}
     </div>
   </section>
 
@@ -1444,6 +1529,32 @@ function renderDiagnosticView(deliverable: any, scoresDim: any): string {
 
   html += '</div>'
   return html
+}
+
+function renderModuleCard(opts: {
+  icon: string, emoji: string, name: string, desc: string,
+  href: string, delivKey: string, altHref: string,
+  delivMap: Record<string, any>, progressMap: Record<string, any>
+}): string {
+  const deliv = opts.delivMap[opts.delivKey]
+  const available = !!deliv
+  const dScore = deliv?.score ?? 0
+  const link = available ? opts.href : opts.altHref
+  const scoreColor = available ? getScoreColor(dScore) : ''
+
+  return `<a href="${link}" class="ev2-mod-card ${available ? '' : 'ev2-mod-card--inactive'}">
+    <div class="ev2-mod-card__badge ${available ? 'ev2-mod-card__badge--ok' : 'ev2-mod-card__badge--wait'}">
+      <i class="fas ${available ? 'fa-check' : 'fa-hourglass-half'}"></i>
+    </div>
+    <div class="ev2-mod-card__icon"><i class="fas ${opts.icon}"></i></div>
+    <div class="ev2-mod-card__name">${escapeHtml(opts.name)}</div>
+    <div class="ev2-mod-card__desc">${escapeHtml(opts.desc)}</div>
+    ${available 
+      ? `<div class="ev2-mod-card__status ev2-mod-card__status--ok"><i class="fas fa-circle-check"></i> Livrable disponible · ${dScore}/100</div>`
+      : `<div class="ev2-mod-card__status ev2-mod-card__status--wait"><i class="fas fa-clock"></i> En attente d'inputs</div>`
+    }
+    <div class="ev2-mod-card__btn">Voir le détail <i class="fas fa-arrow-right"></i></div>
+  </a>`
 }
 
 function renderEmptyState(): string {
