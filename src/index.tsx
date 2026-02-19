@@ -1686,7 +1686,7 @@ app.get('/dashboard', async (c) => {
                 </div>
                 <div>
                   <div class="esono-text-muted esono-text-sm">
-                    Module {nextModule.moduleNumber} • {nextModule.category === 'hybrid' ? 'Micro-learning + IA + Coaching' : 'Traitement IA automatique'}
+                    Module {nextModule.moduleNumber} • {nextModule.category === 'hybrid' ? 'Upload + IA' : 'Traitement IA automatique'}
                   </div>
                   <h3 class="esono-font-semibold">{nextModule.title}</h3>
                 </div>
@@ -1695,7 +1695,7 @@ app.get('/dashboard', async (c) => {
               {nextModule.category === 'hybrid' && (
                 <div style="display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0;">
                   <span class="esono-badge esono-badge--accent"><i class="fas fa-graduation-cap"></i> Micro-learning</span>
-                  <span class="esono-badge esono-badge--info"><i class="fas fa-robot"></i> Saisie assistée IA</span>
+                  <span class="esono-badge esono-badge--info"><i class="fas fa-robot"></i> Analyse IA</span>
                   <span class="esono-badge esono-badge--success"><i class="fas fa-user-tie"></i> Coaching</span>
                 </div>
               )}
@@ -1709,15 +1709,15 @@ app.get('/dashboard', async (c) => {
           </section>
         )}
 
-        {/* Modules hybrides (1-3) */}
+        {/* Modules sources (1-3) */}
         <section class="esono-card">
           <div class="esono-card__header">
             <h2 class="esono-card__title">
               <i class="fas fa-graduation-cap esono-card__title-icon"></i>
-              Modules hybrides (1-3)
+              Modules sources (1-3)
             </h2>
             <span class="esono-badge esono-badge--accent">
-              Micro-learning + IA + Coaching
+              Upload + IA
             </span>
           </div>
           <div class="esono-card__body">
@@ -1841,7 +1841,7 @@ app.get('/dashboard', async (c) => {
           </div>
           <div class="esono-card__body">
             <p class="esono-text-muted esono-text-sm" style="margin-bottom: 12px;">
-              Les livrables sont générés au fur et à mesure de votre progression. Complétez les modules hybrides (1-3) pour débloquer les livrables automatiques.
+              Les livrables sont générés automatiquement par l'IA à partir de vos documents uploadés.
             </p>
             <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px;">
               {getAllDeliverables().map((d) => {
@@ -1880,295 +1880,25 @@ app.get('/dashboard', async (c) => {
   }
 })
 
-// Module entry point - redirect based on module category
-app.get('/module/:code', async (c) => {
-  const moduleCode = c.req.param('code')
-  const definition = getLearningModuleDefinition(moduleCode)
-  
-  if (!definition) {
-    // Fallback ancien code
-    return c.redirect(`/module/${moduleCode}/video`)
-  }
-
-  if (definition.category === 'automatic') {
-    return c.redirect(`/module/${moduleCode}/overview`)
-  }
-
-  // Module hybride → commence par le micro-learning (vidéo)
-  return c.redirect(`/module/${moduleCode}/video`)
+// Module entry point - always redirect to deliverable view
+app.get('/module/:code', (c) => {
+  return c.redirect(`/module/${c.req.param('code')}/download`)
 })
 
 // Page module automatique - Overview
-app.get('/module/:code/overview', async (c) => {
-  try {
-    const token = getCookie(c, 'auth_token')
-    if (!token) return c.redirect('/login')
-
-    const payload = await verifyToken(token)
-    if (!payload) return c.redirect('/login')
-
-    const moduleCode = c.req.param('code')
-    const definition = getLearningModuleDefinition(moduleCode)
-
-    if (!definition || definition.category !== 'automatic') {
-      return c.redirect(`/module/${moduleCode}/video`)
-    }
-
-    const depModules = definition.dependencies
-    const depLabels = depModules.map((dep) => {
-      const d = getLearningModuleDefinition(dep)
-      return d ? `Module ${d.moduleNumber} — ${d.shortTitle}` : dep
-    })
-
-    const outputsHtml = definition.outputs.map((output) => 
-      `<div style="padding: 16px; border: 1px solid rgba(0,0,0,0.1); border-radius: 10px; background: white;">
-        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
-          <span style="padding: 4px 10px; background: rgba(124,58,237,0.1); color: #7c3aed; border-radius: 6px; font-weight: 600; font-size: 0.85em;">${output.format.toUpperCase()}</span>
-        </div>
-        <p style="font-size: 0.85em; color: #555;">${output.description}</p>
-      </div>`
-    ).join('')
-
-    const pageContent = (
-      <div class="esono-dashboard-stack">
-        <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 24px;">
-          <div style={`width: 56px; height: 56px; border-radius: 14px; background: ${definition.color}; color: white; display: flex; align-items: center; justify-content: center; font-size: 1.5em;`}>
-            <i class={definition.icon}></i>
-          </div>
-          <div>
-            <span class="esono-text-xs esono-text-muted">Module {definition.moduleNumber} — Traitement IA automatique</span>
-            <h2 style="margin: 0; font-size: 1.5em;">{definition.title}</h2>
-          </div>
-        </div>
-
-        <section class="esono-card">
-          <div class="esono-card__body">
-            <p style="font-size: 1.05em; line-height: 1.6; margin-bottom: 16px;">{definition.summary}</p>
-            
-            <div style="background: rgba(124,58,237,0.05); border: 1px solid rgba(124,58,237,0.15); border-radius: 10px; padding: 16px; margin-bottom: 20px;">
-              <h3 style="margin: 0 0 8px; font-size: 0.95em; color: #7c3aed;">
-                <i class="fas fa-info-circle"></i> Ce module est automatique
-              </h3>
-              <p style="margin: 0; font-size: 0.9em; color: #555;">
-                L'IA génère automatiquement les livrables à partir des données que vous avez saisies dans les modules précédents. Aucune saisie manuelle requise.
-              </p>
-            </div>
-
-            <h3 style="font-size: 1em; margin-bottom: 10px;"><i class="fas fa-database"></i> Données utilisées</h3>
-            <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px;">
-              {depLabels.map((label, i) => (
-                <span key={`dep-${i}`} class="esono-badge esono-badge--info">{label}</span>
-              ))}
-            </div>
-
-            <h3 style="font-size: 1em; margin-bottom: 10px;"><i class="fas fa-file-export"></i> Livrables générés</h3>
-            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; margin-bottom: 24px;" dangerouslySetInnerHTML={{ __html: outputsHtml }} />
-
-            <div style="text-align: center; padding-top: 16px;">
-              <a href={`/module/${moduleCode}/generate`} class="esono-btn esono-btn--primary" style={`background: ${definition.color}; border-color: ${definition.color};`}>
-                <i class="fas fa-wand-magic-sparkles"></i>
-                Générer le livrable
-              </a>
-            </div>
-          </div>
-        </section>
-      </div>
-    )
-
-    return c.html(
-      renderEsanoLayout({
-        pageTitle: `Module ${definition.moduleNumber} — ${definition.title}`,
-        pageDescription: definition.summary,
-        activeNav: 'dashboard',
-        content: pageContent,
-        breadcrumb: [
-          { label: 'Tableau de bord', href: '/dashboard' },
-          { label: `Module ${definition.moduleNumber}` }
-        ]
-      })
-    )
-  } catch (error) {
-    console.error('Module overview error:', error)
-    return c.redirect('/dashboard')
-  }
-})
+// Overview page → redirect to deliverable
+app.get('/module/:code/overview', (c) => c.redirect(`/module/${c.req.param('code')}/download`))
 
 // Page module automatique - Génération
-app.get('/module/:code/generate', async (c) => {
-  try {
-    const token = getCookie(c, 'auth_token')
-    if (!token) return c.redirect('/login')
-
-    const payload = await verifyToken(token)
-    if (!payload) return c.redirect('/login')
-
-    const moduleCode = c.req.param('code')
-    const definition = getLearningModuleDefinition(moduleCode)
-
-    if (!definition) return c.redirect('/dashboard')
-
-    const pageContent = (
-      <div class="esono-dashboard-stack">
-        <section class="esono-card">
-          <div class="esono-card__body" style="text-align: center; padding: 60px 20px;">
-            <div style={`width: 80px; height: 80px; border-radius: 20px; background: ${definition.color}; color: white; display: flex; align-items: center; justify-content: center; font-size: 2em; margin: 0 auto 20px;`}>
-              <i class={definition.icon}></i>
-            </div>
-            <h2 style="margin-bottom: 8px;">Génération en cours...</h2>
-            <p class="esono-text-muted" style="margin-bottom: 24px;">
-              L'IA analyse vos données et génère le livrable. Cette opération peut prendre quelques instants.
-            </p>
-            <div class="esono-progress" style="max-width: 400px; margin: 0 auto 24px;">
-              <div class="esono-progress__bar" style="width: 0%; animation: progressAnim 8s ease-in-out forwards;"></div>
-            </div>
-            <p class="esono-text-sm esono-text-muted">
-              <i class="fas fa-spinner fa-spin"></i> Traitement des données de {definition.dependencies.length} module(s) source...
-            </p>
-            <div style="margin-top: 32px;">
-              <a href={`/module/${moduleCode}/download`} class="esono-btn esono-btn--primary">
-                <i class="fas fa-download"></i> Accéder aux livrables
-              </a>
-            </div>
-          </div>
-        </section>
-      </div>
-    )
-
-    return c.html(
-      renderEsanoLayout({
-        pageTitle: `Génération — ${definition.title}`,
-        pageDescription: 'Traitement IA en cours...',
-        activeNav: 'dashboard',
-        content: pageContent,
-        extraScripts: `
-          @keyframes progressAnim {
-            0% { width: 0%; }
-            50% { width: 65%; }
-            80% { width: 88%; }
-            100% { width: 100%; }
-          }
-        `
-      })
-    )
-  } catch (error) {
-    console.error('Module generate error:', error)
-    return c.redirect('/dashboard')
-  }
-})
+// Generate page → redirect to deliverable
+app.get('/module/:code/generate', (c) => c.redirect(`/module/${c.req.param('code')}/download`))
 
 // Page Livrables centralisée
-app.get('/livrables', async (c) => {
-  try {
-    const token = getCookie(c, 'auth_token')
-    if (!token) return c.redirect('/login')
+// Livrables page → redirect to entrepreneur
+app.get('/livrables', (c) => c.redirect('/entrepreneur'))
 
-    const payload = await verifyToken(token)
-    if (!payload) return c.redirect('/login')
-
-    const data = await getUserWithProgress(c.env.DB, payload.userId)
-    if (!data) return c.redirect('/login')
-
-    const { user, modules: dbModules, progress } = data
-    const progressList = (progress as any[]) ?? []
-    const dbModulesList = (dbModules as any[]) ?? []
-
-    const completedCodes = new Set<string>()
-    for (const entry of progressList) {
-      if (entry?.status === 'completed' || entry?.status === 'validated') {
-        const dbMod = dbModulesList.find((m: any) => m.id === entry.module_id)
-        if (dbMod?.module_code) completedCodes.add(dbMod.module_code as string)
-      }
-    }
-
-    const allDeliverables = getAllDeliverables()
-
-    const headerActions = (
-      <div class="esono-header-actions">
-        <a href="/dashboard" class="esono-btn esono-btn--ghost">
-          <i class="fas fa-arrow-left"></i> Retour au tableau de bord
-        </a>
-      </div>
-    )
-
-    const pageContent = (
-      <div class="esono-dashboard-stack">
-        <section class="esono-card">
-          <div class="esono-card__header">
-            <h2 class="esono-card__title">
-              <i class="fas fa-folder-open esono-card__title-icon"></i>
-              Tous les livrables
-            </h2>
-            <span class="esono-badge esono-badge--info">
-              {allDeliverables.reduce((acc, d) => acc + d.outputs.length, 0)} fichiers
-            </span>
-          </div>
-          <div class="esono-card__body">
-            <p class="esono-text-muted" style="margin-bottom: 20px;">
-              Les livrables sont générés module par module. Complétez les modules hybrides (1-3) pour débloquer la génération des modules automatiques (4-8).
-            </p>
-
-            <div style="display: flex; flex-direction: column; gap: 12px;">
-              {allDeliverables.map((d) => {
-                const isGenerated = completedCodes.has(d.moduleCode)
-                const definition = getLearningModuleDefinition(d.moduleCode)
-                return (
-                  <div key={`liv-${d.moduleCode}`} style={`padding: 16px; border: 1px solid ${isGenerated ? 'rgba(5,150,105,0.3)' : 'rgba(0,0,0,0.1)'}; border-radius: 12px; background: ${isGenerated ? 'rgba(5,150,105,0.03)' : 'white'};`}>
-                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
-                      <div style="display: flex; align-items: center; gap: 10px;">
-                        <div style={`width: 32px; height: 32px; border-radius: 8px; background: ${definition?.color ?? '#666'}; color: white; display: flex; align-items: center; justify-content: center; font-size: 0.8em;`}>
-                          <i class={definition?.icon ?? 'fas fa-file'}></i>
-                        </div>
-                        <div>
-                          <strong style="font-size: 0.95em;">Module {d.moduleNumber} — {d.moduleTitle}</strong>
-                          <br />
-                          <span class="esono-text-xs esono-text-muted">
-                            {definition?.category === 'hybrid' ? 'Module hybride' : 'Module automatique'}
-                          </span>
-                        </div>
-                      </div>
-                      <span class={isGenerated ? 'esono-badge esono-badge--success' : 'esono-badge esono-badge--neutral'}>
-                        <i class={isGenerated ? 'fas fa-check-circle' : 'fas fa-hourglass-half'}></i>
-                        {isGenerated ? 'Généré' : 'En attente'}
-                      </span>
-                    </div>
-                    <div style="display: flex; flex-wrap: wrap; gap: 8px;">
-                      {d.outputs.map((output, i) => (
-                        <div key={`out-${i}`} style={`padding: 8px 12px; border: 1px solid rgba(0,0,0,0.08); border-radius: 8px; display: flex; align-items: center; gap: 8px; background: ${isGenerated ? 'white' : '#fafafa'};`}>
-                          <span style="padding: 2px 8px; background: rgba(124,58,237,0.1); color: #7c3aed; border-radius: 4px; font-size: 0.75em; font-weight: 600;">
-                            {output.format.toUpperCase()}
-                          </span>
-                          <span style="font-size: 0.8em; color: #555;">{output.description}</span>
-                          {isGenerated && (
-                            <button class="esono-btn esono-btn--ghost" style="padding: 2px 8px; font-size: 0.75em;">
-                              <i class="fas fa-download"></i>
-                            </button>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-          </div>
-        </section>
-      </div>
-    )
-
-    return c.html(
-      renderEsanoLayout({
-        pageTitle: 'Livrables',
-        pageDescription: 'Téléchargez vos livrables générés',
-        activeNav: 'livrables',
-        content: pageContent,
-        headerActions
-      })
-    )
-  } catch (error) {
-    console.error('Livrables page error:', error)
-    return c.redirect('/dashboard')
-  }
-})
+// Formations page - placeholder redirect
+app.get('/formations', (c) => c.redirect('/entrepreneur'))
 
 // API: Save quiz results
 app.post('/api/module/quiz', async (c) => {

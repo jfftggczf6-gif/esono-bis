@@ -969,13 +969,13 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
     // Generate button state
     let btnLabel: string, btnSub: string, btnClass: string, btnDisabled: boolean
     if (uploadCount === 0) {
-      btnLabel = 'GÉNÉRER LES LIVRABLES'; btnSub = '(0/3 — Uploadez au moins un document)'; btnClass = 'ev2-btn--disabled'; btnDisabled = true
+      btnLabel = 'COMMENCER → UPLOADER MES DOCUMENTS'; btnSub = '(0/3 — Uploadez au moins un document)'; btnClass = 'ev2-btn--disabled'; btnDisabled = true
     } else if (uploadCount < 3) {
-      btnLabel = hasGenerated ? 'REGÉNÉRER' : 'GÉNÉRER LES LIVRABLES'
+      btnLabel = hasGenerated ? 'REGÉNÉRER LES LIVRABLES' : 'GÉNÉRER LES LIVRABLES'
       btnSub = `(${uploadCount}/3 inputs — Analyse partielle)`
       btnClass = uploadCount === 1 ? 'ev2-btn--orange' : 'ev2-btn--yellow'; btnDisabled = false
     } else {
-      btnLabel = hasGenerated ? 'REGÉNÉRER' : 'GÉNÉRER LES LIVRABLES'
+      btnLabel = hasGenerated ? 'REGÉNÉRER LES LIVRABLES' : 'GÉNÉRER LES LIVRABLES'
       btnSub = '(3/3 inputs — Analyse complète)'; btnClass = 'ev2-btn--green'; btnDisabled = false
     }
 
@@ -1228,7 +1228,7 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
     <a href="/entrepreneur" class="ev2-header__brand">ESONO</a>
     <div class="ev2-header__right">
       <span class="ev2-header__user"><strong>${user.name}</strong> · ${user.email}</span>
-      <a href="/dashboard?classic=1" class="ev2-btn-sm" title="Vue classique modules"><i class="fas fa-table-columns"></i> Modules</a>
+      <a href="/formations" class="ev2-btn-sm" title="Micro-learning & formations"><i class="fas fa-book-open"></i> Formations</a>
       <button class="ev2-btn-sm ev2-btn-sm--danger" onclick="fetch('/api/logout',{method:'POST',credentials:'include'}).then(()=>location.href='/login')">
         <i class="fas fa-right-from-bracket"></i> Déconnexion
       </button>
@@ -1249,23 +1249,18 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
     ` : `
       <div class="ev2-score__placeholder">— /100</div>
       <div class="ev2-score__bar"><div class="ev2-score__bar-fill" style="width:0%;background:#d1d5db;"></div></div>
-      <div class="ev2-score__placeholder-text">Uploadez vos documents pour commencer</div>
+      <div class="ev2-score__placeholder-text">Uploadez 3 documents — l’IA génère 7 livrables et un score 0-100</div>
     `}
   </section>
 
   <!-- ═══ UPLOAD SECTION (collapsible after generation) ═══ -->
   <section class="ev2-upload-section">
-    ${hasGenerated ? `
-      <div class="ev2-upload-toggle ${hasGenerated ? '' : 'ev2-upload-toggle--open'}" id="upload-toggle" onclick="toggleUpload()">
-        <div class="ev2-upload-toggle__left">
-          <i class="fas fa-cloud-arrow-up"></i>
-          <span>Fichiers uploadés</span>
-          <span class="ev2-upload-toggle__badge">${uploadCount}/3</span>
-        </div>
-        <span class="ev2-upload-toggle__chevron"><i class="fas fa-chevron-down"></i></span>
-      </div>
-    ` : ''}
-    <div class="ev2-upload-body ${hasGenerated ? 'ev2-upload-body--collapsed' : 'ev2-upload-body--open'}" id="upload-body">
+    <div style="padding: 12px 16px; display: flex; align-items: center; gap: 10px; font-size: 13px; font-weight: 600; color: #1f2937;">
+      <i class="fas fa-cloud-arrow-up"></i>
+      <span>Uploadez vos documents</span>
+      <span class="ev2-upload-toggle__badge">${uploadCount}/3</span>
+    </div>
+    <div class="ev2-upload-body ev2-upload-body--open" id="upload-body">
       <div class="ev2-upload-grid">
         ${renderUploadCard('bmc', 'Business Model Canvas', 'fa-map', 'Word, PDF', '.doc,.docx,.pdf', uploadsByCategory.bmc)}
         ${renderUploadCard('sic', "Stratégie d'Impact & Croissance", 'fa-seedling', 'Word, Excel, PDF', '.doc,.docx,.xls,.xlsx,.pdf', uploadsByCategory.sic)}
