@@ -3237,16 +3237,116 @@ ${hasGenerated ? `<body class="ev2-app-shell">` : `<body>`}
     }
 
     function renderBMCHTML(c, score, col) {
-      let html = '<div class="ev2-deliv-view"><div class="ev2-deliv-view__score"><div class="ev2-deliv-view__score-num" style="color:' + col + '">' + score + '/100</div></div>';
-      for (const b of (c.blocks || [])) {
-        html += '<div class="ev2-deliv-view__section"><h3>' + esc(b.name) + ' <span style="color:' + getScoreColor(b.score||0) + ';font-size:13px">' + (b.score||0) + '/100</span></h3><p>' + esc(b.analysis||'') + '</p>';
-        if (b.recommendations?.length) {
-          html += '<div style="margin-top:8px">';
-          for (const r of b.recommendations) html += '<span class="ev2-deliv-view__tag">' + esc(r) + '</span>';
-          html += '</div>';
-        }
+      const blocks = c.blocks || [];
+      const strongBlocks = blocks.filter(b => (b.score||0) >= 70);
+      const weakBlocks = blocks.filter(b => (b.score||0) < 70);
+      
+      let html = '<div class="ev2-bmc-rich">';
+      
+      // ── Score header with badge ──
+      html += '<div class="ev2-bmc-header" style="background:linear-gradient(135deg,' + col + '15,' + col + '08);border:1px solid ' + col + '30;border-radius:16px;padding:24px;margin-bottom:24px;display:flex;align-items:center;gap:20px">';
+      html += '<div style="width:80px;height:80px;border-radius:50%;background:' + col + ';display:flex;align-items:center;justify-content:center;color:#fff;font-size:28px;font-weight:800">' + score + '</div>';
+      html += '<div><div style="font-size:20px;font-weight:700;color:#1e293b">Business Model Canvas</div>';
+      html += '<div style="font-size:14px;color:#64748b;margin-top:4px">Score global : ' + score + '/100 — ' + (score >= 76 ? 'Excellent' : score >= 51 ? 'Bon' : score >= 26 ? 'A améliorer' : 'Insuffisant') + '</div>';
+      html += '<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">';
+      html += '<span style="background:#059669;color:#fff;padding:2px 10px;border-radius:12px;font-size:11px;font-weight:600">' + strongBlocks.length + ' blocs forts</span>';
+      if (weakBlocks.length) html += '<span style="background:#d97706;color:#fff;padding:2px 10px;border-radius:12px;font-size:11px;font-weight:600">' + weakBlocks.length + ' à renforcer</span>';
+      html += '</div></div></div>';
+      
+      // ── Canvas grid (BMC 9-block layout) ──
+      const canvasNames = ['Partenaires Clés', 'Activités Clés', 'Ressources Clés', 'Proposition de Valeur', 'Relations Client', 'Canaux', 'Segments Clients', 'Structure de Coûts', 'Sources de Revenus'];
+      html += '<div style="margin-bottom:24px"><div style="font-size:16px;font-weight:700;color:#1e293b;margin-bottom:12px"><i class="fas fa-th" style="color:' + col + ';margin-right:8px"></i>Canvas — Vue d\'ensemble</div>';
+      html += '<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:2px;background:#e2e8f0;border-radius:12px;overflow:hidden;font-size:12px">';
+      
+      // Row 1: Partners | Activities | Value Prop | Relationships | Segments
+      const canvasMap = {};
+      for (const b of blocks) { canvasMap[b.name] = b; }
+      const gridOrder = [
+        ['Partenaires Clés', 'Activités Clés', 'Proposition de Valeur', 'Relations Client', 'Segments Clients'],
+        [null, 'Ressources Clés', null, 'Canaux', null],
+        ['Structure de Coûts', 'Structure de Coûts', null, 'Sources de Revenus', 'Sources de Revenus']
+      ];
+      
+      // Simplified canvas: each block as a mini card
+      for (const b of blocks) {
+        const sc = b.score || 0;
+        const scCol = getScoreColor(sc);
+        html += '<div style="background:#fff;padding:8px 10px;min-height:60px">';
+        html += '<div style="font-weight:700;color:' + scCol + ';font-size:11px;text-transform:uppercase;margin-bottom:4px">' + esc(b.name) + ' <span style="float:right">' + sc + '</span></div>';
+        html += '<div style="color:#475569;font-size:11px;line-height:1.3">' + esc((b.analysis || '').substring(0, 100)) + (b.analysis && b.analysis.length > 100 ? '...' : '') + '</div>';
         html += '</div>';
       }
+      html += '</div></div>';
+      
+      // ── Diagnostic scores bars ──
+      html += '<div style="margin-bottom:24px"><div style="font-size:16px;font-weight:700;color:#1e293b;margin-bottom:12px"><i class="fas fa-chart-bar" style="color:' + col + ';margin-right:8px"></i>Diagnostic par bloc</div>';
+      const sortedBlocks = [...blocks].sort((a,b) => (b.score||0) - (a.score||0));
+      for (const b of sortedBlocks) {
+        const sc = b.score || 0;
+        const scCol = getScoreColor(sc);
+        html += '<div style="margin-bottom:8px;display:flex;align-items:center;gap:12px">';
+        html += '<div style="width:140px;font-size:12px;font-weight:600;color:#334155;text-align:right;flex-shrink:0">' + esc(b.name) + '</div>';
+        html += '<div style="flex:1;background:#f1f5f9;border-radius:8px;height:24px;overflow:hidden;position:relative">';
+        html += '<div style="width:' + sc + '%;height:100%;background:' + scCol + ';border-radius:8px;transition:width 0.5s"></div>';
+        html += '<span style="position:absolute;right:8px;top:3px;font-size:11px;font-weight:700;color:#334155">' + sc + '/100</span>';
+        html += '</div></div>';
+      }
+      html += '</div>';
+      
+      // ── Forces (blocks >= 70) ──
+      if (strongBlocks.length) {
+        html += '<div style="margin-bottom:24px"><div style="font-size:16px;font-weight:700;color:#059669;margin-bottom:12px"><i class="fas fa-shield-halved" style="margin-right:8px"></i>Forces — ' + strongBlocks.length + ' atouts majeurs</div>';
+        html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px">';
+        for (const b of strongBlocks) {
+          html += '<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;padding:16px">';
+          html += '<div style="font-weight:700;color:#059669;font-size:13px;margin-bottom:6px"><i class="fas fa-check-circle" style="margin-right:6px"></i>' + esc(b.name) + ' (' + (b.score||0) + '/100)</div>';
+          html += '<div style="font-size:12px;color:#334155;line-height:1.5">' + esc(b.analysis || '') + '</div>';
+          html += '</div>';
+        }
+        html += '</div></div>';
+      }
+      
+      // ── Vigilances (blocks < 70) ──
+      if (weakBlocks.length) {
+        html += '<div style="margin-bottom:24px"><div style="font-size:16px;font-weight:700;color:#d97706;margin-bottom:12px"><i class="fas fa-exclamation-triangle" style="margin-right:8px"></i>Points de vigilance — ' + weakBlocks.length + ' risques identifiés</div>';
+        html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px">';
+        for (const b of weakBlocks) {
+          html += '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:12px;padding:16px">';
+          html += '<div style="font-weight:700;color:#d97706;font-size:13px;margin-bottom:6px"><i class="fas fa-triangle-exclamation" style="margin-right:6px"></i>' + esc(b.name) + ' (' + (b.score||0) + '/100)</div>';
+          html += '<div style="font-size:12px;color:#334155;line-height:1.5">' + esc(b.analysis || '') + '</div>';
+          if (b.recommendations?.length) {
+            html += '<div style="margin-top:8px;font-size:12px;color:#92400e"><strong>Action :</strong> ' + esc(b.recommendations[0]) + '</div>';
+          }
+          html += '</div>';
+        }
+        html += '</div></div>';
+      }
+      
+      // ── Recommandations from all blocks ──
+      const allRecos = [];
+      for (const b of blocks) {
+        if (b.recommendations?.length) {
+          for (const r of b.recommendations) allRecos.push({ block: b.name, text: r });
+        }
+      }
+      if (allRecos.length) {
+        html += '<div style="margin-bottom:24px"><div style="font-size:16px;font-weight:700;color:#7c3aed;margin-bottom:12px"><i class="fas fa-bullseye" style="margin-right:8px"></i>Recommandations stratégiques (' + allRecos.length + ')</div>';
+        html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px">';
+        for (let i = 0; i < allRecos.length; i++) {
+          const r = allRecos[i];
+          html += '<div style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:10px;padding:12px">';
+          html += '<div style="font-size:11px;color:#7c3aed;font-weight:700;margin-bottom:4px">' + esc(r.block) + '</div>';
+          html += '<div style="font-size:12px;color:#334155;line-height:1.4">' + esc(r.text) + '</div>';
+          html += '</div>';
+        }
+        html += '</div></div>';
+      }
+      
+      // ── Link to full deliverable ──
+      html += '<div style="text-align:center;padding:16px;margin-top:8px">';
+      html += '<a href="/deliverable/bmc_analysis" style="display:inline-flex;align-items:center;gap:8px;background:' + col + ';color:#fff;padding:12px 28px;border-radius:12px;text-decoration:none;font-weight:700;font-size:14px;box-shadow:0 4px 12px ' + col + '40"><i class="fas fa-file-pdf"></i> Voir le livrable complet (PDF)</a>';
+      html += '</div>';
+      
       html += '</div>';
       return html;
     }
