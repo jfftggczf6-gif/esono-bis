@@ -8,6 +8,10 @@ import { verifyToken, getAuthToken } from './auth'
 import { orchestrateGeneration, loadKBContext, type OrchestrationResult } from './agents/ai-agents'
 import { renderBMCPage, adaptBMCData } from './deliverable-bmc'
 import { generateFullBmcDeliverable, generateFullBmcDeliverableFallback, type BmcDeliverableData, type KBContextForBmc } from './bmc-deliverable-engine'
+import { generateFullSicDeliverable, generateFullSicDeliverableFallback, type SicDeliverableData } from './sic-deliverable-engine'
+import { analyzeInputsWithAI, generateInputsDiagnosticHtml, analyzeInputs, type InputTabKey } from './inputs-engine'
+import { analyzePmeWithAI, analyzePme, generatePmePreviewHtml, generatePmeExcelXml, type PmeInputData } from './framework-pme-engine'
+import type { KBContext } from './claude-api'
 
 type Bindings = {
   DB: D1Database
@@ -94,6 +98,75 @@ function formatKBForPrompt(items: any[], type: string): string {
 // ─── Rich Fallback Generator ──────────────────────────────────
 function rnd(min: number, max: number): number { return Math.floor(Math.random() * (max - min + 1)) + min }
 function jitter(base: number, spread = 12): number { return Math.max(0, Math.min(100, base + rnd(-spread, spread))) }
+
+/** Build minimal PmeInputData from a framework deliverable for the PME analysis engine */
+function _buildPmeInputDataFromDeliverable(delivData: any, companyName: string, country: string): PmeInputData {
+  // Extract what we can from the deliverable data sections
+  const zero3: [number, number, number] = [0, 0, 0]
+  const zero5: [number, number, number, number, number] = [0, 0, 0, 0, 0]
+  
+  // Try to extract CA from the deliverable data
+  let caTotal: [number, number, number] = [0, 0, 0]
+  if (delivData?.sections) {
+    for (const s of delivData.sections) {
+      const content = (s.content || '').toLowerCase()
+      // Try to find CA mentions
+      const caMatch = content.match(/ca[^:]*:\s*([\d\s]+)/i)
+      if (caMatch) {
+        const ca = parseInt(caMatch[1].replace(/\s/g, ''))
+        if (ca > 0) caTotal = [Math.round(ca * 0.6), Math.round(ca * 0.8), ca]
+      }
+    }
+  }
+  
+  // Fallback: use score-based estimation
+  if (caTotal[2] === 0) {
+    const baseCA = 25_000_000 // 25M FCFA default
+    caTotal = [Math.round(baseCA * 0.6), Math.round(baseCA * 0.8), baseCA]
+  }
+
+  return {
+    companyName,
+    sector: '',
+    analysisDate: new Date().toISOString(),
+    consultant: 'ESONO AI',
+    location: '',
+    country: country || 'Côte d\'Ivoire',
+    activities: [{ name: 'Activité principale', isStrategic: true }],
+    historique: {
+      caTotal,
+      caByActivity: [caTotal],
+      achatsMP: [Math.round(caTotal[0] * 0.4), Math.round(caTotal[1] * 0.4), Math.round(caTotal[2] * 0.4)],
+      sousTraitance: zero3,
+      coutsProduction: [Math.round(caTotal[0] * 0.1), Math.round(caTotal[1] * 0.1), Math.round(caTotal[2] * 0.1)],
+      salaires: [Math.round(caTotal[0] * 0.2), Math.round(caTotal[1] * 0.2), Math.round(caTotal[2] * 0.2)],
+      loyers: [Math.round(caTotal[0] * 0.05), Math.round(caTotal[1] * 0.05), Math.round(caTotal[2] * 0.05)],
+      assurances: zero3,
+      fraisGeneraux: [Math.round(caTotal[0] * 0.05), Math.round(caTotal[1] * 0.05), Math.round(caTotal[2] * 0.05)],
+      marketing: zero3,
+      fraisBancaires: zero3,
+      resultatNet: [Math.round(caTotal[0] * 0.05), Math.round(caTotal[1] * 0.08), Math.round(caTotal[2] * 0.1)],
+      tresoDebut: [0, Math.round(caTotal[0] * 0.05), Math.round(caTotal[1] * 0.08)],
+      tresoFin: [Math.round(caTotal[0] * 0.05), Math.round(caTotal[1] * 0.08), Math.round(caTotal[2] * 0.1)],
+      dso: [45, 40, 35],
+      dpo: [30, 30, 30],
+      stockJours: [15, 15, 15],
+      detteCT: zero3,
+      detteLT: zero3,
+      serviceDette: zero3,
+      amortissements: zero3,
+    },
+    hypotheses: {
+      croissanceCA: [20, 20, 15, 15, 10],
+      evolutionPrix: [3, 3, 3, 3, 3],
+      evolutionCoutsDirects: [2, 2, 2, 2, 2],
+      inflationChargesFixes: [3, 3, 3, 3, 3],
+      evolutionMasseSalariale: [5, 5, 5, 5, 5],
+      capex: [0, 0, 0, 0, 0],
+      amortissement: 5,
+    },
+  }
+}
 
 function buildFallbackResult(hasBmc: boolean, hasSic: boolean, hasInputs: boolean, name: string, docCount: number) {
   const baseScore = 15 + (hasBmc ? 25 : 0) + (hasSic ? 25 : 0) + (hasInputs ? 25 : 0)
@@ -780,100 +853,289 @@ entrepreneurRoutes.post('/api/ai/generate-all', async (c) => {
 
     // ═══ GENERATE FULL BMC HTML DELIVERABLE (Claude AI + KB) ═══
     // This replaces the old on-click generation — now done at generation time
-    // Sequenced AFTER the multi-agent orchestration to avoid Claude rate limits (429)
-    if (hasBmc && generableTypes.includes('bmc_analysis')) {
-      try {
-        // Wait 8 seconds to let the Claude rate limit window pass after orchestration
-        console.log('[Generate-All] Waiting 8s before BMC HTML generation (rate limit cooldown)...')
-        await new Promise(resolve => setTimeout(resolve, 8000))
-        
-        // Load KB context for the BMC deliverable engine
-        const kbContext = await loadKBContext(c.env.DB, userCountry)
-        
-        // Format KB for the BMC prompt
-        const kbForBmc: KBContextForBmc = {
-          benchmarks: formatKBForPrompt(kbContext.benchmarks, 'benchmarks'),
-          fiscalParams: formatKBForPrompt(kbContext.fiscalParams, 'fiscal'),
-          funders: formatKBForPrompt(kbContext.funders, 'funders'),
-          criteria: formatKBForPrompt(kbContext.criteria, 'criteria'),
-          feedback: kbContext.feedbackHistory.length > 0 
-            ? kbContext.feedbackHistory.map((f: any) => `${f.dimension}: ${f.expert_comment}`).join('\n')
-            : '',
-        }
+    // All deliverable HTML generation runs in parallel AFTER multi-agent orchestration
+    
+    // Load KB context once for all engines
+    let kbForEngines: KBContext | undefined
+    let kbForBmc: KBContextForBmc | undefined
+    try {
+      const kbContext = await loadKBContext(c.env.DB, userCountry)
+      kbForEngines = {
+        benchmarks: formatKBForPrompt(kbContext.benchmarks, 'benchmarks'),
+        fiscalParams: formatKBForPrompt(kbContext.fiscalParams, 'fiscal'),
+        funders: formatKBForPrompt(kbContext.funders, 'funders'),
+        criteria: formatKBForPrompt(kbContext.criteria, 'criteria'),
+        feedback: kbContext.feedbackHistory.length > 0 
+          ? kbContext.feedbackHistory.map((f: any) => `${f.dimension}: ${f.expert_comment}`).join('\n')
+          : '',
+      }
+      kbForBmc = kbForEngines as KBContextForBmc
+    } catch (kbErr: any) {
+      console.warn('[Generate-All] KB context load failed (non-fatal):', kbErr.message)
+    }
 
-        // Get BMC answers (questionnaire or uploaded doc)
-        let bmcAnswers = new Map<number, string>()
-        const bmcModule = await c.env.DB.prepare(
-          "SELECT id FROM modules WHERE module_code = 'mod1_bmc' LIMIT 1"
-        ).first() as any
-        if (bmcModule) {
-          const bmcProgress = await c.env.DB.prepare(
-            'SELECT id FROM progress WHERE user_id = ? AND module_id = ?'
-          ).bind(payload.userId, bmcModule.id).first() as any
-          if (bmcProgress) {
-            const qRows = await c.env.DB.prepare(
-              'SELECT question_number, user_response FROM questions WHERE progress_id = ? AND user_response IS NOT NULL ORDER BY question_number'
-            ).bind(bmcProgress.id).all()
-            for (const row of (qRows.results || []) as any[]) {
-              if (row.user_response?.trim()) bmcAnswers.set(row.question_number, row.user_response)
+    // Get project info (shared across engines)
+    const project = await c.env.DB.prepare(
+      'SELECT name, description FROM projects WHERE user_id = ? LIMIT 1'
+    ).bind(payload.userId).first() as any
+    const companyName = (project?.name as string) || userName
+
+    // ── Parallel HTML generation promises ──
+    const htmlGenerationPromises: Promise<void>[] = []
+
+    // 1) BMC HTML
+    if (hasBmc && generableTypes.includes('bmc_analysis')) {
+      htmlGenerationPromises.push((async () => {
+        try {
+          let bmcAnswers = new Map<number, string>()
+          const bmcModule = await c.env.DB.prepare(
+            "SELECT id FROM modules WHERE module_code = 'mod1_bmc' LIMIT 1"
+          ).first() as any
+          if (bmcModule) {
+            const bmcProgress = await c.env.DB.prepare(
+              'SELECT id FROM progress WHERE user_id = ? AND module_id = ?'
+            ).bind(payload.userId, bmcModule.id).first() as any
+            if (bmcProgress) {
+              const qRows = await c.env.DB.prepare(
+                'SELECT question_number, user_response FROM questions WHERE progress_id = ? AND user_response IS NOT NULL ORDER BY question_number'
+              ).bind(bmcProgress.id).all()
+              for (const row of (qRows.results || []) as any[]) {
+                if (row.user_response?.trim()) bmcAnswers.set(row.question_number, row.user_response)
+              }
             }
           }
-        }
-        // Fallback: use uploaded BMC text
-        if (bmcAnswers.size === 0 && documentTexts.bmc) {
-          bmcAnswers.set(1, documentTexts.bmc)
-        }
-
-        if (bmcAnswers.size > 0) {
-          const project = await c.env.DB.prepare(
-            'SELECT name, description FROM projects WHERE user_id = ? LIMIT 1'
-          ).bind(payload.userId).first() as any
-
-          const bmcDeliverableData: BmcDeliverableData = {
-            companyName: (project?.name as string) || userName,
-            entrepreneurName: userName,
-            sector: '',
-            location: '',
-            country: userCountry || 'Côte d\'Ivoire',
-            brandName: '',
-            tagline: '',
-            analysisDate: new Date().toISOString(),
-            answers: bmcAnswers,
-            apiKey: apiKey,
-            kbContext: kbForBmc,
+          if (bmcAnswers.size === 0 && documentTexts.bmc) {
+            bmcAnswers.set(1, documentTexts.bmc)
           }
 
-          console.log('[Generate-All] Generating full BMC HTML deliverable with KB...')
-          let bmcHtml: string
-          try {
-            bmcHtml = await generateFullBmcDeliverable(bmcDeliverableData)
-            console.log(`[Generate-All] BMC HTML from Claude AI: ${bmcHtml.length} chars`)
-          } catch (genErr: any) {
-            console.warn('[Generate-All] Claude AI BMC HTML failed, using fallback:', genErr.message)
-            bmcHtml = generateFullBmcDeliverableFallback(bmcDeliverableData)
-            console.log(`[Generate-All] BMC HTML from fallback: ${bmcHtml.length} chars`)
+          if (bmcAnswers.size > 0) {
+            const bmcDeliverableData: BmcDeliverableData = {
+              companyName,
+              entrepreneurName: userName,
+              sector: '',
+              location: '',
+              country: userCountry || 'Côte d\'Ivoire',
+              brandName: '',
+              tagline: '',
+              analysisDate: new Date().toISOString(),
+              answers: bmcAnswers,
+              apiKey: apiKey,
+              kbContext: kbForBmc,
+            }
+
+            console.log('[Generate-All] Generating full BMC HTML deliverable with KB...')
+            let bmcHtml: string
+            try {
+              bmcHtml = await generateFullBmcDeliverable(bmcDeliverableData)
+              console.log(`[Generate-All] BMC HTML from Claude AI: ${bmcHtml.length} chars`)
+            } catch (genErr: any) {
+              console.warn('[Generate-All] Claude AI BMC HTML failed, using fallback:', genErr.message)
+              bmcHtml = generateFullBmcDeliverableFallback(bmcDeliverableData)
+              console.log(`[Generate-All] BMC HTML from fallback: ${bmcHtml.length} chars`)
+            }
+
+            await c.env.DB.prepare(
+              "DELETE FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'bmc_html'"
+            ).bind(payload.userId).run()
+
+            const bmcHtmlId = crypto.randomUUID()
+            await c.env.DB.prepare(`
+              INSERT INTO entrepreneur_deliverables (id, user_id, type, content, score, version, iteration_id, status, created_at)
+              VALUES (?, ?, 'bmc_html', ?, ?, ?, ?, 'generated', datetime('now'))
+            `).bind(bmcHtmlId, payload.userId, bmcHtml, result.deliverables?.bmc_analysis?.score || 0, newVersion, iterationId).run()
+
+            console.log(`[Generate-All] BMC HTML stored: ${bmcHtml.length} chars, id=${bmcHtmlId}`)
+            agentsUsed.push('bmc_deliverable_engine:html')
           }
-
-          // Delete any previous bmc_html for this user to avoid stale data
-          await c.env.DB.prepare(
-            "DELETE FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'bmc_html'"
-          ).bind(payload.userId).run()
-
-          // Store the full HTML in a separate deliverable record
-          const bmcHtmlId = crypto.randomUUID()
-          await c.env.DB.prepare(`
-            INSERT INTO entrepreneur_deliverables (id, user_id, type, content, score, version, iteration_id, status, created_at)
-            VALUES (?, ?, 'bmc_html', ?, ?, ?, ?, 'generated', datetime('now'))
-          `).bind(bmcHtmlId, payload.userId, bmcHtml, result.deliverables?.bmc_analysis?.score || 0, newVersion, iterationId).run()
-
-          console.log(`[Generate-All] BMC HTML deliverable stored successfully: ${bmcHtml.length} chars, id=${bmcHtmlId}`)
-          agentsUsed.push('bmc_deliverable_engine:html')
+        } catch (err: any) {
+          console.error('[Generate-All] BMC HTML error (non-fatal):', err.message)
+          agentErrors.push(`bmc_html: ${err.message}`)
         }
-      } catch (err: any) {
-        console.error('[Generate-All] BMC HTML generation error (non-fatal):', err.message)
-        agentErrors.push(`bmc_html: ${err.message}`)
-      }
+      })())
     }
+
+    // 2) SIC HTML
+    if (hasSic && generableTypes.includes('sic_analysis')) {
+      htmlGenerationPromises.push((async () => {
+        try {
+          // Get SIC answers from questionnaire
+          let sicAnswers = new Map<number, string>()
+          const sicModule = await c.env.DB.prepare(
+            "SELECT id FROM modules WHERE module_code = 'mod2_sic' LIMIT 1"
+          ).first() as any
+          if (sicModule) {
+            const sicProgress = await c.env.DB.prepare(
+              'SELECT id FROM progress WHERE user_id = ? AND module_id = ?'
+            ).bind(payload.userId, sicModule.id).first() as any
+            if (sicProgress) {
+              const qRows = await c.env.DB.prepare(
+                'SELECT question_number, user_response FROM questions WHERE progress_id = ? AND user_response IS NOT NULL ORDER BY question_number'
+              ).bind(sicProgress.id).all()
+              for (const row of (qRows.results || []) as any[]) {
+                if (row.user_response?.trim()) sicAnswers.set(row.question_number, row.user_response)
+              }
+            }
+          }
+          if (sicAnswers.size === 0 && documentTexts.sic) {
+            sicAnswers.set(1, documentTexts.sic)
+          }
+
+          if (sicAnswers.size > 0) {
+            // Build a minimal SicAnalysisResult — the engine will enrich it via Claude AI
+            const minimalSicAnalysis = {
+              sections: [], scoreGlobal: 0, scoreCoherenceBmc: 0,
+              impactMatrix: { directBeneficiaries: 0, indirectBeneficiaries: 0, totalBeneficiaries: 0, geoScope: '', timeHorizon: '' },
+              oddMappings: [], impactWashingRisk: 'moyen' as const, impactWashingSignals: [],
+              smartCheck: { isSpecific: false, isMeasurable: false, isAttainable: false, isRelevant: false, isTimeBound: false, score: 0, feedback: '' },
+              bmcCoherenceIssues: [], recommendations: [], verdict: '', timestamp: new Date().toISOString()
+            }
+
+            const sicDeliverableData: SicDeliverableData = {
+              companyName,
+              entrepreneurName: userName,
+              sector: '',
+              location: '',
+              country: userCountry || 'Côte d\'Ivoire',
+              analysis: minimalSicAnalysis,
+              answers: sicAnswers,
+              apiKey: apiKey,
+              kbContext: kbForEngines,
+            }
+
+            console.log('[Generate-All] Generating full SIC HTML deliverable with KB...')
+            let sicHtml: string
+            try {
+              sicHtml = await generateFullSicDeliverable(sicDeliverableData)
+              console.log(`[Generate-All] SIC HTML from Claude AI: ${sicHtml.length} chars`)
+            } catch (genErr: any) {
+              console.warn('[Generate-All] Claude AI SIC HTML failed, using fallback:', genErr.message)
+              sicHtml = generateFullSicDeliverableFallback(sicDeliverableData)
+              console.log(`[Generate-All] SIC HTML from fallback: ${sicHtml.length} chars`)
+            }
+
+            await c.env.DB.prepare(
+              "DELETE FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'sic_html'"
+            ).bind(payload.userId).run()
+
+            const sicHtmlId = crypto.randomUUID()
+            await c.env.DB.prepare(`
+              INSERT INTO entrepreneur_deliverables (id, user_id, type, content, score, version, iteration_id, status, created_at)
+              VALUES (?, ?, 'sic_html', ?, ?, ?, ?, 'generated', datetime('now'))
+            `).bind(sicHtmlId, payload.userId, sicHtml, result.deliverables?.sic_analysis?.score || 0, newVersion, iterationId).run()
+
+            console.log(`[Generate-All] SIC HTML stored: ${sicHtml.length} chars, id=${sicHtmlId}`)
+            agentsUsed.push('sic_deliverable_engine:html')
+          }
+        } catch (err: any) {
+          console.error('[Generate-All] SIC HTML error (non-fatal):', err.message)
+          agentErrors.push(`sic_html: ${err.message}`)
+        }
+      })())
+    }
+
+    // 3) Inputs Diagnostic HTML
+    if (hasInputs) {
+      htmlGenerationPromises.push((async () => {
+        try {
+          // Gather inputs data from all 9 tabs
+          const inputsModule = await c.env.DB.prepare(
+            "SELECT id FROM modules WHERE module_code = 'mod3_inputs' LIMIT 1"
+          ).first() as any
+          
+          let allInputData: Record<InputTabKey, Record<string, any>> = {} as any
+          if (inputsModule) {
+            const inputProgress = await c.env.DB.prepare(
+              'SELECT id FROM progress WHERE user_id = ? AND module_id = ?'
+            ).bind(payload.userId, inputsModule.id).first() as any
+            if (inputProgress) {
+              const qRows = await c.env.DB.prepare(
+                'SELECT question_number, user_response FROM questions WHERE progress_id = ? AND user_response IS NOT NULL ORDER BY question_number'
+              ).bind(inputProgress.id).all()
+              // Parse input data from questionnaire responses
+              for (const row of (qRows.results || []) as any[]) {
+                try {
+                  const parsed = JSON.parse(row.user_response as string)
+                  if (parsed && typeof parsed === 'object') {
+                    Object.assign(allInputData, parsed)
+                  }
+                } catch { /* not JSON, skip */ }
+              }
+            }
+          }
+          // Fallback: try to parse uploaded inputs text
+          if (Object.keys(allInputData).length === 0 && documentTexts.inputs) {
+            try {
+              const parsed = JSON.parse(documentTexts.inputs)
+              if (parsed && typeof parsed === 'object') allInputData = parsed
+            } catch { /* not JSON */ }
+          }
+
+          if (Object.keys(allInputData).length > 0) {
+            console.log('[Generate-All] Generating Inputs diagnostic HTML with AI...')
+            const inputsAnalysis = await analyzeInputsWithAI(
+              allInputData, companyName, '', apiKey, kbForEngines
+            )
+            const inputsHtml = generateInputsDiagnosticHtml(inputsAnalysis, companyName, userName)
+
+            await c.env.DB.prepare(
+              "DELETE FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'inputs_html'"
+            ).bind(payload.userId).run()
+
+            const inputsHtmlId = crypto.randomUUID()
+            await c.env.DB.prepare(`
+              INSERT INTO entrepreneur_deliverables (id, user_id, type, content, score, version, iteration_id, status, created_at)
+              VALUES (?, ?, 'inputs_html', ?, ?, ?, ?, 'generated', datetime('now'))
+            `).bind(inputsHtmlId, payload.userId, inputsHtml, inputsAnalysis.readinessScore || 0, newVersion, iterationId).run()
+
+            console.log(`[Generate-All] Inputs HTML stored: ${inputsHtml.length} chars, score=${inputsAnalysis.readinessScore}, source=${inputsAnalysis.aiSource}`)
+            agentsUsed.push(`inputs_diagnostic:${inputsAnalysis.aiSource}`)
+          }
+        } catch (err: any) {
+          console.error('[Generate-All] Inputs HTML error (non-fatal):', err.message)
+          agentErrors.push(`inputs_html: ${err.message}`)
+        }
+      })())
+    }
+
+    // 4) Framework PME HTML
+    if ((hasBmc || hasInputs) && generableTypes.includes('framework')) {
+      htmlGenerationPromises.push((async () => {
+        try {
+          // The framework needs structured PmeInputData
+          // Try to build it from the deliverables data or uploaded inputs
+          const frameworkDelivData = result.deliverables?.framework
+          if (frameworkDelivData) {
+            console.log('[Generate-All] Generating Framework PME HTML with AI...')
+            // Build minimal PmeInputData from available data
+            const pmeData: PmeInputData = _buildPmeInputDataFromDeliverable(frameworkDelivData, companyName, userCountry)
+            
+            const pmeAnalysis = await analyzePmeWithAI(pmeData, apiKey, kbForEngines)
+            const frameworkHtml = generatePmePreviewHtml(pmeAnalysis, pmeData)
+
+            await c.env.DB.prepare(
+              "DELETE FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'framework_html'"
+            ).bind(payload.userId).run()
+
+            const fwHtmlId = crypto.randomUUID()
+            await c.env.DB.prepare(`
+              INSERT INTO entrepreneur_deliverables (id, user_id, type, content, score, version, iteration_id, status, created_at)
+              VALUES (?, ?, 'framework_html', ?, ?, ?, ?, 'generated', datetime('now'))
+            `).bind(fwHtmlId, payload.userId, frameworkHtml, frameworkDelivData.score || 0, newVersion, iterationId).run()
+
+            console.log(`[Generate-All] Framework HTML stored: ${frameworkHtml.length} chars, source=${pmeAnalysis.aiSource}`)
+            agentsUsed.push(`framework_pme:${pmeAnalysis.aiSource}`)
+          }
+        } catch (err: any) {
+          console.error('[Generate-All] Framework HTML error (non-fatal):', err.message)
+          agentErrors.push(`framework_html: ${err.message}`)
+        }
+      })())
+    }
+
+    // Wait for ALL HTML deliverables to complete in parallel
+    console.log(`[Generate-All] Waiting for ${htmlGenerationPromises.length} HTML deliverable generation(s)...`)
+    await Promise.allSettled(htmlGenerationPromises)
+    console.log('[Generate-All] All HTML deliverable generations completed.')
 
     return c.json({
       success: true,
@@ -1300,6 +1562,45 @@ entrepreneurRoutes.get('/deliverable/:type', async (c) => {
         const bmcData = adaptBMCData(content, (user?.name as string) || 'Entrepreneur', (user?.name as string) || 'Entrepreneur')
         return c.html(renderBMCPage(bmcData, (user?.name as string) || 'Entrepreneur'))
       }
+    }
+
+    // SIC Analysis — serve pre-generated HTML from database
+    if (dtype === 'sic_analysis') {
+      const sicHtml = await c.env.DB.prepare(
+        "SELECT content FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'sic_html' ORDER BY version DESC LIMIT 1"
+      ).bind(payload.userId).first() as any
+      
+      if (sicHtml?.content) {
+        console.log('[SIC Deliverable Page] Serving pre-stored HTML (' + sicHtml.content.length + ' chars)')
+        return c.html(sicHtml.content)
+      }
+      // Fallback: continue to generic rendering below
+    }
+
+    // Framework Analyse — serve pre-generated HTML from database
+    if (dtype === 'framework') {
+      const fwHtml = await c.env.DB.prepare(
+        "SELECT content FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'framework_html' ORDER BY version DESC LIMIT 1"
+      ).bind(payload.userId).first() as any
+      
+      if (fwHtml?.content) {
+        console.log('[Framework Deliverable Page] Serving pre-stored HTML (' + fwHtml.content.length + ' chars)')
+        return c.html(fwHtml.content)
+      }
+      // Fallback: continue to generic rendering below
+    }
+
+    // Plan Financier OVO / Inputs Diagnostic — serve pre-generated HTML from database
+    if (dtype === 'plan_ovo') {
+      const inputsHtml = await c.env.DB.prepare(
+        "SELECT content FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'inputs_html' ORDER BY version DESC LIMIT 1"
+      ).bind(payload.userId).first() as any
+      
+      if (inputsHtml?.content) {
+        console.log('[Inputs Deliverable Page] Serving pre-stored HTML (' + inputsHtml.content.length + ' chars)')
+        return c.html(inputsHtml.content)
+      }
+      // Fallback: continue to generic rendering below
     }
 
     // Build sections HTML depending on type

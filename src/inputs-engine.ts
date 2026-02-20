@@ -1,7 +1,10 @@
 // ═══════════════════════════════════════════════════════════════
 // Inputs Engine — Financial Inputs Analysis & Validation
 // Module 3 : 9 onglets, alertes IA temps reel, scoring, coherence
+// Upgraded: Claude AI enrichment for contextual diagnostics
 // ═══════════════════════════════════════════════════════════════
+
+import { callClaudeJSON, isValidApiKey, KBContext } from './claude-api'
 
 // ─── Types ───
 
@@ -77,6 +80,21 @@ export interface InputsAnalysisResult {
   readinessLabel: string
   verdict: string
   timestamp: string
+  aiSource?: 'claude' | 'fallback'
+  aiDiagnostic?: InputsAIDiagnostic
+}
+
+/** AI-enriched diagnostic from Claude */
+export interface InputsAIDiagnostic {
+  verdictExpert: string
+  pointsForts: string[]
+  pointsVigilance: string[]
+  recommandations: Array<{ action: string; priorite: 'haute' | 'moyenne' | 'basse'; impact: string }>
+  benchmarkComparison: Array<{ ratio: string; valeur: string; benchmark: string; verdict: string }>
+  alertesFiscales: string[]
+  bailleursPotentiels: Array<{ nom: string; raison: string; ticket: string }>
+  scoreInvestisseur: number // 0-100
+  commentaireInvestisseur: string
 }
 
 // ─── Coaching Sidebar Content ───
@@ -676,12 +694,99 @@ export function generateInputsDiagnosticHtml(
       <ol style="padding-left:20px;">${recoHtml}</ol>
     </div>
 
+    ${_renderAIDiagnosticSections(analysis)}
+
     <div style="text-align:center;padding:24px;color:#94a3b8;font-size:12px;">
-      Genere par ESONO Investment Readiness &middot; Module 3 Inputs &middot; ${new Date().toISOString().slice(0, 10)}
+      ${analysis.aiSource === 'claude' ? '&#129302; Analyse propuls\u00e9e par Claude AI' : '&#9881; Analyse automatique (r\u00e8gles)'}
+      &middot; ESONO Investment Readiness &middot; Module 3 Inputs &middot; ${new Date().toISOString().slice(0, 10)}
     </div>
   </div>
 </body>
 </html>`
+}
+
+/** Render AI-enriched sections if available */
+function _renderAIDiagnosticSections(analysis: InputsAnalysisResult): string {
+  const ai = analysis.aiDiagnostic
+  if (!ai || analysis.aiSource !== 'claude') return ''
+
+  let html = ''
+
+  // Benchmark comparison
+  if (ai.benchmarkComparison && ai.benchmarkComparison.length > 0) {
+    html += `<div class="card">
+      <h2>&#128202; Comparaison aux Benchmarks Sectoriels</h2>
+      <div style="font-size:12px;color:#64748b;margin-bottom:12px;">Source : Base de connaissances ESONO (211 benchmarks)</div>
+      ${ai.benchmarkComparison.map(b => {
+        const vColor = b.verdict === 'au-dessus' ? '#059669' : b.verdict === 'conforme' ? '#0284c7' : '#dc2626'
+        const vLabel = b.verdict === 'au-dessus' ? '\u2705 Au-dessus' : b.verdict === 'conforme' ? '\u2611\uFE0F Conforme' : '\u26A0\uFE0F En-dessous'
+        return `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:13px;">
+          <span style="font-weight:600;color:#334155;">${b.ratio}</span>
+          <div style="display:flex;gap:16px;align-items:center;">
+            <span style="font-weight:700;">${b.valeur}</span>
+            <span style="color:#94a3b8;font-size:11px;">bench: ${b.benchmark}</span>
+            <span style="color:${vColor};font-weight:600;font-size:12px;">${vLabel}</span>
+          </div>
+        </div>`
+      }).join('')}
+    </div>`
+  }
+
+  // Score investisseur
+  if (ai.scoreInvestisseur >= 0) {
+    const sColor = ai.scoreInvestisseur >= 70 ? '#059669' : ai.scoreInvestisseur >= 50 ? '#d97706' : '#dc2626'
+    html += `<div class="card">
+      <h2>&#128176; Score Investisseur (IA)</h2>
+      <div style="display:flex;align-items:center;gap:20px;">
+        <div style="width:90px;height:90px;border-radius:50%;background:${sColor};display:flex;flex-direction:column;align-items:center;justify-content:center;color:white;">
+          <span style="font-size:24px;font-weight:800;">${ai.scoreInvestisseur}</span>
+          <span style="font-size:10px;opacity:0.8;">/100</span>
+        </div>
+        <div style="flex:1;">
+          <div style="font-size:14px;color:#334155;line-height:1.5;">${ai.commentaireInvestisseur || ''}</div>
+        </div>
+      </div>
+    </div>`
+  }
+
+  // Points forts & vigilance
+  if ((ai.pointsForts && ai.pointsForts.length > 0) || (ai.pointsVigilance && ai.pointsVigilance.length > 0)) {
+    html += `<div class="card">
+      <h2>&#129302; Analyse Expert IA</h2>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+        <div>
+          <div style="font-weight:700;color:#059669;margin-bottom:8px;font-size:14px;">\u2705 Points Forts</div>
+          ${(ai.pointsForts || []).map(p => `<div style="font-size:12px;padding:4px 0;color:#334155;">\u2022 ${p}</div>`).join('')}
+        </div>
+        <div>
+          <div style="font-weight:700;color:#d97706;margin-bottom:8px;font-size:14px;">\u26A0\uFE0F Points de Vigilance</div>
+          ${(ai.pointsVigilance || []).map(p => `<div style="font-size:12px;padding:4px 0;color:#334155;">\u2022 ${p}</div>`).join('')}
+        </div>
+      </div>
+    </div>`
+  }
+
+  // Bailleurs potentiels
+  if (ai.bailleursPotentiels && ai.bailleursPotentiels.length > 0) {
+    html += `<div class="card">
+      <h2>&#127974; Bailleurs de Fonds Potentiels</h2>
+      ${ai.bailleursPotentiels.map(b => `<div style="padding:10px;border-radius:8px;border:1px solid #e5e7eb;margin-bottom:8px;">
+        <div style="font-weight:700;font-size:14px;color:#1e3a5f;">${b.nom}</div>
+        <div style="font-size:12px;color:#64748b;margin-top:2px;">${b.raison}</div>
+        <div style="font-size:11px;color:#059669;margin-top:4px;font-weight:600;">Ticket estim\u00e9 : ${b.ticket}</div>
+      </div>`).join('')}
+    </div>`
+  }
+
+  // Alertes fiscales
+  if (ai.alertesFiscales && ai.alertesFiscales.length > 0) {
+    html += `<div class="card">
+      <h2 style="color:#7c3aed;">&#128178; Alertes Fiscales</h2>
+      ${ai.alertesFiscales.map(a => `<div style="padding:8px;border-radius:6px;background:#f3e8ff;border-left:3px solid #7c3aed;margin-bottom:4px;font-size:12px;color:#581c87;">${a}</div>`).join('')}
+    </div>`
+  }
+
+  return html
 }
 
 // ─── Helpers ───
@@ -694,4 +799,222 @@ export function getInputsReadinessLabel(score: number): { label: string, color: 
   if (score >= 60) return { label: 'Presque pret', color: 'blue' }
   if (score >= 40) return { label: 'A completer', color: 'yellow' }
   return { label: 'Insuffisant', color: 'red' }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// CLAUDE AI ENRICHMENT
+// ═══════════════════════════════════════════════════════════════
+
+function buildInputsSystemPrompt(kbContext?: KBContext): string {
+  let kb = ''
+  if (kbContext) {
+    if (kbContext.benchmarks) kb += `\n\n## BENCHMARKS SECTORIELS\n${kbContext.benchmarks}`
+    if (kbContext.fiscalParams) kb += `\n\n## PARAMETRES FISCAUX\n${kbContext.fiscalParams}`
+    if (kbContext.funders) kb += `\n\n## BAILLEURS DE FONDS\n${kbContext.funders}`
+    if (kbContext.criteria) kb += `\n\n## CRITERES D'EVALUATION\n${kbContext.criteria}`
+  }
+
+  return `Tu es un expert-analyste financier senior spécialisé en Afrique de l'Ouest (UEMOA/CEMAC).
+Tu analyses les inputs financiers d'une PME pour évaluer sa maturité d'investissement.
+
+## TON ROLE
+- Analyser les ratios financiers et les comparer aux benchmarks sectoriels
+- Identifier les forces et points de vigilance pour un investisseur
+- Proposer des recommandations actionnables et priorisées
+- Évaluer la crédibilité des données saisies
+- Identifier les bailleurs de fonds potentiels
+${kb}
+
+## REGLES ABSOLUES
+- Réponds UNIQUEMENT en JSON valide (pas de texte, pas de markdown)
+- Tous les commentaires en FRANCAIS
+- Cite des montants en FCFA quand pertinent
+- Réfère-toi aux benchmarks sectoriels si disponibles
+- Sois SPECIFIQUE : pas de généralités, cite des chiffres
+
+## FORMAT JSON ATTENDU
+{
+  "verdictExpert": "<Synthèse en 2-3 phrases de l'état financier>",
+  "pointsForts": ["<force 1 avec chiffre>", "<force 2>", ...],
+  "pointsVigilance": ["<vigilance 1 avec chiffre>", "<vigilance 2>", ...],
+  "recommandations": [
+    { "action": "<action concrète>", "priorite": "haute|moyenne|basse", "impact": "<impact attendu>" }
+  ],
+  "benchmarkComparison": [
+    { "ratio": "<nom du ratio>", "valeur": "<valeur actuelle>", "benchmark": "<norme sectorielle>", "verdict": "<au-dessus|conforme|en-dessous>" }
+  ],
+  "alertesFiscales": ["<alerte 1>", ...],
+  "bailleursPotentiels": [
+    { "nom": "<nom du bailleur>", "raison": "<pourquoi ce bailleur>", "ticket": "<montant estimé>" }
+  ],
+  "scoreInvestisseur": <0-100>,
+  "commentaireInvestisseur": "<ce qu'un investisseur penserait de ces données>"
+}`
+}
+
+function buildInputsUserPrompt(
+  analysis: InputsAnalysisResult,
+  allData: Record<InputTabKey, Record<string, any>>,
+  companyName: string,
+  sector: string
+): string {
+  const hist = allData.donnees_historiques || {}
+  const hyp = allData.hypotheses_croissance || {}
+  const bfr = allData.bfr_tresorerie || {}
+  const fin = allData.financement || {}
+  const infos = allData.infos_generales || {}
+  const r = analysis.financialRatios
+
+  let prompt = `# ANALYSE DES INPUTS FINANCIERS\n\n`
+  prompt += `## ENTREPRISE\n- Nom: ${companyName}\n- Secteur: ${sector}\n- Pays: ${infos.pays || 'Côte d\'Ivoire'}\n- Forme juridique: ${infos.forme_juridique || 'N/A'}\n\n`
+
+  prompt += `## COMPLETUDE\n- Score global: ${analysis.overallCompleteness}%\n- Readiness: ${analysis.readinessScore}/100 (${analysis.readinessLabel})\n`
+  for (const tab of analysis.tabs) {
+    prompt += `- ${tab.label}: ${tab.completeness}% (${tab.filledFields}/${tab.totalFields} champs)\n`
+  }
+
+  prompt += `\n## DONNEES HISTORIQUES\n`
+  prompt += `- CA Total N: ${hist.ca_total_n || 'N/A'} XOF\n`
+  prompt += `- CA N-1: ${hist.ca_total_n1 || 'N/A'} XOF\n`
+  prompt += `- CA N-2: ${hist.ca_total_n2 || 'N/A'} XOF\n`
+  prompt += `- Coûts directs (N): ${hist.couts_directs_n || 'N/A'} XOF\n`
+  prompt += `- Charges fixes (N): ${hist.charges_fixes_n || 'N/A'} XOF\n`
+  prompt += `- Résultat net (N): ${hist.resultat_net_n || 'N/A'} XOF\n`
+  prompt += `- Trésorerie (N): ${hist.tresorerie_n || 'N/A'} XOF\n`
+
+  prompt += `\n## RATIOS CALCULES\n`
+  prompt += `- Marge brute: ${r.margeBrute !== null ? r.margeBrute + '%' : 'N/A'}\n`
+  prompt += `- Marge opérationnelle: ${r.margeOperationnelle !== null ? r.margeOperationnelle + '%' : 'N/A'}\n`
+  prompt += `- Marge nette: ${r.margeNette !== null ? r.margeNette + '%' : 'N/A'}\n`
+  prompt += `- Charges fixes/CA: ${r.chargesFixesSurCA !== null ? r.chargesFixesSurCA + '%' : 'N/A'}\n`
+  prompt += `- Masse salariale/CA: ${r.masseSalarialeSurCA !== null ? r.masseSalarialeSurCA + '%' : 'N/A'}\n`
+  prompt += `- DSO: ${r.dso !== null ? r.dso + ' jours' : 'N/A'}\n`
+  prompt += `- DPO: ${r.dpo !== null ? r.dpo + ' jours' : 'N/A'}\n`
+  prompt += `- Stock: ${r.stockJours !== null ? r.stockJours + ' jours' : 'N/A'}\n`
+  prompt += `- CAGR 5 ans: ${r.cagr5Ans !== null ? r.cagr5Ans + '%' : 'N/A'}\n`
+
+  prompt += `\n## HYPOTHESES DE CROISSANCE\n`
+  prompt += `- CA An 1: ${hyp.ca_an1 || 'N/A'} XOF\n`
+  prompt += `- CA An 5: ${hyp.ca_an5 || 'N/A'} XOF\n`
+  prompt += `- Marge brute cible: ${hyp.marge_brute_cible || 'N/A'}%\n`
+  prompt += `- Inflation: ${hyp.inflation || 'N/A'}%\n`
+
+  prompt += `\n## BFR & TRESORERIE\n`
+  prompt += `- DSO: ${bfr.dso || 'N/A'} jours\n`
+  prompt += `- DPO: ${bfr.dpo || 'N/A'} jours\n`
+  prompt += `- Stock moyen: ${bfr.stock_moyen || 'N/A'} jours\n`
+  prompt += `- Trésorerie de départ: ${bfr.tresorerie_depart || 'N/A'} XOF\n`
+
+  prompt += `\n## FINANCEMENT\n`
+  prompt += `- Apports capital: ${fin.apports_capital || 'N/A'} XOF\n`
+  prompt += `- Subventions: ${fin.subventions || 'N/A'} XOF\n`
+  prompt += `- Crédits fournisseurs: ${fin.credits_fournisseurs || 'N/A'} XOF\n`
+
+  if (analysis.alerts.length > 0) {
+    prompt += `\n## ALERTES DETECTEES (${analysis.alerts.length})\n`
+    for (const a of analysis.alerts.slice(0, 15)) {
+      prompt += `- [${a.level.toUpperCase()}] ${a.message}\n`
+    }
+  }
+
+  if (analysis.coherenceIssues.length > 0) {
+    prompt += `\n## PROBLEMES DE COHERENCE\n`
+    for (const issue of analysis.coherenceIssues) {
+      prompt += `- ${issue}\n`
+    }
+  }
+
+  // Produits
+  try {
+    const produits = JSON.parse(allData.produits_services?.produits_json || '[]')
+    if (Array.isArray(produits) && produits.length > 0) {
+      prompt += `\n## PRODUITS/SERVICES (${produits.length})\n`
+      for (const p of produits.slice(0, 5)) {
+        prompt += `- ${p.nom || 'N/A'}: prix ${p.prix_unitaire || '?'} XOF, marge ${p.marge_pct || '?'}%\n`
+      }
+    }
+  } catch { /* ignore */ }
+
+  prompt += `\n\nAnalyse ces données financières et produis le diagnostic JSON expert.`
+  return prompt
+}
+
+/**
+ * Analyze inputs with Claude AI enrichment.
+ * Falls back to rule-based analysis if Claude fails.
+ */
+export async function analyzeInputsWithAI(
+  allData: Record<InputTabKey, Record<string, any>>,
+  companyName: string,
+  sector: string,
+  apiKey?: string,
+  kbContext?: KBContext
+): Promise<InputsAnalysisResult> {
+  // Always run rule-based analysis first
+  const baseAnalysis = analyzeInputs(allData)
+
+  // Try Claude enrichment
+  if (!isValidApiKey(apiKey)) {
+    console.log('[Inputs Engine] No valid API key, using rule-based analysis only')
+    baseAnalysis.aiSource = 'fallback'
+    return baseAnalysis
+  }
+
+  try {
+    const systemPrompt = buildInputsSystemPrompt(kbContext)
+    const userPrompt = buildInputsUserPrompt(baseAnalysis, allData, companyName, sector)
+
+    const aiData = await callClaudeJSON<InputsAIDiagnostic>({
+      apiKey: apiKey!,
+      systemPrompt,
+      userPrompt,
+      maxTokens: 4096,
+      timeoutMs: 60_000,
+      maxRetries: 2,
+      label: 'Inputs Diagnostic'
+    })
+
+    console.log(`[Inputs Engine] Claude AI enrichment succeeded — investisseur score: ${aiData.scoreInvestisseur}`)
+
+    // Merge AI recommendations with rule-based ones
+    if (aiData.recommandations && aiData.recommandations.length > 0) {
+      const aiRecos = aiData.recommandations.map(r => `[${r.priorite.toUpperCase()}] ${r.action} → ${r.impact}`)
+      baseAnalysis.recommendations = [...aiRecos, ...baseAnalysis.recommendations.slice(0, 3)]
+    }
+
+    // Merge AI verdict with rule-based
+    if (aiData.verdictExpert) {
+      baseAnalysis.verdict = aiData.verdictExpert
+    }
+
+    // Adjust readiness score with AI investor score
+    if (aiData.scoreInvestisseur >= 0 && aiData.scoreInvestisseur <= 100) {
+      baseAnalysis.readinessScore = Math.round((baseAnalysis.readinessScore + aiData.scoreInvestisseur) / 2)
+    }
+
+    baseAnalysis.aiSource = 'claude'
+    baseAnalysis.aiDiagnostic = aiData
+    return baseAnalysis
+
+  } catch (err: any) {
+    console.error(`[Inputs Engine] Claude AI failed, using rule-based: ${err.message}`)
+    baseAnalysis.aiSource = 'fallback'
+    return baseAnalysis
+  }
+}
+
+/**
+ * Generate enriched HTML diagnostic with AI insights.
+ * Async version that calls Claude for expert analysis.
+ */
+export async function generateInputsDiagnosticHtmlWithAI(
+  allData: Record<InputTabKey, Record<string, any>>,
+  companyName: string,
+  entrepreneurName: string,
+  sector: string,
+  apiKey?: string,
+  kbContext?: KBContext
+): Promise<string> {
+  const analysis = await analyzeInputsWithAI(allData, companyName, sector, apiKey, kbContext)
+  return generateInputsDiagnosticHtml(analysis, companyName, entrepreneurName)
 }

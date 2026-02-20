@@ -1,13 +1,13 @@
 // ═══════════════════════════════════════════════════════════════
-// SIC Deliverable Engine — Full Professional Deliverable Generator
+// SIC Deliverable Engine — Claude AI + Fallback Rule Engine
 // Réplique du format SIC_GOTCHE_FINAL.pdf
-// 10 sections : Score, Synthèse, Canvas, Indicateurs, Risques,
-//               Théorie du Changement, Outcomes, ODD, Stakeholders,
-//               SWOT, Recommandations, Maturité, Récap
+// Claude AI génère l'analyse complète quand disponible,
+// sinon fallback vers le moteur de règles existant.
 // ═══════════════════════════════════════════════════════════════
 
 import type { SicAnalysisResult, SicOddMapping } from './sic-engine'
 import { ODD_LABELS, ODD_ICONS, SIC_SECTION_LABELS } from './sic-engine'
+import { callClaudeJSON, isValidApiKey, type KBContext } from './claude-api'
 
 // ─── Types ───
 export interface SicDeliverableData {
@@ -19,6 +19,8 @@ export interface SicDeliverableData {
   analysis: SicAnalysisResult
   answers: Map<number, string>
   bmcAnswers?: Map<number, string>
+  apiKey?: string
+  kbContext?: KBContext
 }
 
 interface TheoryOfChange {
@@ -346,9 +348,187 @@ function getScoreStatusLabel(score: number): { label: string, description: strin
 }
 
 // ═══════════════════════════════════════════════════════════════
-// MAIN: Generate Full SIC Deliverable HTML
+// CLAUDE AI — System prompt for SIC analysis
 // ═══════════════════════════════════════════════════════════════
-export function generateFullSicDeliverable(data: SicDeliverableData): string {
+
+function buildSicSystemPrompt(kbContext?: KBContext): string {
+  const kbBenchmarks = kbContext?.benchmarks || 'Aucun benchmark disponible.'
+  const kbFiscal = kbContext?.fiscalParams || 'Pas de données fiscales disponibles.'
+  const kbFunders = kbContext?.funders || 'Aucun bailleur enregistré.'
+  const kbCriteria = kbContext?.criteria || 'Aucun critère disponible.'
+
+  return `Tu es un expert senior en impact social et mesure d'impact pour les PME africaines (focus Côte d'Ivoire / Afrique de l'Ouest). Tu génères un diagnostic COMPLET du Social Impact Canvas à partir des 15 sections remplies par un entrepreneur.
+
+TON OBJECTIF : Générer un JSON structuré qui alimente un livrable professionnel "Social Impact Assessment". Le résultat doit être riche, personnalisé, spécifique au secteur et adapté au contexte africain.
+
+══════════════════════════════════════════════════════
+BASE DE CONNAISSANCES — BENCHMARKS SECTORIELS :
+══════════════════════════════════════════════════════
+${kbBenchmarks}
+
+══════════════════════════════════════════════════════
+PARAMÈTRES FISCAUX & ÉCONOMIQUES :
+══════════════════════════════════════════════════════
+${kbFiscal}
+
+══════════════════════════════════════════════════════
+BAILLEURS DE FONDS & PROGRAMMES :
+══════════════════════════════════════════════════════
+${kbFunders}
+
+══════════════════════════════════════════════════════
+CRITÈRES D'ÉVALUATION :
+══════════════════════════════════════════════════════
+${kbCriteria}
+
+SCORING PAR SECTION (0-10) :
+- Clarté de l'impact visé (20%)
+- Pertinence des bénéficiaires et quantification (20%)
+- Qualité de la mesure d'impact (KPIs, baseline, méthode) (25%)
+- Alignement ODD avec preuves (15%)
+- Gestion des risques sociaux (20%)
+
+RÈGLES :
+1. Sois spécifique au contexte PME Afrique.
+2. Cite les ODD pertinents avec numéros.
+3. Les recommandations doivent être actionnables.
+4. Extrais les données quantitatives mentionnées.
+5. Compare avec les benchmarks sectoriels.
+6. Cite les bailleurs pertinents.
+
+Réponds UNIQUEMENT avec un objet JSON valide :
+{
+  "scoreGlobal": <number 0-10>,
+  "syntheseGlobale": "<synthèse 3-4 phrases>",
+  "sections": [
+    { "key": "impact_vise", "score": <0-10>, "comment": "<analyse spécifique>" },
+    { "key": "beneficiaires", "score": <0-10>, "comment": "<analyse>" },
+    { "key": "mesure_impact", "score": <0-10>, "comment": "<analyse>" },
+    { "key": "odd_contribution", "score": <0-10>, "comment": "<analyse>" },
+    { "key": "risques_defis", "score": <0-10>, "comment": "<analyse>" }
+  ],
+  "strengths": ["<force 1>", "<force 2>", "<force 3>"],
+  "weaknesses": ["<faiblesse 1>", "<faiblesse 2>"],
+  "recommendations": ["<reco 1>", "<reco 2>", "<reco 3>", "<reco 4>", "<reco 5>"],
+  "oddAlignments": [{ "odd": <number 1-17>, "description": "<contribution>" }],
+  "theoryOfChange": {
+    "probleme": "<problème social identifié>",
+    "activites": "<activités de l'entreprise>",
+    "outputs": "<résultats directs>",
+    "outcomes": "<changements à moyen terme>",
+    "impact": "<impact long terme>"
+  },
+  "stakeholders": [{ "nom": "<partie prenante>", "role": "<rôle>", "niveau": "Élevé|Moyen|Faible" }],
+  "swot": {
+    "forces": ["..."], "faiblesses": ["..."], "opportunites": ["..."], "menaces": ["..."]
+  }
+}`
+}
+
+function buildSicUserPrompt(answers: Map<number, string>, companyName: string, sector: string): string {
+  const sections = [
+    [1, 'Problème social adressé'],
+    [2, 'Transformation visée'],
+    [3, 'Impact visé'],
+    [4, 'Bénéficiaires cibles'],
+    [5, 'Nombre de bénéficiaires'],
+    [6, 'Profil des bénéficiaires'],
+    [7, 'KPIs d\'impact'],
+    [8, 'Baseline d\'impact'],
+    [9, 'Méthode de mesure'],
+    [10, 'Fréquence de mesure'],
+    [11, 'ODD cibles'],
+    [12, 'Contribution ODD'],
+    [13, 'Évidence ODD'],
+    [14, 'Risques sociaux'],
+    [15, 'Mesures d\'atténuation'],
+  ] as const
+
+  const parts = sections.map(([qId, label]) => {
+    const answer = answers.get(qId)?.trim() || '(non renseigné)'
+    return `SECTION ${qId} — ${label} :\n${answer}`
+  })
+
+  return `Entreprise : ${companyName || 'Non précisé'}\nSecteur : ${sector || 'Non précisé'}\n\nVoici les 15 sections du Social Impact Canvas :\n\n${parts.join('\n\n')}\n\nAnalyse ce SIC et génère le livrable JSON.`
+}
+
+async function analyzeSicWithAI(
+  answers: Map<number, string>,
+  companyName: string,
+  sector: string,
+  analysis: SicAnalysisResult,
+  apiKey?: string,
+  kbContext?: KBContext
+): Promise<{ aiData: any | null, source: 'claude' | 'fallback' }> {
+  if (!isValidApiKey(apiKey)) {
+    console.log('[SIC Deliverable] No API key → using rule-based fallback')
+    return { aiData: null, source: 'fallback' }
+  }
+
+  try {
+    console.log('[SIC Deliverable] Calling Claude AI (with KB:', kbContext ? 'YES' : 'NO', ')...')
+    const aiData = await callClaudeJSON({
+      apiKey: apiKey!,
+      systemPrompt: buildSicSystemPrompt(kbContext),
+      userPrompt: buildSicUserPrompt(answers, companyName, sector),
+      maxTokens: 6144,
+      timeoutMs: 90_000,
+      maxRetries: 2,
+      label: 'SIC Deliverable'
+    })
+    console.log(`[SIC Deliverable] Claude AI success — Score: ${aiData.scoreGlobal}/10`)
+    return { aiData, source: 'claude' }
+  } catch (err: any) {
+    console.error('[SIC Deliverable] Claude AI failed, using fallback:', err.message)
+    return { aiData: null, source: 'fallback' }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// MAIN: Generate Full SIC Deliverable HTML (async — Claude AI)
+// ═══════════════════════════════════════════════════════════════
+export async function generateFullSicDeliverable(data: SicDeliverableData): Promise<string> {
+  // Try Claude AI first
+  const { aiData, source } = await analyzeSicWithAI(
+    data.answers, data.companyName, data.sector, data.analysis, data.apiKey, data.kbContext
+  )
+
+  // If Claude succeeded, enrich the analysis with AI data
+  if (aiData && source === 'claude') {
+    // Override analysis scores with AI scores
+    if (typeof aiData.scoreGlobal === 'number') {
+      data.analysis.scoreGlobal = aiData.scoreGlobal
+    }
+    if (Array.isArray(aiData.sections)) {
+      for (const s of aiData.sections) {
+        const section = data.analysis.sections?.find((sec: any) => sec.key === s.key)
+        if (section) {
+          section.score = s.score ?? section.score
+          section.comment = s.comment || section.comment
+        }
+      }
+    }
+    if (Array.isArray(aiData.recommendations)) {
+      data.analysis.recommendations = aiData.recommendations
+    }
+    if (Array.isArray(aiData.oddAlignments)) {
+      data.analysis.oddMappings = aiData.oddAlignments.map((o: any) => ({
+        odd_number: o.odd,
+        description: o.description,
+        contribution_level: 'direct' as const
+      }))
+    }
+  }
+
+  return _renderSicDeliverable(data, source)
+}
+
+// Synchronous fallback (no Claude AI)
+export function generateFullSicDeliverableFallback(data: SicDeliverableData): string {
+  return _renderSicDeliverable(data, 'fallback')
+}
+
+function _renderSicDeliverable(data: SicDeliverableData, source: 'claude' | 'fallback'): string {
   const { companyName, entrepreneurName, sector, location, country, analysis, answers } = data
   const sicData = extractSicData(answers)
   const benefNumbers = parseBeneficiaryNumbers(sicData.nombreBeneficiaires)
@@ -857,7 +1037,7 @@ export function generateFullSicDeliverable(data: SicDeliverableData): string {
       <div class="sic-header__subtitle">Analyse d'impact social & environnemental complète</div>
       <div class="sic-header__meta">${companyName} — ${sectorStr} — ${country || 'Côte d\'Ivoire'}</div>
       <div class="sic-header__footer">
-        <span>Document généré automatiquement • ${monthYear}</span>
+        <span>${source === 'claude' ? '🤖 Analyse propulsée par Claude AI' : '⚙️ Analyse automatique (règles)'} • ${monthYear}</span>
         <span>•</span>
         <span>${sectorStr} — ${locationStr || country || 'Côte d\'Ivoire'}</span>
       </div>
@@ -1301,7 +1481,7 @@ export function generateFullSicDeliverable(data: SicDeliverableData): string {
       <div class="sic-recap__title">Social Impact Canvas</div>
       <div class="sic-recap__subtitle">${companyName} — ${sectorStr} — ${country || 'Côte d\'Ivoire'}</div>
       <div class="sic-recap__meta">Analyse d'impact social & environnemental complète</div>
-      <div class="sic-recap__footer">Document généré automatiquement • ${monthYear}</div>
+      <div class="sic-recap__footer">Document généré le ${dateStr} • ${source === 'claude' ? 'Analyse propulsée par Claude AI' : 'Analyse automatique (règles)'}</div>
       <div style="font-size:11px;opacity:0.4;margin-top:4px;">${sectorStr} — ${locationStr || country || 'Côte d\'Ivoire'}</div>
     </div>
   </div>

@@ -2,7 +2,10 @@
 // MODULE 4 — FRAMEWORK ANALYSE PME (Cœur du moteur financier)
 // Génère un livrable Excel 8 feuilles conforme au template
 // Framework_Analyse_PME_Cote_Ivoire.xlsx
+// Upgraded: Claude AI enrichment for expert commentary
 // ═══════════════════════════════════════════════════════════════
+
+import { callClaudeJSON, isValidApiKey, KBContext } from './claude-api'
 
 // ─── INPUT TYPES ───
 
@@ -176,6 +179,23 @@ export interface PmeAnalysisResult {
   faiblesses: string[]
   recommandations: string[]
   phraseCleDirigeant: string
+  aiSource?: 'claude' | 'fallback'
+  aiExpertCommentary?: PmeAIExpertCommentary
+}
+
+/** AI-enriched expert commentary from Claude */
+export interface PmeAIExpertCommentary {
+  syntheseExecutive: string
+  forcesExpert: string[]
+  faiblessesExpert: string[]
+  recommandationsStrategiques: Array<{ action: string; horizon: 'court' | 'moyen' | 'long'; impact: string; chiffrage?: string }>
+  analyseScenariosComment: string
+  alertesSectorielles: string[]
+  bailleursPotentiels: Array<{ nom: string; raison: string; ticket: string; instrument: string }>
+  risquesCles: Array<{ risque: string; probabilite: 'haute' | 'moyenne' | 'basse'; mitigation: string }>
+  phraseCleDirigeant: string
+  scoreInvestissabilite: number // 0-100
+  commentaireInvestisseur: string
 }
 
 // ─── HELPER FUNCTIONS ───
@@ -859,11 +879,20 @@ export function generatePmeExcelXml(data: PmeInputData, analysis: PmeAnalysisRes
       row([cellStr(`Croissance ${act.name} (%)`, 'Bold'), ...(hyp.croissanceParActivite?.[i] ?? hyp.croissanceCA).map(v => cellPct(v)), cellStr('')])
     ),
     row([cellStr('Évolution prix moyen (%)', 'Bold'), ...hyp.evolutionPrix.map(v => cellPct(v)), cellStr('')]),
+    row([cellStr('Nouveaux clients (nombre)', 'Bold'), ...(hyp.nouveauxClients ?? [0,0,0,0,0]).map(v => cellNum(v)), cellStr('')]),
     emptyRow(), emptyRow(),
     row([cellStr('HYPOTHÈSES COÛTS', 'SectionHeader')]),
     row([cellStr('Évolution coûts directs (%)', 'Bold'), ...hyp.evolutionCoutsDirects.map(v => cellPct(v)), cellStr('')]),
     row([cellStr('Inflation charges fixes (%)', 'Bold'), ...hyp.inflationChargesFixes.map(v => cellPct(v)), cellStr('CI : ~3%')]),
     row([cellStr('Évolution masse salariale (%)', 'Bold'), ...hyp.evolutionMasseSalariale.map(v => cellPct(v)), cellStr('')]),
+    emptyRow(), emptyRow(),
+    row([cellStr('PLAN D\'EMBAUCHE', 'SectionHeader')]),
+    row([cellStr('Poste', 'RowHeader'), cellStr('An 1', 'ColHeader'), cellStr('An 2', 'ColHeader'), cellStr('An 3', 'ColHeader'), cellStr('An 4', 'ColHeader'), cellStr('An 5', 'ColHeader'), cellStr('Salaire mensuel', 'ColHeader')]),
+    ...((hyp.embauches && hyp.embauches.length > 0) ? hyp.embauches.map(emb => {
+      const annees = [0,0,0,0,0]
+      annees[emb.annee - 1] = 1
+      return row([cellStr(emb.poste), ...annees.map(v => cellNum(v)), cellFcfa(emb.salaireMensuel, 'Num')])
+    }) : [row([cellStr('Aucune embauche prévue', 'Italic')])]),
     emptyRow(), emptyRow(),
     row([cellStr('INVESTISSEMENTS (CAPEX)', 'SectionHeader')]),
     row([cellStr('Description', 'RowHeader'), cellStr('An 1', 'ColHeader'), cellStr('An 2', 'ColHeader'), cellStr('An 3', 'ColHeader'), cellStr('An 4', 'ColHeader'), cellStr('An 5', 'ColHeader'), cellStr('Total', 'ColHeader')]),
@@ -1088,7 +1117,8 @@ export function generatePmePreviewHtml(analysis: PmeAnalysisResult, data: PmeInp
       <div>
         <div class="score-circle" style="background:${scoreColor};">
           <span style="font-size:28px;font-weight:800;">${fmtPct(hc.margeEbitdaPct[2])}</span>
-          <span style="font-size:11px;opacity:0.8;">Marge EBITDA</span>
+          <span style="font-size:10px;opacity:0.8;">Marge EBITDA</span>
+          <span style="font-size:11px;font-weight:600;margin-top:2px;">${scoreLabel}</span>
         </div>
       </div>
       <div class="kpi">
@@ -1123,41 +1153,448 @@ export function generatePmePreviewHtml(analysis: PmeAnalysisResult, data: PmeInp
       </div>
     </div>
 
-    <div class="grid-2">
-      <div class="card">
-        <h2>💪 Forces</h2>
-        ${analysis.forces.map(f => `<div style="padding:6px 0;font-size:13px;">✅ ${f}</div>`).join('')}
-      </div>
-      <div class="card">
-        <h2>⚠️ Faiblesses</h2>
-        ${analysis.faiblesses.map(f => `<div style="padding:6px 0;font-size:13px;">⚠️ ${f}</div>`).join('')}
-      </div>
-    </div>
-
     <div class="card">
-      <h2>📈 Projection 5 ans — Scénarios</h2>
+      <h2>📊 Ratios Clés d'Efficacité (Feuille 3)</h2>
       <table>
-        <tr><th>Indicateur</th><th>Prudent</th><th>Central</th><th>Ambitieux</th></tr>
-        <tr><td><strong>CA An 5</strong></td>${analysis.scenarios.map(s => `<td>${fmt(s.caAn5)} FCFA</td>`).join('')}</tr>
-        <tr><td><strong>EBITDA An 5</strong></td>${analysis.scenarios.map(s => `<td style="color:${s.ebitdaAn5 >= 0 ? 'var(--green)' : 'var(--red)'};">${fmt(s.ebitdaAn5)} FCFA</td>`).join('')}</tr>
-        <tr><td><strong>Marge EBITDA</strong></td>${analysis.scenarios.map(s => `<td>${fmtPct(s.margeEbitdaAn5)}</td>`).join('')}</tr>
-        <tr><td><strong>Trésorerie</strong></td>${analysis.scenarios.map(s => `<td style="color:${s.tresoCumulee >= 0 ? 'var(--green)' : 'var(--red)'};">${fmt(s.tresoCumulee)} FCFA</td>`).join('')}</tr>
-        <tr><td><strong>ROI</strong></td>${analysis.scenarios.map(s => `<td>${fmtPct(s.roi)}</td>`).join('')}</tr>
+        <tr><th>Ratio</th><th>Année N-2</th><th>Année N-1</th><th>Année N</th><th>Benchmark</th></tr>
+        <tr><td>Charges Fixes / CA</td><td>${fmtPct(hc.chargesFixesSurCA[0])}</td><td>${fmtPct(hc.chargesFixesSurCA[1])}</td><td style="font-weight:600;color:${hc.chargesFixesSurCA[2] <= 55 ? 'var(--green)' : 'var(--orange)'};">${fmtPct(hc.chargesFixesSurCA[2])}</td><td>50-60%</td></tr>
+        <tr><td>Masse Salariale / CA</td><td>${fmtPct(hc.masseSalarialeSurCA[0])}</td><td>${fmtPct(hc.masseSalarialeSurCA[1])}</td><td style="font-weight:600;color:${hc.masseSalarialeSurCA[2] <= 40 ? 'var(--green)' : 'var(--orange)'};">${fmtPct(hc.masseSalarialeSurCA[2])}</td><td>30-40%</td></tr>
+        <tr><td>Marge Brute (%)</td><td>${fmtPct(hc.margeBrutePct[0])}</td><td>${fmtPct(hc.margeBrutePct[1])}</td><td style="font-weight:600;color:${hc.margeBrutePct[2] >= 30 ? 'var(--green)' : 'var(--orange)'};">${fmtPct(hc.margeBrutePct[2])}</td><td>&gt;60%</td></tr>
+        <tr><td>Marge EBITDA (%)</td><td>${fmtPct(hc.margeEbitdaPct[0])}</td><td>${fmtPct(hc.margeEbitdaPct[1])}</td><td style="font-weight:600;color:${hc.margeEbitdaPct[2] >= 15 ? 'var(--green)' : 'var(--orange)'};">${fmtPct(hc.margeEbitdaPct[2])}</td><td>&gt;15%</td></tr>
+        <tr><td>Marge Nette (%)</td><td>${fmtPct(hc.margeNettePct[0])}</td><td>${fmtPct(hc.margeNettePct[1])}</td><td style="font-weight:600;color:${hc.margeNettePct[2] >= 10 ? 'var(--green)' : 'var(--orange)'};">${fmtPct(hc.margeNettePct[2])}</td><td>&gt;10%</td></tr>
       </table>
     </div>
 
     <div class="card">
-      <h2>🎯 Recommandations</h2>
-      ${analysis.recommandations.map((r, i) => `<div style="padding:8px 0;font-size:13px;border-bottom:1px solid #f1f5f9;"><strong style="color:var(--primary);">${i + 1}.</strong> ${r}</div>`).join('')}
+      <h2>💰 Trésorerie & BFR (Feuille 4)</h2>
+      <div class="grid-2" style="margin-bottom:16px;">
+        <div>
+          <h3 style="font-size:14px;color:var(--primary);margin-bottom:8px;">Analyse Trésorerie</h3>
+          <table>
+            <tr><th>Indicateur</th><th>N-2</th><th>N-1</th><th>N</th></tr>
+            <tr><td>Trésorerie nette</td><td>${fmt(data.historique.tresoFin[0])}</td><td>${fmt(data.historique.tresoFin[1])}</td><td style="color:${data.historique.tresoFin[2] >= 0 ? 'var(--green)' : 'var(--red)'};">${fmt(data.historique.tresoFin[2])}</td></tr>
+            <tr><td>Cash-flow opérationnel</td><td>${fmt(hc.cashFlowOp[0])}</td><td>${fmt(hc.cashFlowOp[1])}</td><td style="color:${hc.cashFlowOp[2] >= 0 ? 'var(--green)' : 'var(--red)'};">${fmt(hc.cashFlowOp[2])}</td></tr>
+            <tr><td>CAF</td><td>${fmt(hc.caf[0])}</td><td>${fmt(hc.caf[1])}</td><td style="color:${hc.caf[2] >= 0 ? 'var(--green)' : 'var(--red)'};">${fmt(hc.caf[2])}</td></tr>
+            <tr><td>DSCR</td><td>${hc.dscr[0] >= 99 ? 'N/A' : hc.dscr[0].toString()}</td><td>${hc.dscr[1] >= 99 ? 'N/A' : hc.dscr[1].toString()}</td><td style="font-weight:600;color:${hc.dscr[2] >= 1.5 ? 'var(--green)' : hc.dscr[2] >= 1.2 ? 'var(--orange)' : 'var(--red)'};">${hc.dscr[2] >= 99 ? 'N/A' : hc.dscr[2].toString()}</td></tr>
+          </table>
+        </div>
+        <div>
+          <h3 style="font-size:14px;color:var(--primary);margin-bottom:8px;">BFR & Endettement</h3>
+          <table>
+            <tr><th>Composante</th><th>N</th><th>Benchmark</th></tr>
+            <tr><td>DSO (clients)</td><td>${data.historique.dso[2]}j</td><td style="color:#64748b;">30-45j</td></tr>
+            <tr><td>DPO (fournisseurs)</td><td>${data.historique.dpo[2]}j</td><td style="color:#64748b;">30-60j</td></tr>
+            <tr><td>Stock (jours)</td><td>${data.historique.stockJours[2]}j</td><td style="color:#64748b;">&lt;30j</td></tr>
+            <tr><td>BFR / CA</td><td style="color:${hc.bfrSurCA[2] <= 20 ? 'var(--green)' : 'var(--orange)'};">${fmtPct(hc.bfrSurCA[2])}</td><td style="color:#64748b;">&lt;20%</td></tr>
+            <tr><td>Dette / EBITDA</td><td style="color:${hc.detteSurEbitda[2] <= 3 ? 'var(--green)' : 'var(--red)'};">${hc.detteSurEbitda[2] >= 99 ? 'N/A' : hc.detteSurEbitda[2].toFixed(1) + 'x'}</td><td style="color:#64748b;">&lt;3x</td></tr>
+          </table>
+        </div>
+      </div>
     </div>
+
+    <!-- SLIDE 1 — ÉTAT DE SANTÉ FINANCIÈRE (Feuille 8) -->
+    <div class="card" style="border-left:4px solid #059669;">
+      <h2>🟢 SLIDE 1 — ÉTAT DE SANTÉ FINANCIÈRE</h2>
+      <div style="font-size:14px;color:#334155;margin-bottom:16px;padding:12px;background:#f8fafc;border-radius:10px;">
+        <strong>Ce que montrent les chiffres :</strong><br>
+        CA : ${fmt(data.historique.caTotal[2])} FCFA (CAGR ${fmtPct(hc.cagrCA)}) · Marge brute : ${fmtPct(hc.margeBrutePct[2])} · EBITDA : ${fmt(hc.ebitda[2])} FCFA (${fmtPct(hc.margeEbitdaPct[2])})<br>
+        Trésorerie : ${fmt(data.historique.tresoFin[2])} FCFA · DSCR : ${hc.dscr[2] >= 99 ? 'N/A' : hc.dscr[2].toString()} · BFR/CA : ${fmtPct(hc.bfrSurCA[2])}
+      </div>
+      <div class="grid-2">
+        <div>
+          <h3 style="font-size:14px;color:#059669;margin-bottom:8px;">💪 Forces (2-3 points)</h3>
+          ${analysis.forces.slice(0, 3).map(f => `<div style="padding:6px 0;font-size:13px;">✅ ${f}</div>`).join('')}
+        </div>
+        <div>
+          <h3 style="font-size:14px;color:#dc2626;margin-bottom:8px;">⚠️ Faiblesses (2-3 points)</h3>
+          ${analysis.faiblesses.slice(0, 3).map(f => `<div style="padding:6px 0;font-size:13px;">⚠️ ${f}</div>`).join('')}
+        </div>
+      </div>
+    </div>
+
+    <!-- SLIDE 2 — OÙ SE CRÉE LA MARGE (Feuilles 2+3) -->
+    <div class="card" style="border-left:4px solid #d97706;">
+      <h2>🟡 SLIDE 2 — OÙ SE CRÉE LA MARGE</h2>
+      <table style="margin-bottom:16px;">
+        <tr><th>Activité</th><th>CA (FCFA)</th><th>Marge Brute</th><th>Marge %</th><th>Classification</th></tr>
+        ${analysis.margesParActivite.map(m => {
+          const badge = m.classification === 'renforcer' ? '<span style="background:#dcfce7;color:#166534;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600;">🔥 RENFORCER</span>'
+            : m.classification === 'optimiser' ? '<span style="background:#fff7ed;color:#9a3412;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600;">⚠️ OPTIMISER</span>'
+            : m.classification === 'arbitrer' ? '<span style="background:#eff6ff;color:#1e40af;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600;">🧠 ARBITRER</span>'
+            : '<span style="background:#fee2e2;color:#991b1b;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600;">❌ ARRÊTER</span>'
+          return `<tr><td><strong>${m.name}</strong></td><td>${fmt(m.ca)}</td><td style="color:${m.margeBrute >= 0 ? 'var(--green)' : 'var(--red)'};">${fmt(m.margeBrute)}</td><td>${fmtPct(m.margePct)}</td><td>${badge}</td></tr>`
+        }).join('')}
+      </table>
+      <div style="padding:12px;background:#fff7ed;border-radius:10px;font-size:13px;color:#92400e;">
+        <strong>👉 Message clé :</strong> Toutes les activités ne se valent pas. ${analysis.margesParActivite.filter(m => m.classification === 'renforcer').length > 0 ? `Priorité aux activités à renforcer : ${analysis.margesParActivite.filter(m => m.classification === 'renforcer').map(m => m.name).join(', ')}.` : 'Aucune activité ne cumule rentabilité et positionnement stratégique.'}
+      </div>
+    </div>
+
+    <!-- Projection 5 ans détaillée (Feuille 6) -->
+    <div class="card">
+      <h2>📈 Projection Financière 5 Ans</h2>
+      <table>
+        <tr><th>Poste</th>${[1,2,3,4,5].map(y => `<th>Année ${y}</th>`).join('')}<th>CAGR</th></tr>
+        <tr><td><strong>CA Total</strong></td>${p.caTotal.map(v => `<td><strong>${fmt(v)}</strong></td>`).join('')}<td>${fmtPct(p.cagrCA)}</td></tr>
+        <tr><td>Marge Brute</td>${p.margeBrute.map(v => `<td>${fmt(v)}</td>`).join('')}<td></td></tr>
+        <tr><td>Marge Brute (%)</td>${p.margeBrutePct.map(v => `<td>${fmtPct(v)}</td>`).join('')}<td></td></tr>
+        <tr style="background:#f0fdf4;"><td><strong>EBITDA</strong></td>${p.ebitda.map(v => `<td style="color:${v >= 0 ? 'var(--green)' : 'var(--red)'};font-weight:600;">${fmt(v)}</td>`).join('')}<td></td></tr>
+        <tr><td>Marge EBITDA (%)</td>${p.margeEbitdaPct.map(v => `<td>${fmtPct(v)}</td>`).join('')}<td></td></tr>
+        <tr style="background:#f0fdf4;"><td><strong>Résultat Net</strong></td>${p.resultatNet.map(v => `<td style="color:${v >= 0 ? 'var(--green)' : 'var(--red)'};font-weight:600;">${fmt(v)}</td>`).join('')}<td></td></tr>
+        <tr><td><strong>Cash-Flow Net</strong></td>${p.cashFlowNet.map(v => `<td style="color:${v >= 0 ? 'var(--green)' : 'var(--red)'};">${fmt(v)}</td>`).join('')}<td></td></tr>
+        <tr style="background:#eff6ff;"><td><strong>Trésorerie Cumulée</strong></td>${p.tresoCumulee.map(v => `<td style="font-weight:700;color:${v >= 0 ? 'var(--green)' : 'var(--red)'};">${fmt(v)}</td>`).join('')}<td></td></tr>
+      </table>
+      <div style="margin-top:16px;padding:12px;background:#f8fafc;border-radius:10px;">
+        <strong style="font-size:13px;">📊 Seuil de Rentabilité (Année 1) :</strong>
+        <span style="font-size:13px;"> CA au point mort = ${fmt(p.caPointMort[0])} FCFA · Atteint en ${p.moisPointMort[0]} mois</span>
+      </div>
+    </div>
+
+    <!-- Scénarios (Feuille 7) -->
+    <div class="card">
+      <h2>📊 Analyse par Scénarios (Année 5)</h2>
+      <table>
+        <tr><th>Indicateur</th><th>🔵 Prudent</th><th>🟢 Central</th><th>🔴 Ambitieux</th></tr>
+        <tr><td>Croissance CA (CAGR)</td>${analysis.scenarios.map(s => `<td>${fmtPct(s.croissanceCAGR)}</td>`).join('')}</tr>
+        <tr><td><strong>CA An 5</strong></td>${analysis.scenarios.map(s => `<td><strong>${fmt(s.caAn5)} FCFA</strong></td>`).join('')}</tr>
+        <tr><td><strong>EBITDA An 5</strong></td>${analysis.scenarios.map(s => `<td style="color:${s.ebitdaAn5 >= 0 ? 'var(--green)' : 'var(--red)'};">${fmt(s.ebitdaAn5)} FCFA</td>`).join('')}</tr>
+        <tr><td>Marge EBITDA</td>${analysis.scenarios.map(s => `<td>${fmtPct(s.margeEbitdaAn5)}</td>`).join('')}</tr>
+        <tr><td>Résultat Net</td>${analysis.scenarios.map(s => `<td style="color:${s.resultatNetAn5 >= 0 ? 'var(--green)' : 'var(--red)'};">${fmt(s.resultatNetAn5)} FCFA</td>`).join('')}</tr>
+        <tr><td><strong>Trésorerie</strong></td>${analysis.scenarios.map(s => `<td style="color:${s.tresoCumulee >= 0 ? 'var(--green)' : 'var(--red)'};">${fmt(s.tresoCumulee)} FCFA</td>`).join('')}</tr>
+        <tr><td><strong>ROI</strong></td>${analysis.scenarios.map(s => `<td>${fmtPct(s.roi)}</td>`).join('')}</tr>
+      </table>
+      <div style="margin-top:16px;">
+        <strong style="font-size:13px;">🔍 Analyse de Sensibilité (±10%) :</strong>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:8px;">
+          ${analysis.sensibilites.map(s => `<div style="padding:10px;border-radius:8px;background:#f8fafc;border:1px solid #e5e7eb;">
+            <div style="font-weight:600;font-size:12px;color:var(--primary);">${s.label}</div>
+            <div style="font-size:11px;color:#64748b;">EBITDA: ${s.impactEbitda >= 0 ? '+' : ''}${fmt(s.impactEbitda)}</div>
+            <div style="font-size:11px;color:#64748b;">Tréso: ${s.impactTreso >= 0 ? '+' : ''}${fmt(s.impactTreso)}</div>
+          </div>`).join('')}
+        </div>
+      </div>
+      <div style="margin-top:16px;padding:12px;background:#eff6ff;border-radius:10px;font-size:13px;color:#1e40af;">
+        <strong>📌 Recommandation :</strong> Scénario Central — approche réaliste et prudente. Hypothèses testées sur les benchmarks sectoriels.
+      </div>
+    </div>
+
+    <!-- SLIDE 3 — PLAN D'ACTION (Feuille 8) -->
+    <div class="card" style="border-left:4px solid #2563eb;">
+      <h2>🔵 SLIDE 3 — PLAN D'ACTION & TRAJECTOIRE 5 ANS</h2>
+      <div style="margin-bottom:16px;">
+        <h3 style="font-size:14px;color:var(--primary);margin-bottom:8px;">Décisions recommandées</h3>
+        ${analysis.recommandations.map((r, i) => `<div style="padding:8px 0;font-size:13px;border-bottom:1px solid #f1f5f9;"><strong style="color:var(--primary);">${i + 1}.</strong> ${r}</div>`).join('')}
+      </div>
+      <div class="grid-2">
+        <div style="padding:12px;background:#f0fdf4;border-radius:10px;">
+          <strong style="font-size:13px;color:#166534;">Impact attendu (CA, Marge, Trésorerie)</strong>
+          <div style="font-size:12px;color:#334155;margin-top:6px;">
+            CA An 5 : ${fmt(analysis.scenarios[1].caAn5)} FCFA<br>
+            EBITDA An 5 : ${fmt(analysis.scenarios[1].ebitdaAn5)} FCFA<br>
+            Marge EBITDA : ${fmtPct(analysis.scenarios[1].margeEbitdaAn5)}
+          </div>
+        </div>
+        <div style="padding:12px;background:#eff6ff;border-radius:10px;">
+          <strong style="font-size:13px;color:#1e40af;">Besoins financiers</strong>
+          <div style="font-size:12px;color:#334155;margin-top:6px;">
+            CAPEX total (5 ans) : ${fmt(data.hypotheses.capex.reduce((s: number, v: number) => s + v, 0))} FCFA<br>
+            Timing : An 1-2 prioritaire
+          </div>
+        </div>
+      </div>
+    </div>
+
+    ${_renderPmeAISections(analysis)}
 
     <div class="footer">
       <div style="font-size:22px;font-weight:800;">FRAMEWORK ANALYSE PME</div>
       <div style="font-size:16px;opacity:0.9;">${analysis.companyName}</div>
-      <div style="font-size:12px;opacity:0.6;margin-top:8px;">Généré le ${dateStr} · 8 feuilles Excel · Analyse complète</div>
-      <div style="font-style:italic;font-size:13px;opacity:0.7;margin-top:16px;">"Les chiffres ne servent pas à juger le passé, mais à décider le futur."</div>
+      <div style="font-size:12px;opacity:0.6;margin-top:8px;">
+        ${analysis.aiSource === 'claude' ? '&#129302; Analyse propuls\u00e9e par Claude AI' : '&#9881; Analyse automatique (r\u00e8gles)'}
+        &middot; G\u00e9n\u00e9r\u00e9 le ${dateStr} &middot; 8 feuilles Excel
+      </div>
+      <div style="font-style:italic;font-size:13px;opacity:0.7;margin-top:16px;">"Les chiffres ne servent pas \u00e0 juger le pass\u00e9, mais \u00e0 d\u00e9cider le futur."</div>
     </div>
   </div>
 </body>
 </html>`
+}
+
+// \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
+// CLAUDE AI ENRICHMENT FOR FRAMEWORK PME
+// \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
+
+function buildPmeSystemPrompt(kbContext?: KBContext): string {
+  let kb = ''
+  if (kbContext) {
+    if (kbContext.benchmarks) kb += `\n\n## BENCHMARKS SECTORIELS\n${kbContext.benchmarks}`
+    if (kbContext.fiscalParams) kb += `\n\n## PARAMETRES FISCAUX\n${kbContext.fiscalParams}`
+    if (kbContext.funders) kb += `\n\n## BAILLEURS DE FONDS\n${kbContext.funders}`
+    if (kbContext.criteria) kb += `\n\n## CRITERES D'EVALUATION\n${kbContext.criteria}`
+  }
+
+  return `Tu es un expert-analyste financier senior sp\u00e9cialis\u00e9 en PME d'Afrique de l'Ouest (UEMOA/CEMAC).
+Tu analyses un Framework Financier PME complet (historique 3 ans + projections 5 ans + sc\u00e9narios).
+
+## TON ROLE
+- Synth\u00e9tiser l'\u00e9tat de sant\u00e9 financi\u00e8re en langage dirigeant (pas jargon)
+- Identifier les forces et faiblesses CL\u00c9S (pas tout lister, prioriser)
+- Proposer des recommandations ACTIONNABLES avec chiffrage FCFA
+- Comparer aux benchmarks sectoriels si disponibles
+- Identifier les bailleurs potentiels avec instruments sp\u00e9cifiques
+- \u00c9valuer les risques avec probabilit\u00e9 et mitigation
+- Donner une phrase cl\u00e9 pour le dirigeant (motivante et r\u00e9aliste)
+${kb}
+
+## REGLES ABSOLUES
+- R\u00e9ponds UNIQUEMENT en JSON valide
+- Tous les commentaires en FRANCAIS
+- Cite des montants en FCFA
+- R\u00e9f\u00e8re-toi aux benchmarks sectoriels
+- Sois SP\u00c9CIFIQUE : cite des chiffres, pas de g\u00e9n\u00e9ralit\u00e9s
+- Maximum 5 forces, 5 faiblesses, 6 recommandations, 4 risques, 3 bailleurs
+
+## FORMAT JSON ATTENDU
+{
+  "syntheseExecutive": "<synth\u00e8se en 3-4 phrases pour un dirigeant>",
+  "forcesExpert": ["<force 1 avec chiffre>", ...],
+  "faiblessesExpert": ["<faiblesse 1 avec chiffre>", ...],
+  "recommandationsStrategiques": [
+    { "action": "<action concr\u00e8te>", "horizon": "court|moyen|long", "impact": "<impact attendu>", "chiffrage": "<montant FCFA si applicable>" }
+  ],
+  "analyseScenariosComment": "<commentaire sur les 3 sc\u00e9narios : lequel est le plus cr\u00e9dible et pourquoi>",
+  "alertesSectorielles": ["<alerte 1 li\u00e9e au secteur>", ...],
+  "bailleursPotentiels": [
+    { "nom": "<nom>", "raison": "<pourquoi>", "ticket": "<montant>", "instrument": "<type: subvention|pr\u00eat|equity|garantie>" }
+  ],
+  "risquesCles": [
+    { "risque": "<description>", "probabilite": "haute|moyenne|basse", "mitigation": "<action>" }
+  ],
+  "phraseCleDirigeant": "<phrase motivante et r\u00e9aliste pour le dirigeant>",
+  "scoreInvestissabilite": <0-100>,
+  "commentaireInvestisseur": "<ce qu'un investisseur penserait>"
+}`
+}
+
+function buildPmeUserPrompt(analysis: PmeAnalysisResult, data: PmeInputData): string {
+  const hc = analysis.historique
+  const p = analysis.projection
+  const h = data.historique
+
+  let prompt = `# FRAMEWORK ANALYSE PME\n\n`
+  prompt += `## ENTREPRISE\n- Nom: ${analysis.companyName}\n- Secteur: ${analysis.sector}\n- Pays: ${data.country}\n- Localisation: ${data.location}\n\n`
+
+  // Historique
+  prompt += `## HISTORIQUE (3 ans)\n`
+  prompt += `- CA: N-2=${fmt(h.caTotal[0])}, N-1=${fmt(h.caTotal[1])}, N=${fmt(h.caTotal[2])} FCFA\n`
+  prompt += `- CAGR CA: ${fmtPct(hc.cagrCA)}\n`
+  prompt += `- Marge brute: N-2=${fmtPct(hc.margeBrutePct[0])}, N-1=${fmtPct(hc.margeBrutePct[1])}, N=${fmtPct(hc.margeBrutePct[2])}\n`
+  prompt += `- EBITDA: N-2=${fmt(hc.ebitda[0])}, N-1=${fmt(hc.ebitda[1])}, N=${fmt(hc.ebitda[2])} FCFA\n`
+  prompt += `- Marge EBITDA: N=${fmtPct(hc.margeEbitdaPct[2])}\n`
+  prompt += `- R\u00e9sultat net: N=${fmt(h.resultatNet[2])} FCFA (marge nette ${fmtPct(hc.margeNettePct[2])})\n`
+  prompt += `- Tr\u00e9sorerie fin N: ${fmt(h.tresoFin[2])} FCFA\n`
+  prompt += `- DSO: ${h.dso[2]}j | DPO: ${h.dpo[2]}j | Stock: ${h.stockJours[2]}j\n`
+  prompt += `- BFR/CA: ${fmtPct(hc.bfrSurCA[2])}\n`
+  prompt += `- DSCR: ${hc.dscr[2] >= 99 ? 'N/A' : hc.dscr[2].toString()}\n`
+  prompt += `- Dette/EBITDA: ${hc.detteSurEbitda[2] >= 99 ? 'N/A' : hc.detteSurEbitda[2].toFixed(1) + 'x'}\n\n`
+
+  // Activit\u00e9s
+  prompt += `## ACTIVITES (${data.activities.length})\n`
+  for (const m of analysis.margesParActivite) {
+    prompt += `- ${m.name}: CA ${fmt(m.ca)} FCFA, marge ${fmtPct(m.margePct)}, class\u00e9 "${m.classification}"\n`
+  }
+
+  // Projections
+  prompt += `\n## PROJECTIONS 5 ANS\n`
+  prompt += `- CA: An1=${fmt(p.caTotal[0])}, An3=${fmt(p.caTotal[2])}, An5=${fmt(p.caTotal[4])} FCFA\n`
+  prompt += `- EBITDA An5: ${fmt(p.ebitda[4])} FCFA (marge ${fmtPct(p.margeEbitdaPct[4])})\n`
+  prompt += `- R\u00e9sultat net An5: ${fmt(p.resultatNet[4])} FCFA\n`
+  prompt += `- Tr\u00e9sorerie cumul\u00e9e An5: ${fmt(p.tresoCumulee[4])} FCFA\n`
+  prompt += `- CAGR CA projet\u00e9: ${fmtPct(p.cagrCA)}\n`
+  prompt += `- Point mort An1: ${fmt(p.caPointMort[0])} FCFA (${p.moisPointMort[0]} mois)\n\n`
+
+  // Sc\u00e9narios
+  prompt += `## SCENARIOS\n`
+  for (const s of analysis.scenarios) {
+    prompt += `- ${s.nom}: CA An5=${fmt(s.caAn5)}, EBITDA=${fmt(s.ebitdaAn5)}, marge ${fmtPct(s.margeEbitdaAn5)}, ROI=${fmtPct(s.roi)}\n`
+  }
+
+  // Alertes
+  if (analysis.alertes.length > 0) {
+    prompt += `\n## ALERTES DETECTEES\n`
+    for (const a of analysis.alertes) {
+      prompt += `- [${a.type.toUpperCase()}] ${a.message}\n`
+    }
+  }
+
+  // Forces/Faiblesses actuelles
+  prompt += `\n## FORCES IDENTIFIEES\n`
+  for (const f of analysis.forces) prompt += `- ${f}\n`
+  prompt += `\n## FAIBLESSES IDENTIFIEES\n`
+  for (const f of analysis.faiblesses) prompt += `- ${f}\n`
+
+  prompt += `\n\nAnalyse ce framework financier et produis le diagnostic JSON expert.`
+  return prompt
+}
+
+/**
+ * Enrich PME analysis with Claude AI expert commentary.
+ * Always runs rule-based first, then overlays AI insights.
+ */
+export async function analyzePmeWithAI(
+  data: PmeInputData,
+  apiKey?: string,
+  kbContext?: KBContext
+): Promise<PmeAnalysisResult> {
+  // Always run rule-based analysis first
+  const baseAnalysis = analyzePme(data)
+
+  if (!isValidApiKey(apiKey)) {
+    console.log('[Framework PME] No valid API key, using rule-based analysis only')
+    baseAnalysis.aiSource = 'fallback'
+    return baseAnalysis
+  }
+
+  try {
+    const systemPrompt = buildPmeSystemPrompt(kbContext)
+    const userPrompt = buildPmeUserPrompt(baseAnalysis, data)
+
+    const aiData = await callClaudeJSON<PmeAIExpertCommentary>({
+      apiKey: apiKey!,
+      systemPrompt,
+      userPrompt,
+      maxTokens: 6144,
+      timeoutMs: 75_000,
+      maxRetries: 2,
+      label: 'Framework PME'
+    })
+
+    console.log(`[Framework PME] Claude AI enrichment succeeded \u2014 investissabilit\u00e9: ${aiData.scoreInvestissabilite}`)
+
+    // Merge AI forces/faiblesses with rule-based (AI first, then rule-based deduped)
+    if (aiData.forcesExpert && aiData.forcesExpert.length > 0) {
+      baseAnalysis.forces = [...aiData.forcesExpert, ...baseAnalysis.forces.slice(0, 2)]
+    }
+    if (aiData.faiblessesExpert && aiData.faiblessesExpert.length > 0) {
+      baseAnalysis.faiblesses = [...aiData.faiblessesExpert, ...baseAnalysis.faiblesses.slice(0, 2)]
+    }
+
+    // Merge AI recommendations
+    if (aiData.recommandationsStrategiques && aiData.recommandationsStrategiques.length > 0) {
+      const aiRecos = aiData.recommandationsStrategiques.map(r =>
+        `[${r.horizon.toUpperCase()}] ${r.action}${r.chiffrage ? ` (${r.chiffrage})` : ''} \u2192 ${r.impact}`
+      )
+      baseAnalysis.recommandations = [...aiRecos, ...baseAnalysis.recommandations.slice(0, 3)]
+    }
+
+    // Override phrase cl\u00e9 dirigeant with AI version
+    if (aiData.phraseCleDirigeant) {
+      baseAnalysis.phraseCleDirigeant = aiData.phraseCleDirigeant
+    }
+
+    // Add AI alertes sectorielles
+    if (aiData.alertesSectorielles && aiData.alertesSectorielles.length > 0) {
+      for (const alerte of aiData.alertesSectorielles) {
+        baseAnalysis.alertes.push({ type: 'info', message: `[\ud83e\udd16 IA] ${alerte}` })
+      }
+    }
+
+    baseAnalysis.aiSource = 'claude'
+    baseAnalysis.aiExpertCommentary = aiData
+    return baseAnalysis
+
+  } catch (err: any) {
+    console.error(`[Framework PME] Claude AI failed, using rule-based: ${err.message}`)
+    baseAnalysis.aiSource = 'fallback'
+    return baseAnalysis
+  }
+}
+
+/**
+ * Generate full HTML preview with AI enrichment.
+ */
+export async function generatePmePreviewHtmlWithAI(
+  data: PmeInputData,
+  apiKey?: string,
+  kbContext?: KBContext
+): Promise<{ html: string; analysis: PmeAnalysisResult }> {
+  const analysis = await analyzePmeWithAI(data, apiKey, kbContext)
+  const html = generatePmePreviewHtml(analysis, data)
+  return { html, analysis }
+}
+
+/** Render AI-enriched sections for PME preview HTML */
+function _renderPmeAISections(analysis: PmeAnalysisResult): string {
+  const ai = analysis.aiExpertCommentary
+  if (!ai || analysis.aiSource !== 'claude') return ''
+
+  let html = ''
+
+  // Synth\u00e8se ex\u00e9cutive IA
+  if (ai.syntheseExecutive) {
+    html += `<div class="card" style="border-left:4px solid #7c3aed;">
+      <h2>&#129302; Synth\u00e8se Expert (Claude AI)</h2>
+      <div style="font-size:14px;line-height:1.7;color:#334155;">${ai.syntheseExecutive}</div>
+    </div>`
+  }
+
+  // Score investissabilit\u00e9
+  if (ai.scoreInvestissabilite >= 0) {
+    const sColor = ai.scoreInvestissabilite >= 70 ? '#059669' : ai.scoreInvestissabilite >= 50 ? '#d97706' : '#dc2626'
+    html += `<div class="card">
+      <h2>&#128176; Score d'Investissabilit\u00e9 (IA)</h2>
+      <div style="display:flex;align-items:center;gap:20px;">
+        <div style="width:100px;height:100px;border-radius:50%;background:${sColor};display:flex;flex-direction:column;align-items:center;justify-content:center;color:white;">
+          <span style="font-size:26px;font-weight:800;">${ai.scoreInvestissabilite}</span>
+          <span style="font-size:10px;opacity:0.8;">/100</span>
+        </div>
+        <div style="flex:1;font-size:14px;color:#334155;line-height:1.5;">${ai.commentaireInvestisseur || ''}</div>
+      </div>
+    </div>`
+  }
+
+  // Analyse des sc\u00e9narios
+  if (ai.analyseScenariosComment) {
+    html += `<div class="card">
+      <h2>&#128200; Analyse des Sc\u00e9narios (IA)</h2>
+      <div style="font-size:13px;line-height:1.6;color:#334155;">${ai.analyseScenariosComment}</div>
+    </div>`
+  }
+
+  // Risques cl\u00e9s
+  if (ai.risquesCles && ai.risquesCles.length > 0) {
+    html += `<div class="card">
+      <h2>&#9888;&#65039; Risques Cl\u00e9s (IA)</h2>
+      ${ai.risquesCles.map(r => {
+        const pColor = r.probabilite === 'haute' ? '#dc2626' : r.probabilite === 'moyenne' ? '#d97706' : '#059669'
+        const pLabel = r.probabilite === 'haute' ? '\ud83d\udd34' : r.probabilite === 'moyenne' ? '\ud83d\udfe0' : '\ud83d\udfe2'
+        return `<div style="padding:10px;border-radius:8px;border:1px solid #e5e7eb;margin-bottom:8px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <span style="font-weight:600;font-size:13px;">${pLabel} ${r.risque}</span>
+            <span style="font-size:11px;color:${pColor};font-weight:600;text-transform:uppercase;">${r.probabilite}</span>
+          </div>
+          <div style="font-size:12px;color:#64748b;margin-top:4px;">\u2192 Mitigation: ${r.mitigation}</div>
+        </div>`
+      }).join('')}
+    </div>`
+  }
+
+  // Bailleurs potentiels
+  if (ai.bailleursPotentiels && ai.bailleursPotentiels.length > 0) {
+    html += `<div class="card">
+      <h2>&#127974; Bailleurs Potentiels (IA)</h2>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+      ${ai.bailleursPotentiels.map(b => `<div style="padding:12px;border-radius:10px;border:1px solid #e5e7eb;background:#f8fafc;">
+        <div style="font-weight:700;font-size:14px;color:#1e3a5f;">${b.nom}</div>
+        <div style="font-size:12px;color:#64748b;margin-top:2px;">${b.raison}</div>
+        <div style="display:flex;gap:8px;margin-top:6px;">
+          <span style="font-size:11px;color:#059669;font-weight:600;background:#dcfce7;padding:2px 8px;border-radius:12px;">${b.ticket}</span>
+          <span style="font-size:11px;color:#7c3aed;font-weight:600;background:#f3e8ff;padding:2px 8px;border-radius:12px;">${b.instrument}</span>
+        </div>
+      </div>`).join('')}
+      </div>
+    </div>`
+  }
+
+  return html
 }
