@@ -926,6 +926,27 @@ const DELIV_PAGE_META: Record<string, { title: string, icon: string, desc: strin
     color: '#059669',
     format: 'HTML / PDF'
   },
+  bmc_analysis: {
+    title: 'BMC Analysé',
+    icon: 'fa-map',
+    desc: 'Analyse détaillée des 9 blocs du Business Model Canvas avec scoring et recommandations.',
+    color: '#6366f1',
+    format: 'Word / PDF'
+  },
+  sic_analysis: {
+    title: 'SIC Analysé',
+    icon: 'fa-seedling',
+    desc: "Diagnostic d'impact social avec scoring, alignement ODD et matrice d'impact.",
+    color: '#10b981',
+    format: 'Word / PDF'
+  },
+  framework: {
+    title: "Framework d'Analyse",
+    icon: 'fa-chart-line',
+    desc: 'Analyse financière complète : ratios, benchmarks sectoriels, scénarios de sensibilité.',
+    color: '#f59e0b',
+    format: 'Excel / HTML'
+  },
   plan_ovo: {
     title: 'Plan Financier OVO',
     icon: 'fa-coins',
@@ -1024,6 +1045,16 @@ entrepreneurRoutes.get('/deliverable/:type', async (c) => {
             <h2 class="dlv-section__title"><i class="fas fa-lightbulb" style="color:#d97706"></i> Recommandations</h2>
             <ul class="dlv-list dlv-list--amber">${content.recommendations.map((r: string) => `<li><i class="fas fa-arrow-right"></i> ${escapeHtml(r)}</li>`).join('')}</ul>
           </div>` : ''}
+        ${content.suggested_funders?.length ? `
+          <div class="dlv-section">
+            <h2 class="dlv-section__title"><i class="fas fa-hand-holding-dollar" style="color:#7c3aed"></i> Bailleurs recommandés</h2>
+            <ul class="dlv-list">${content.suggested_funders.map((f: string) => `<li style="background:#f5f3ff;border-color:#ede9fe"><i class="fas fa-building-columns" style="color:#7c3aed"></i> ${escapeHtml(f)}</li>`).join('')}</ul>
+          </div>` : ''}
+        ${content.alerts?.length ? `
+          <div class="dlv-section">
+            <h2 class="dlv-section__title"><i class="fas fa-bell" style="color:#dc2626"></i> Alertes</h2>
+            <ul class="dlv-list dlv-list--red">${content.alerts.map((a: string) => `<li><i class="fas fa-circle-exclamation"></i> ${escapeHtml(a)}</li>`).join('')}</ul>
+          </div>` : ''}
       `
     } else if (dtype === 'plan_ovo') {
       const proj = content.projections || {}
@@ -1075,6 +1106,142 @@ entrepreneurRoutes.get('/deliverable/:type', async (c) => {
             }).join('')}
           </div>
         </div>
+        ${content.action_plan?.length ? `
+        <div class="dlv-section">
+          <h2 class="dlv-section__title"><i class="fas fa-list-check" style="color:#7c3aed"></i> Plan d'action</h2>
+          <ul class="dlv-list dlv-list--amber">${content.action_plan.map((a: string) => `<li><i class="fas fa-arrow-right"></i> ${escapeHtml(a)}</li>`).join('')}</ul>
+        </div>` : ''}
+      `
+    } else if (dtype === 'bmc_analysis') {
+      const blocks = content.blocks || content.pillars || []
+      const allRecs = blocks.flatMap((b: any) => (b.recommendations || []).map((r: string) => `[${b.name || ''}] ${r}`))
+      const warnings = content.warnings || content.weaknesses || []
+      blocksHtml = `
+        ${content.coherence_score !== undefined ? `
+        <div class="dlv-section">
+          <h2 class="dlv-section__title"><i class="fas fa-link"></i> Cohérence globale du Canvas</h2>
+          <div class="dlv-block">
+            <div class="dlv-block__header">
+              <span class="dlv-block__name">Score de cohérence inter-blocs</span>
+              <span class="dlv-block__score" style="color:${getScoreColor(content.coherence_score)}">${content.coherence_score}/100</span>
+            </div>
+            <div class="dlv-block__bar"><div class="dlv-block__bar-fill" style="width:${content.coherence_score}%;background:${getScoreColor(content.coherence_score)}"></div></div>
+          </div>
+        </div>` : ''}
+        ${blocks.length ? `
+        <div class="dlv-section">
+          <h2 class="dlv-section__title"><i class="fas fa-th-large"></i> Analyse des 9 Blocs</h2>
+          <div class="dlv-blocks">
+            ${blocks.map((b: any) => `
+              <div class="dlv-block">
+                <div class="dlv-block__header">
+                  <span class="dlv-block__name">${escapeHtml(b.name || b.block || '')}</span>
+                  <span class="dlv-block__score" style="color:${getScoreColor(b.score || 0)}">${b.score || 0}/100</span>
+                </div>
+                <div class="dlv-block__bar"><div class="dlv-block__bar-fill" style="width:${b.score || 0}%;background:${getScoreColor(b.score || 0)}"></div></div>
+                <p class="dlv-block__text">${escapeHtml(b.analysis || b.comment || '')}</p>
+                ${(b.recommendations || []).length ? `<div style="margin-top:8px;padding-top:8px;border-top:1px solid #e5e7eb"><p style="font-size:12px;font-weight:600;color:#d97706;margin-bottom:4px"><i class="fas fa-lightbulb"></i> Recommandations :</p>${b.recommendations.map((r: string) => `<p style="font-size:12px;color:#6b7280;padding-left:12px">→ ${escapeHtml(r)}</p>`).join('')}</div>` : ''}
+              </div>
+            `).join('')}
+          </div>
+        </div>` : ''}
+        ${warnings.length ? `
+          <div class="dlv-section">
+            <h2 class="dlv-section__title"><i class="fas fa-exclamation-triangle" style="color:#dc2626"></i> Alertes</h2>
+            <ul class="dlv-list dlv-list--red">${warnings.map((w: string) => `<li><i class="fas fa-times"></i> ${escapeHtml(w)}</li>`).join('')}</ul>
+          </div>` : ''}
+        ${content.strengths?.length ? `
+          <div class="dlv-section">
+            <h2 class="dlv-section__title"><i class="fas fa-check-circle" style="color:#059669"></i> Forces</h2>
+            <ul class="dlv-list dlv-list--green">${content.strengths.map((s: string) => `<li><i class="fas fa-check"></i> ${escapeHtml(s)}</li>`).join('')}</ul>
+          </div>` : ''}
+      `
+    } else if (dtype === 'sic_analysis') {
+      const pillars = content.pillars || []
+      blocksHtml = `
+        ${pillars.length ? `
+        <div class="dlv-section">
+          <h2 class="dlv-section__title"><i class="fas fa-seedling"></i> Piliers d'Impact</h2>
+          <div class="dlv-blocks">
+            ${pillars.map((p: any) => `
+              <div class="dlv-block">
+                <div class="dlv-block__header">
+                  <span class="dlv-block__name">${escapeHtml(p.name || '')}</span>
+                  <span class="dlv-block__score" style="color:${getScoreColor(p.score || 0)}">${p.score || 0}/100</span>
+                </div>
+                <div class="dlv-block__bar"><div class="dlv-block__bar-fill" style="width:${p.score || 0}%;background:${getScoreColor(p.score || 0)}"></div></div>
+                <p class="dlv-block__text">${escapeHtml(p.analysis || '')}</p>
+              </div>
+            `).join('')}
+          </div>
+        </div>` : ''}
+        ${content.odd_alignment?.length ? `
+        <div class="dlv-section">
+          <h2 class="dlv-section__title"><i class="fas fa-bullseye" style="color:#059669"></i> Alignement ODD</h2>
+          <div class="dlv-blocks">
+            ${content.odd_alignment.map((o: any) => `
+              <div class="dlv-block">
+                <div class="dlv-block__header">
+                  <span class="dlv-block__name">${escapeHtml(o.odd || '')}</span>
+                  <span class="dlv-block__score" style="color:${getScoreColor(o.relevance || 0)}">${o.relevance || 0}%</span>
+                </div>
+                <div class="dlv-block__bar"><div class="dlv-block__bar-fill" style="width:${o.relevance || 0}%;background:${getScoreColor(o.relevance || 0)}"></div></div>
+              </div>
+            `).join('')}
+          </div>
+        </div>` : ''}
+        ${content.impact_matrix ? `
+        <div class="dlv-section">
+          <h2 class="dlv-section__title"><i class="fas fa-users" style="color:#6366f1"></i> Matrice d'Impact</h2>
+          <div class="dlv-blocks">
+            <div class="dlv-block">
+              <p class="dlv-block__text"><strong>Bénéficiaires directs estimés :</strong> ${content.impact_matrix.beneficiaires_directs_estimes?.toLocaleString('fr-FR') || 'N/A'}</p>
+              <p class="dlv-block__text"><strong>Bénéficiaires indirects estimés :</strong> ${content.impact_matrix.beneficiaires_indirects_estimes?.toLocaleString('fr-FR') || 'N/A'}</p>
+            </div>
+          </div>
+        </div>` : ''}
+      `
+    } else if (dtype === 'framework') {
+      const sections = content.sections || []
+      blocksHtml = `
+        ${content.analysis ? `<div class="dlv-section"><p class="dlv-analysis">${escapeHtml(content.analysis)}</p></div>` : ''}
+        ${sections.length ? `
+        <div class="dlv-section">
+          <h2 class="dlv-section__title"><i class="fas fa-chart-bar"></i> Sections de l'Analyse</h2>
+          <div class="dlv-blocks">
+            ${sections.map((s: any) => `
+              <div class="dlv-block">
+                <div class="dlv-block__header">
+                  <span class="dlv-block__name">${escapeHtml(s.title || '')}</span>
+                  ${s.score ? `<span class="dlv-block__score" style="color:${getScoreColor(s.score)}">${s.score}/100</span>` : ''}
+                </div>
+                <p class="dlv-block__text">${escapeHtml(s.content || '')}</p>
+              </div>
+            `).join('')}
+          </div>
+        </div>` : ''}
+        ${content.ratios ? `
+        <div class="dlv-section">
+          <h2 class="dlv-section__title"><i class="fas fa-calculator" style="color:#6366f1"></i> Ratios Clés</h2>
+          <div class="dlv-blocks">
+            ${Object.entries(content.ratios).map(([key, val]: [string, any]) => `
+              <div class="dlv-block">
+                <div class="dlv-block__header"><span class="dlv-block__name">${escapeHtml(key)}</span></div>
+                <p class="dlv-block__text">${escapeHtml(typeof val === 'object' ? JSON.stringify(val) : String(val))}</p>
+              </div>
+            `).join('')}
+          </div>
+        </div>` : ''}
+        ${content.strengths?.length ? `
+          <div class="dlv-section">
+            <h2 class="dlv-section__title"><i class="fas fa-check-circle" style="color:#059669"></i> Forces</h2>
+            <ul class="dlv-list dlv-list--green">${content.strengths.map((s: string) => `<li><i class="fas fa-check"></i> ${escapeHtml(s)}</li>`).join('')}</ul>
+          </div>` : ''}
+        ${content.recommendations?.length ? `
+          <div class="dlv-section">
+            <h2 class="dlv-section__title"><i class="fas fa-lightbulb" style="color:#d97706"></i> Recommandations</h2>
+            <ul class="dlv-list dlv-list--amber">${content.recommendations.map((r: string) => `<li><i class="fas fa-arrow-right"></i> ${escapeHtml(r)}</li>`).join('')}</ul>
+          </div>` : ''}
       `
     }
 
@@ -1804,36 +1971,36 @@ ${hasGenerated ? `<body class="ev2-app-shell">` : `<body>`}
         icon: 'fa-file-lines', emoji: '📄',
         name: 'Business Model Canvas',
         desc: "Canvas détaillé avec l'analyse IA des 9 blocs",
-        href: '/module/mod1_bmc/download',
+        href: '/deliverable/bmc_analysis',
         delivKey: 'bmc_analysis',
-        altHref: '/module/mod1_bmc/download',
+        altHref: '/deliverable/bmc_analysis',
         delivMap, progressMap
       })}
       ${renderModuleCard({
         icon: 'fa-seedling', emoji: '📊',
         name: "Social Impact Canvas (SIC)",
         desc: "Diagnostic d'impact social avec scoring, alignement ODD et matrice d'impact",
-        href: '/module/mod2_sic/download',
+        href: '/deliverable/sic_analysis',
         delivKey: 'sic_analysis',
-        altHref: '/module/mod2_sic/download',
+        altHref: '/deliverable/sic_analysis',
         delivMap, progressMap
       })}
       ${renderModuleCard({
         icon: 'fa-coins', emoji: '💰',
         name: 'Inputs Financiers',
         desc: "Données financières validées avec alertes de cohérence",
-        href: '/module/mod3_inputs/download',
+        href: '/deliverable/plan_ovo',
         delivKey: 'plan_ovo',
-        altHref: '/module/mod3_inputs/download',
+        altHref: '/deliverable/plan_ovo',
         delivMap, progressMap
       })}
       ${renderModuleCard({
         icon: 'fa-chart-line', emoji: '📈',
         name: "Framework d'Analyse",
         desc: "Analyse financière complète : ratios, benchmarks, scénarios",
-        href: '/module/mod4_framework/download',
+        href: '/deliverable/framework',
         delivKey: 'framework',
-        altHref: '/module/mod4_framework/download',
+        altHref: '/deliverable/framework',
         delivMap, progressMap
       })}
       ${renderModuleCard({
