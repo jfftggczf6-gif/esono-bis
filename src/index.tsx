@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { renderer } from './renderer'
 import { cors } from 'hono/cors'
-import { hashPassword, verifyPassword, generateToken, verifyToken } from './auth'
+import { hashPassword, verifyPassword, generateToken, verifyToken, getAuthToken } from './auth'
 import { getCookie, setCookie } from 'hono/cookie'
 import { getUserWithProgress } from './dashboard'
 import { getCookieOptions } from './cookies'
@@ -1338,6 +1338,7 @@ app.post('/api/login', async (c) => {
 
     return c.json({
       success: true,
+      token,
       user: {
         id: user.id,
         name: user.name,
@@ -1364,7 +1365,7 @@ app.post('/api/logout', (c) => {
 // API: Get current user
 app.get('/api/user', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     
     if (!token) {
       return c.json({ error: 'Non authentifié' }, 401)
@@ -1395,7 +1396,7 @@ app.get('/api/user', async (c) => {
 // API: Learning modules registry
 app.get('/api/modules/learning', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
 
     if (!token) {
       return c.json({ error: 'Non authentifié' }, 401)
@@ -1510,7 +1511,7 @@ app.get('/api/modules/learning', async (c) => {
 // Dashboard - A3 (nouvelle architecture 8 modules)
 app.get('/dashboard', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.redirect('/login')
 
     const payload = await verifyToken(token)
@@ -1907,7 +1908,7 @@ app.get('/formations', (c) => c.redirect('/entrepreneur'))
 // API: Save quiz results
 app.post('/api/module/quiz', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) {
       return c.json({ error: 'Non authentifié' }, 401)
     }
@@ -1958,7 +1959,7 @@ app.post('/api/module/quiz', async (c) => {
 // API: Save single answer
 app.post('/api/module/answer', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.json({ error: 'Non authentifié' }, 401)
 
     const payload = await verifyToken(token)
@@ -2013,7 +2014,7 @@ app.post('/api/module/answer', async (c) => {
 // API: Submit all answers
 app.post('/api/module/submit-answers', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.json({ error: 'Non authentifié' }, 401)
 
     const payload = await verifyToken(token)
@@ -2125,7 +2126,7 @@ app.post('/api/module/submit-answers', async (c) => {
 // Activity report APIs (Phase 1 bis)
 app.get('/api/activity-report/inputs', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.json({ error: 'Non authentifié' }, 401)
 
     const payload = await verifyToken(token)
@@ -2175,7 +2176,7 @@ app.get('/api/activity-report/inputs', async (c) => {
 
 app.post('/api/activity-report/inputs', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.json({ error: 'Non authentifié' }, 401)
 
     const payload = await verifyToken(token)
@@ -2264,7 +2265,7 @@ app.post('/api/activity-report/inputs', async (c) => {
 
 app.post('/api/activity-report/analyze', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.json({ error: 'Non authentifié' }, 401)
 
     const payload = await verifyToken(token)
@@ -2342,7 +2343,7 @@ app.post('/api/activity-report/analyze', async (c) => {
 
 app.get('/api/activity-report/deliverable', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.json({ error: 'Non authentifié' }, 401)
 
     const payload = await verifyToken(token)
@@ -2422,7 +2423,7 @@ app.get('/api/activity-report/deliverable', async (c) => {
 
 app.post('/api/activity-report/deliverable', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.json({ error: 'Non authentifié' }, 401)
 
     const payload = await verifyToken(token)
@@ -2611,7 +2612,7 @@ app.post('/api/activity-report/deliverable', async (c) => {
 // Finance APIs (Phase 2)
 app.get('/api/finance/inputs', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.json({ error: 'Non authentifié' }, 401)
 
     const payload = await verifyToken(token)
@@ -2655,7 +2656,7 @@ app.get('/api/finance/inputs', async (c) => {
 
 app.post('/api/finance/inputs', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.json({ error: 'Non authentifié' }, 401)
 
     const payload = await verifyToken(token)
@@ -2748,7 +2749,7 @@ app.post('/api/finance/inputs', async (c) => {
 
 app.post('/api/finance/analyze', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.json({ error: 'Non authentifié' }, 401)
 
     const payload = await verifyToken(token)
@@ -2849,7 +2850,7 @@ app.post('/api/finance/analyze', async (c) => {
 
 app.post('/api/finance/validate', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.json({ error: 'Non authentifié' }, 401)
 
     const payload = await verifyToken(token)
@@ -3094,7 +3095,7 @@ app.post('/api/finance/validate', async (c) => {
 
 app.get('/api/finance/deliverable', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.json({ error: 'Non authentifié' }, 401)
 
     const payload = await verifyToken(token)
@@ -3195,7 +3196,7 @@ app.get('/api/finance/deliverable', async (c) => {
 
 app.post('/api/finance/deliverable/refresh', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.json({ error: 'Non authentifié' }, 401)
 
     const payload = await verifyToken(token)
@@ -3372,7 +3373,7 @@ app.post('/api/finance/deliverable/refresh', async (c) => {
 // API: Save improved answer
 app.post('/api/module/improve-answer', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.json({ error: 'Non authentifié' }, 401)
 
     const payload = await verifyToken(token)
@@ -3449,7 +3450,7 @@ app.post('/api/module/improve-answer', async (c) => {
 // API: Valider le module (B6)
 app.post('/api/module/validate', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.json({ error: 'Non authentifié' }, 401)
 
     const payload = await verifyToken(token)
@@ -3647,7 +3648,7 @@ app.post('/api/module/validate', async (c) => {
 // API: Récupérer le livrable (B7)
 app.get('/api/module/:code/deliverable', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.json({ error: 'Non authentifié' }, 401)
 
     const payload = await verifyToken(token)
@@ -3764,7 +3765,7 @@ app.get('/api/module/:code/deliverable', async (c) => {
 // API: Régénérer le livrable (B7)
 app.post('/api/module/:code/deliverable/refresh', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.json({ error: 'Non authentifié' }, 401)
 
     const payload = await verifyToken(token)
@@ -3927,7 +3928,7 @@ async function ensureSicDataRow(db: D1Database, userId: number, projectId: numbe
 // POST /api/sic/analyze - Run SIC analysis
 app.post('/api/sic/analyze', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.json({ error: 'Non authentifie' }, 401)
 
     const payload = await verifyToken(token)
@@ -4074,7 +4075,7 @@ app.post('/api/sic/analyze', async (c) => {
 // GET /api/sic/deliverable - Get SIC deliverable (HTML diagnostic)
 app.get('/api/sic/deliverable', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.json({ error: 'Non authentifie' }, 401)
 
     const payload = await verifyToken(token)
@@ -4182,7 +4183,7 @@ app.get('/api/sic/deliverable', async (c) => {
 // POST /api/sic/deliverable/refresh - Regenerate SIC deliverable
 app.post('/api/sic/deliverable/refresh', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.json({ error: 'Non authentifie' }, 401)
 
     const payload = await verifyToken(token)
@@ -4261,7 +4262,7 @@ app.post('/api/sic/deliverable/refresh', async (c) => {
 // GET /api/bmc/deliverable - Get BMC deliverable (HTML) — Claude AI powered with cache
 app.get('/api/bmc/deliverable', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.json({ error: 'Non authentifie' }, 401)
 
     const payload = await verifyToken(token)
@@ -4400,7 +4401,7 @@ app.get('/api/bmc/deliverable', async (c) => {
 // POST /api/bmc/deliverable/refresh - Regenerate BMC analysis and store
 app.post('/api/bmc/deliverable/refresh', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.json({ error: 'Non authentifie' }, 401)
 
     const payload = await verifyToken(token)
@@ -4551,7 +4552,7 @@ function buildPmeInputDataFromInputs(
 // GET /api/pme/framework - Get PME Framework deliverable (Excel XML or HTML preview)
 app.get('/api/pme/framework', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.json({ error: 'Non authentifié' }, 401)
     const payload = await verifyToken(token)
     if (!payload) return c.json({ error: 'Token invalide' }, 401)
@@ -4639,7 +4640,7 @@ app.get('/api/pme/framework', async (c) => {
 // POST /api/pme/framework/refresh - Regenerate PME analysis
 app.post('/api/pme/framework/refresh', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.json({ error: 'Non authentifié' }, 401)
     const payload = await verifyToken(token)
     if (!payload) return c.json({ error: 'Token invalide' }, 401)
@@ -4737,7 +4738,7 @@ const INPUT_TAB_COLUMNS: Record<InputTabKey, string> = {
 // GET /api/inputs/tabs — Load all 9 tabs data + coaching
 app.get('/api/inputs/tabs', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.json({ error: 'Non authentifié' }, 401)
     const payload = await verifyToken(token)
     if (!payload) return c.json({ error: 'Token invalide' }, 401)
@@ -4775,7 +4776,7 @@ app.get('/api/inputs/tabs', async (c) => {
 // POST /api/inputs/save-tab — Save a single tab's data
 app.post('/api/inputs/save-tab', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.json({ error: 'Non authentifié' }, 401)
     const payload = await verifyToken(token)
     if (!payload) return c.json({ error: 'Token invalide' }, 401)
@@ -4828,7 +4829,7 @@ app.post('/api/inputs/save-tab', async (c) => {
 // POST /api/inputs/analyze — Run full 9-tab analysis
 app.post('/api/inputs/analyze', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.json({ error: 'Non authentifié' }, 401)
     const payload = await verifyToken(token)
     if (!payload) return c.json({ error: 'Token invalide' }, 401)
@@ -4898,7 +4899,7 @@ app.post('/api/inputs/analyze', async (c) => {
 // GET /api/inputs/diagnostic — Generate HTML diagnostic
 app.get('/api/inputs/diagnostic', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.json({ error: 'Non authentifié' }, 401)
     const payload = await verifyToken(token)
     if (!payload) return c.json({ error: 'Token invalide' }, 401)
@@ -4945,7 +4946,7 @@ app.get('/api/inputs/diagnostic', async (c) => {
 // GET /api/module/:moduleCode/analysis — Retrieve stored Claude analysis
 app.get('/api/module/:moduleCode/analysis', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.json({ error: 'Non authentifie' }, 401)
     const payload = await verifyToken(token)
     if (!payload) return c.json({ error: 'Token invalide' }, 401)
@@ -4992,7 +4993,7 @@ app.get('/api/module/:moduleCode/analysis', async (c) => {
 // POST /api/module/:moduleCode/regenerate — Re-run Claude analysis
 app.post('/api/module/:moduleCode/regenerate', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.json({ error: 'Non authentifie' }, 401)
     const payload = await verifyToken(token)
     if (!payload) return c.json({ error: 'Token invalide' }, 401)

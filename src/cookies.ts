@@ -8,7 +8,7 @@ export function getCookieOptions(c: any) {
   // Sandbox URLs are accessed via HTTPS externally, so cookies must be Secure + SameSite=None
   if (isSandbox) {
     return {
-      httpOnly: true,
+      httpOnly: false,
       secure: true,
       sameSite: 'None' as const,
       maxAge: 60 * 60 * 24 * 7,

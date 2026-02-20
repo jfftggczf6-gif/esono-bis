@@ -1,5 +1,6 @@
 // Auth utilities for JWT
 import { sign, verify } from 'hono/jwt'
+import { getCookie } from 'hono/cookie'
 
 const JWT_SECRET = 'your-super-secret-key-change-in-production-2024'
 
@@ -7,6 +8,20 @@ export interface JWTPayload {
   userId: number
   email: string
   userType: 'pre_entrepreneur' | 'entrepreneur'
+}
+
+// Get auth token from cookie, Authorization header, or query param
+export function getAuthToken(c: any): string | undefined {
+  // 1. Cookie
+  const cookieToken = getCookie(c, 'auth_token')
+  if (cookieToken) return cookieToken
+  // 2. Authorization header
+  const authHeader = c.req.header('Authorization') || ''
+  if (authHeader.startsWith('Bearer ')) return authHeader.slice(7)
+  // 3. Query param
+  const qToken = c.req.query('token')
+  if (qToken) return qToken
+  return undefined
 }
 
 export async function generateToken(payload: JWTPayload): Promise<string> {

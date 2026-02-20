@@ -4,7 +4,7 @@
 // ═══════════════════════════════════════════════════════════════════
 import { Hono } from 'hono'
 import { getCookie } from 'hono/cookie'
-import { verifyToken } from './auth'
+import { verifyToken, getAuthToken } from './auth'
 import { orchestrateGeneration, loadKBContext, type OrchestrationResult } from './agents/ai-agents'
 import { renderBMCPage, adaptBMCData } from './deliverable-bmc'
 import { generateFullBmcDeliverable, generateFullBmcDeliverableFallback, type BmcDeliverableData } from './bmc-deliverable-engine'
@@ -464,7 +464,7 @@ function identifyTargetDeliverable(message: string): string | null {
 // ─── API: Upload file ───────────────────────────────────────────
 entrepreneurRoutes.post('/api/upload', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.json({ error: 'Non authentifié' }, 401)
     const payload = await verifyToken(token)
     if (!payload) return c.json({ error: 'Token invalide' }, 401)
@@ -526,7 +526,7 @@ entrepreneurRoutes.post('/api/upload', async (c) => {
 // ─── API: Delete upload ─────────────────────────────────────────
 entrepreneurRoutes.delete('/api/upload/:id', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.json({ error: 'Non authentifié' }, 401)
     const payload = await verifyToken(token)
     if (!payload) return c.json({ error: 'Token invalide' }, 401)
@@ -547,7 +547,7 @@ entrepreneurRoutes.delete('/api/upload/:id', async (c) => {
 // ─── API: Get uploads ───────────────────────────────────────────
 entrepreneurRoutes.get('/api/uploads', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.json({ error: 'Non authentifié' }, 401)
     const payload = await verifyToken(token)
     if (!payload) return c.json({ error: 'Token invalide' }, 401)
@@ -565,7 +565,7 @@ entrepreneurRoutes.get('/api/uploads', async (c) => {
 // ─── API: Get iterations ────────────────────────────────────────
 entrepreneurRoutes.get('/api/iterations', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.json({ error: 'Non authentifié' }, 401)
     const payload = await verifyToken(token)
     if (!payload) return c.json({ error: 'Token invalide' }, 401)
@@ -583,7 +583,7 @@ entrepreneurRoutes.get('/api/iterations', async (c) => {
 // ─── API: Get deliverables ──────────────────────────────────────
 entrepreneurRoutes.get('/api/deliverables', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.json({ error: 'Non authentifié' }, 401)
     const payload = await verifyToken(token)
     if (!payload) return c.json({ error: 'Token invalide' }, 401)
@@ -604,7 +604,7 @@ entrepreneurRoutes.get('/api/deliverables', async (c) => {
 // ─── API: Get chat messages ─────────────────────────────────────
 entrepreneurRoutes.get('/api/chat/messages', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.json({ error: 'Non authentifié' }, 401)
     const payload = await verifyToken(token)
     if (!payload) return c.json({ error: 'Token invalide' }, 401)
@@ -622,7 +622,7 @@ entrepreneurRoutes.get('/api/chat/messages', async (c) => {
 // ─── API: POST /api/ai/generate-all ─────────────────────────────
 entrepreneurRoutes.post('/api/ai/generate-all', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.json({ error: 'Non authentifié' }, 401)
     const payload = await verifyToken(token)
     if (!payload) return c.json({ error: 'Token invalide' }, 401)
@@ -761,7 +761,7 @@ entrepreneurRoutes.post('/api/ai/generate-all', async (c) => {
 // ─── API: POST /api/chat/message ────────────────────────────────
 entrepreneurRoutes.post('/api/chat/message', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.json({ error: 'Non authentifié' }, 401)
     const payload = await verifyToken(token)
     if (!payload) return c.json({ error: 'Token invalide' }, 401)
@@ -1031,7 +1031,7 @@ entrepreneurRoutes.post('/api/chat/message', async (c) => {
 // ─── API: Get single deliverable ────────────────────────────────
 entrepreneurRoutes.get('/api/deliverable/:type', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.json({ error: 'Non authentifié' }, 401)
     const payload = await verifyToken(token)
     if (!payload) return c.json({ error: 'Token invalide' }, 401)
@@ -1110,7 +1110,7 @@ const DELIV_PAGE_META: Record<string, { title: string, icon: string, desc: strin
 
 entrepreneurRoutes.get('/deliverable/:type', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.redirect('/login')
     const payload = await verifyToken(token)
     if (!payload) return c.redirect('/login')
@@ -2415,7 +2415,7 @@ entrepreneurRoutes.get('/deliverable/:type', async (c) => {
 // ═══════════════════════════════════════════════════════════════════
 entrepreneurRoutes.get('/entrepreneur', async (c) => {
   try {
-    const token = getCookie(c, 'auth_token')
+    const token = getAuthToken(c)
     if (!token) return c.redirect('/login')
     const payload = await verifyToken(token)
     if (!payload) return c.redirect('/login')
@@ -3201,7 +3201,10 @@ ${hasGenerated ? `<body class="ev2-app-shell">` : `<body>`}
       } else if (type === 'bmc_analysis') {
         // Load Claude AI deliverable async
         el.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:300px;gap:16px"><div class="ev2-spinner" style="width:40px;height:40px;border:4px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:spin 0.8s linear infinite"></div><div style="color:#64748b;font-size:14px">Chargement du livrable BMC Claude AI...</div><style>@keyframes spin{to{transform:rotate(360deg)}}</style></div>';
-        fetch('/deliverable/bmc_analysis', { credentials: 'include' })
+        var bmcUrl = '/deliverable/bmc_analysis';
+        var tkn = localStorage.getItem('auth_token');
+        if (tkn) bmcUrl += '?token=' + encodeURIComponent(tkn);
+        fetch(bmcUrl, { credentials: 'include' })
           .then(r => { if (!r.ok) throw new Error(r.status); return r.text(); })
           .then(html => {
             el.innerHTML = '<div style="background:#fff;border-radius:12px;overflow:auto;max-height:80vh;padding:0">' + html + '</div>';
