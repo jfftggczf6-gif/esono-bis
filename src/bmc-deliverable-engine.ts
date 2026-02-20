@@ -8,6 +8,14 @@
 // ═══════════════════════════════════════════════════════════════
 
 // ─── Types ───
+export interface KBContextForBmc {
+  benchmarks: string    // formatted text
+  fiscalParams: string
+  funders: string
+  criteria: string
+  feedback: string
+}
+
 export interface BmcDeliverableData {
   companyName: string
   entrepreneurName: string
@@ -19,6 +27,7 @@ export interface BmcDeliverableData {
   analysisDate: string
   answers: Map<number, string>
   apiKey?: string            // Anthropic API key for Claude AI
+  kbContext?: KBContextForBmc // Knowledge Base context for enriched analysis
 }
 
 interface BmcBlocScore {
@@ -128,9 +137,35 @@ function extractBullets(text: string): string[] {
 // CLAUDE AI — Prompt système pour génération complète du livrable BMC
 // ═══════════════════════════════════════════════════════════════
 
-const BMC_DELIVERABLE_SYSTEM_PROMPT = `Tu es un consultant senior spécialisé en Business Model Canvas pour les PME africaines (focus Côte d'Ivoire / Afrique de l'Ouest). Tu génères un diagnostic COMPLET et EXPERT à partir des 9 blocs BMC remplis par un entrepreneur.
+function buildBmcSystemPrompt(kbContext?: KBContextForBmc): string {
+  const kbBenchmarks = kbContext?.benchmarks || 'Aucun benchmark disponible.'
+  const kbFiscal = kbContext?.fiscalParams || 'SMIG : ~75 000 FCFA/mois\nMarge brute aviculture : 25-35%\nMarge brute agriculture : 30-45%\nTVA : 18%, IS : 25%\nCharges sociales : ~25% du brut\nTaux bancaire : 8-14%'
+  const kbFunders = kbContext?.funders || 'Aucun bailleur enregistré.'
+  const kbCriteria = kbContext?.criteria || 'Aucun critère disponible.'
+
+  return `Tu es un consultant senior spécialisé en Business Model Canvas pour les PME africaines (focus Côte d'Ivoire / Afrique de l'Ouest). Tu génères un diagnostic COMPLET et EXPERT à partir des 9 blocs BMC remplis par un entrepreneur.
 
 TON OBJECTIF : Générer un JSON structuré qui alimente un livrable PDF professionnel de type "investment readiness". Le résultat doit être riche, personnalisé, spécifique au secteur et aux réponses de l'entrepreneur. Pas de phrases génériques.
+
+══════════════════════════════════════════════════════
+BASE DE CONNAISSANCES — BENCHMARKS SECTORIELS :
+══════════════════════════════════════════════════════
+${kbBenchmarks}
+
+══════════════════════════════════════════════════════
+PARAMÈTRES FISCAUX & ÉCONOMIQUES :
+══════════════════════════════════════════════════════
+${kbFiscal}
+
+══════════════════════════════════════════════════════
+BAILLEURS DE FONDS & PROGRAMMES :
+══════════════════════════════════════════════════════
+${kbFunders}
+
+══════════════════════════════════════════════════════
+CRITÈRES D'ÉVALUATION INVESTMENT READINESS :
+══════════════════════════════════════════════════════
+${kbCriteria}
 
 CRITÈRES DE SCORING PAR BLOC (0-100%) :
 - Spécificité : réponse concrète vs vague (30%)
@@ -149,19 +184,15 @@ RÈGLES ABSOLUES :
 1. Sois exigeant mais constructif. Score > 80% uniquement si vraiment détaillé + chiffré + cohérent.
 2. CHAQUE commentaire de bloc doit être SPÉCIFIQUE aux réponses (pas de générique).
 3. Les forces/vigilances doivent citer des éléments des réponses.
-4. Les recommandations doivent être ACTIONNABLES et adaptées au contexte ivoirien.
-5. Le SWOT doit être basé sur les réponses ET le contexte sectoriel.
+4. Les recommandations doivent être ACTIONNABLES et adaptées au contexte africain.
+5. Le SWOT doit être basé sur les réponses ET le contexte sectoriel ET les benchmarks KB.
 6. Extrais les données financières mentionnées (CA, marge, coûts en FCFA).
-
-CONTEXTE ÉCONOMIQUE CÔTE D'IVOIRE :
-- SMIG : ~75 000 FCFA/mois
-- Marge brute aviculture : 25-35%
-- Marge brute agriculture : 30-45%
-- TVA : 18%, IS : 25%
-- Charges sociales : ~25% du brut
-- Taux bancaire : 8-14%
+7. COMPARE systématiquement avec les benchmarks sectoriels fournis.
+8. CITE les bailleurs de fonds pertinents dans les recommandations.
+9. UTILISE les paramètres fiscaux du pays pour les analyses financières.
 
 IMPORTANT : Réponds UNIQUEMENT avec un objet JSON valide. Pas de markdown, pas de backticks, pas de texte avant ou après.`
+}
 
 function buildBmcDeliverableUserPrompt(answers: Map<number, string>, companyName: string, sector: string): string {
   const blocTexts: string[] = []
@@ -255,74 +286,98 @@ async function callClaudeForDeliverable(
   apiKey: string,
   answers: Map<number, string>,
   companyName: string,
-  sector: string
+  sector: string,
+  kbContext?: KBContextForBmc
 ): Promise<BmcAnalysis> {
   const userPrompt = buildBmcDeliverableUserPrompt(answers, companyName, sector)
+  const systemPrompt = buildBmcSystemPrompt(kbContext)
+  const MAX_RETRIES = 3
 
-  const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), CLAUDE_TIMEOUT_MS)
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), CLAUDE_TIMEOUT_MS)
 
-  try {
-    const response = await fetch(CLAUDE_API_URL, {
-      method: 'POST',
-      headers: {
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: CLAUDE_MODEL,
-        max_tokens: CLAUDE_MAX_TOKENS,
-        system: BMC_DELIVERABLE_SYSTEM_PROMPT,
-        messages: [{ role: 'user', content: userPrompt }]
-      }),
-      signal: controller.signal
-    })
-
-    clearTimeout(timeoutId)
-
-    if (!response.ok) {
-      const errorBody = await response.text().catch(() => 'Unknown error')
-      throw new Error(`Claude API error ${response.status}: ${errorBody.slice(0, 300)}`)
-    }
-
-    const data = await response.json() as {
-      content?: Array<{ type: string; text?: string }>
-      error?: { message?: string }
-    }
-
-    if (data.error) {
-      throw new Error(`Claude API returned error: ${data.error.message || JSON.stringify(data.error)}`)
-    }
-
-    const textBlock = data.content?.find(c => c.type === 'text')
-    if (!textBlock?.text) throw new Error('Claude returned empty response')
-
-    // Parse JSON — handle potential markdown wrapping
-    let jsonText = textBlock.text.trim()
-    if (jsonText.startsWith('```')) {
-      jsonText = jsonText.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '')
-    }
-
-    let parsed: any
     try {
-      parsed = JSON.parse(jsonText)
-    } catch {
-      const jsonMatch = jsonText.match(/\{[\s\S]*\}/)
-      if (jsonMatch) {
-        parsed = JSON.parse(jsonMatch[0])
-      } else {
-        throw new Error(`Failed to parse Claude JSON: ${jsonText.slice(0, 200)}`)
+      console.log(`[BMC Deliverable] Claude API call attempt ${attempt}/${MAX_RETRIES}`)
+      const response = await fetch(CLAUDE_API_URL, {
+        method: 'POST',
+        headers: {
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: CLAUDE_MODEL,
+          max_tokens: CLAUDE_MAX_TOKENS,
+          system: systemPrompt,
+          messages: [{ role: 'user', content: userPrompt }]
+        }),
+        signal: controller.signal
+      })
+
+      clearTimeout(timeoutId)
+
+      // Handle rate limits with exponential backoff
+      if (response.status === 429 && attempt < MAX_RETRIES) {
+        const retryAfter = parseInt(response.headers.get('retry-after') || '0', 10)
+        const waitMs = Math.max((retryAfter || 10) * 1000, attempt * 12000)
+        console.log(`[BMC Deliverable] Rate limited (429), waiting ${waitMs / 1000}s before retry...`)
+        await new Promise(resolve => setTimeout(resolve, waitMs))
+        continue
       }
+
+      if (!response.ok) {
+        const errorBody = await response.text().catch(() => 'Unknown error')
+        throw new Error(`Claude API error ${response.status}: ${errorBody.slice(0, 300)}`)
+      }
+
+      const data = await response.json() as {
+        content?: Array<{ type: string; text?: string }>
+        error?: { message?: string }
+      }
+
+      if (data.error) {
+        throw new Error(`Claude API returned error: ${data.error.message || JSON.stringify(data.error)}`)
+      }
+
+      const textBlock = data.content?.find(c => c.type === 'text')
+      if (!textBlock?.text) throw new Error('Claude returned empty response')
+
+      // Parse JSON — handle potential markdown wrapping
+      let jsonText = textBlock.text.trim()
+      if (jsonText.startsWith('```')) {
+        jsonText = jsonText.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '')
+      }
+
+      let parsed: any
+      try {
+        parsed = JSON.parse(jsonText)
+      } catch {
+        const jsonMatch = jsonText.match(/\{[\s\S]*\}/)
+        if (jsonMatch) {
+          parsed = JSON.parse(jsonMatch[0])
+        } else {
+          throw new Error(`Failed to parse Claude JSON: ${jsonText.slice(0, 200)}`)
+        }
+      }
+
+      return normalizeBmcAnalysis(parsed)
+
+    } catch (err: any) {
+      clearTimeout(timeoutId)
+      if (err.name === 'AbortError') {
+        if (attempt < MAX_RETRIES) {
+          console.log(`[BMC Deliverable] Timeout on attempt ${attempt}, retrying...`)
+          continue
+        }
+        throw new Error('Claude API timeout after all retries')
+      }
+      if (attempt >= MAX_RETRIES) throw err
+      console.log(`[BMC Deliverable] Attempt ${attempt} failed: ${err.message}, retrying...`)
+      await new Promise(resolve => setTimeout(resolve, attempt * 5000))
     }
-
-    return normalizeBmcAnalysis(parsed)
-
-  } catch (err: any) {
-    clearTimeout(timeoutId)
-    if (err.name === 'AbortError') throw new Error('Claude API timeout (>90s)')
-    throw err
   }
+  throw new Error('Claude API failed after all retries')
 }
 
 // ─── Normalize Claude response to BmcAnalysis ───
@@ -588,7 +643,8 @@ async function analyzeBmcWithAI(
   answers: Map<number, string>,
   companyName: string,
   sector: string,
-  apiKey?: string
+  apiKey?: string,
+  kbContext?: KBContextForBmc
 ): Promise<BmcAnalysis> {
   // If no API key → fallback
   if (!apiKey || apiKey === 'sk-ant-PLACEHOLDER' || apiKey.length < 20) {
@@ -597,8 +653,8 @@ async function analyzeBmcWithAI(
   }
 
   try {
-    console.log('[BMC Deliverable] Calling Claude AI for full deliverable generation...')
-    const analysis = await callClaudeForDeliverable(apiKey, answers, companyName, sector)
+    console.log('[BMC Deliverable] Calling Claude AI for full deliverable generation (with KB:', kbContext ? 'YES' : 'NO', ')...')
+    const analysis = await callClaudeForDeliverable(apiKey, answers, companyName, sector, kbContext)
     console.log(`[BMC Deliverable] Claude AI generated successfully — Score: ${analysis.globalScore}%, Forces: ${analysis.forces.length}, Vigilances: ${analysis.vigilances.length}`)
     return analysis
   } catch (err: any) {
@@ -611,8 +667,8 @@ async function analyzeBmcWithAI(
 // MAIN: Generate Full BMC Deliverable HTML (ASYNC — Claude AI)
 // ═══════════════════════════════════════════════════════════════
 export async function generateFullBmcDeliverable(data: BmcDeliverableData): Promise<string> {
-  const { companyName, entrepreneurName, sector, location, country, brandName, tagline, answers, apiKey } = data
-  const analysis = await analyzeBmcWithAI(answers, companyName, sector, apiKey)
+  const { companyName, entrepreneurName, sector, location, country, brandName, tagline, answers, apiKey, kbContext } = data
+  const analysis = await analyzeBmcWithAI(answers, companyName, sector, apiKey, kbContext)
   return renderBmcDeliverableHtml(analysis, data)
 }
 

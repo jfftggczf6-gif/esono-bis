@@ -7,7 +7,7 @@ import { getCookie } from 'hono/cookie'
 import { verifyToken, getAuthToken } from './auth'
 import { orchestrateGeneration, loadKBContext, type OrchestrationResult } from './agents/ai-agents'
 import { renderBMCPage, adaptBMCData } from './deliverable-bmc'
-import { generateFullBmcDeliverable, generateFullBmcDeliverableFallback, type BmcDeliverableData } from './bmc-deliverable-engine'
+import { generateFullBmcDeliverable, generateFullBmcDeliverableFallback, type BmcDeliverableData, type KBContextForBmc } from './bmc-deliverable-engine'
 
 type Bindings = {
   DB: D1Database
@@ -51,6 +51,44 @@ function canGenerate(deps: readonly string[], uploadedCategories: Set<string>): 
 
 function missingDeps(deps: readonly string[], uploadedCategories: Set<string>): string[] {
   return deps.filter(d => !uploadedCategories.has(d)).map(d => DEP_LABELS[d] || d)
+}
+
+// ─── KB Formatter for BMC Deliverable Engine ────────────────
+function formatKBForPrompt(items: any[], type: string): string {
+  if (!items || items.length === 0) return ''
+  
+  if (type === 'benchmarks') {
+    const grouped: Record<string, any[]> = {}
+    for (const b of items) {
+      if (!grouped[b.sector]) grouped[b.sector] = []
+      grouped[b.sector].push(b)
+    }
+    return Object.entries(grouped).map(([sector, bs]) =>
+      `[${sector}]\n` + bs.map(b =>
+        `  ${b.metric}: ${b.value_low}–${b.value_median}–${b.value_high} ${b.unit} (${b.region || 'Afrique'}) — ${b.notes || ''}`
+      ).join('\n')
+    ).join('\n')
+  }
+  
+  if (type === 'fiscal') {
+    return items.map(p =>
+      `${p.param_label || p.param_code} (${p.country}): ${p.value}${p.unit} — ${p.notes || ''}`
+    ).join('\n')
+  }
+  
+  if (type === 'funders') {
+    return items.map(f =>
+      `${f.name} (${f.type}): ticket ${f.typical_ticket_min?.toLocaleString() || '?'}–${f.typical_ticket_max?.toLocaleString() || '?'} EUR | Instruments: ${f.instrument_types || '?'} | Secteurs: ${f.focus_sectors || '?'} | ${f.notes || ''}`
+    ).join('\n')
+  }
+  
+  if (type === 'criteria') {
+    return items.map(c =>
+      `[${c.criterion_code}] ${c.criterion_label} (poids: ${c.weight})\n  ${c.description}\n  Guide: ${c.scoring_guide || 'N/A'}`
+    ).join('\n\n')
+  }
+  
+  return items.map(i => JSON.stringify(i)).join('\n')
 }
 
 // ─── Rich Fallback Generator ──────────────────────────────────
@@ -634,8 +672,8 @@ entrepreneurRoutes.post('/api/ai/generate-all', async (c) => {
       "SELECT COUNT(*) as cnt FROM iterations WHERE user_id = ? AND created_at >= ?"
     ).bind(payload.userId, todayStart.toISOString()).first()
     
-    if (genCount && (genCount.cnt as number) >= 5) {
-      return c.json({ error: 'Limite atteinte : maximum 5 générations par jour. Réessayez demain.', retryAfter: 86400 }, 429)
+    if (genCount && (genCount.cnt as number) >= 10) {
+      return c.json({ error: 'Limite atteinte : maximum 10 générations par jour. Réessayez demain.', retryAfter: 86400 }, 429)
     }
 
     // Get uploads
@@ -738,6 +776,103 @@ entrepreneurRoutes.post('/api/ai/generate-all', async (c) => {
         VALUES (?, ?, ?, ?, ?, ?, ?, 'generated', datetime('now'))
       `).bind(delivId, payload.userId, dtype, JSON.stringify(delivData), delivData.score || 0, newVersion, iterationId).run()
       generatedCount++
+    }
+
+    // ═══ GENERATE FULL BMC HTML DELIVERABLE (Claude AI + KB) ═══
+    // This replaces the old on-click generation — now done at generation time
+    // Sequenced AFTER the multi-agent orchestration to avoid Claude rate limits (429)
+    if (hasBmc && generableTypes.includes('bmc_analysis')) {
+      try {
+        // Wait 8 seconds to let the Claude rate limit window pass after orchestration
+        console.log('[Generate-All] Waiting 8s before BMC HTML generation (rate limit cooldown)...')
+        await new Promise(resolve => setTimeout(resolve, 8000))
+        
+        // Load KB context for the BMC deliverable engine
+        const kbContext = await loadKBContext(c.env.DB, userCountry)
+        
+        // Format KB for the BMC prompt
+        const kbForBmc: KBContextForBmc = {
+          benchmarks: formatKBForPrompt(kbContext.benchmarks, 'benchmarks'),
+          fiscalParams: formatKBForPrompt(kbContext.fiscalParams, 'fiscal'),
+          funders: formatKBForPrompt(kbContext.funders, 'funders'),
+          criteria: formatKBForPrompt(kbContext.criteria, 'criteria'),
+          feedback: kbContext.feedbackHistory.length > 0 
+            ? kbContext.feedbackHistory.map((f: any) => `${f.dimension}: ${f.expert_comment}`).join('\n')
+            : '',
+        }
+
+        // Get BMC answers (questionnaire or uploaded doc)
+        let bmcAnswers = new Map<number, string>()
+        const bmcModule = await c.env.DB.prepare(
+          "SELECT id FROM modules WHERE module_code = 'mod1_bmc' LIMIT 1"
+        ).first() as any
+        if (bmcModule) {
+          const bmcProgress = await c.env.DB.prepare(
+            'SELECT id FROM progress WHERE user_id = ? AND module_id = ?'
+          ).bind(payload.userId, bmcModule.id).first() as any
+          if (bmcProgress) {
+            const qRows = await c.env.DB.prepare(
+              'SELECT question_number, user_response FROM questions WHERE progress_id = ? AND user_response IS NOT NULL ORDER BY question_number'
+            ).bind(bmcProgress.id).all()
+            for (const row of (qRows.results || []) as any[]) {
+              if (row.user_response?.trim()) bmcAnswers.set(row.question_number, row.user_response)
+            }
+          }
+        }
+        // Fallback: use uploaded BMC text
+        if (bmcAnswers.size === 0 && documentTexts.bmc) {
+          bmcAnswers.set(1, documentTexts.bmc)
+        }
+
+        if (bmcAnswers.size > 0) {
+          const project = await c.env.DB.prepare(
+            'SELECT name, description FROM projects WHERE user_id = ? LIMIT 1'
+          ).bind(payload.userId).first() as any
+
+          const bmcDeliverableData: BmcDeliverableData = {
+            companyName: (project?.name as string) || userName,
+            entrepreneurName: userName,
+            sector: '',
+            location: '',
+            country: userCountry || 'Côte d\'Ivoire',
+            brandName: '',
+            tagline: '',
+            analysisDate: new Date().toISOString(),
+            answers: bmcAnswers,
+            apiKey: apiKey,
+            kbContext: kbForBmc,
+          }
+
+          console.log('[Generate-All] Generating full BMC HTML deliverable with KB...')
+          let bmcHtml: string
+          try {
+            bmcHtml = await generateFullBmcDeliverable(bmcDeliverableData)
+            console.log(`[Generate-All] BMC HTML from Claude AI: ${bmcHtml.length} chars`)
+          } catch (genErr: any) {
+            console.warn('[Generate-All] Claude AI BMC HTML failed, using fallback:', genErr.message)
+            bmcHtml = generateFullBmcDeliverableFallback(bmcDeliverableData)
+            console.log(`[Generate-All] BMC HTML from fallback: ${bmcHtml.length} chars`)
+          }
+
+          // Delete any previous bmc_html for this user to avoid stale data
+          await c.env.DB.prepare(
+            "DELETE FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'bmc_html'"
+          ).bind(payload.userId).run()
+
+          // Store the full HTML in a separate deliverable record
+          const bmcHtmlId = crypto.randomUUID()
+          await c.env.DB.prepare(`
+            INSERT INTO entrepreneur_deliverables (id, user_id, type, content, score, version, iteration_id, status, created_at)
+            VALUES (?, ?, 'bmc_html', ?, ?, ?, ?, 'generated', datetime('now'))
+          `).bind(bmcHtmlId, payload.userId, bmcHtml, result.deliverables?.bmc_analysis?.score || 0, newVersion, iterationId).run()
+
+          console.log(`[Generate-All] BMC HTML deliverable stored successfully: ${bmcHtml.length} chars, id=${bmcHtmlId}`)
+          agentsUsed.push('bmc_deliverable_engine:html')
+        }
+      } catch (err: any) {
+        console.error('[Generate-All] BMC HTML generation error (non-fatal):', err.message)
+        agentErrors.push(`bmc_html: ${err.message}`)
+      }
     }
 
     return c.json({
@@ -1148,85 +1283,19 @@ entrepreneurRoutes.get('/deliverable/:type', async (c) => {
       : null
 
     // ═══ DEDICATED DELIVERABLE PAGES ═══
-    // BMC Analysis — uses the REAL Claude AI engine (bmc-deliverable-engine.ts)
-    // Same output as /api/bmc/deliverable?format=full and /static/bmc_preview
+    // BMC Analysis — serve pre-generated HTML from database (instant display)
     if (dtype === 'bmc_analysis') {
-      try {
-        // Get BMC answers from questionnaire (module system)
-        const bmcModule = await c.env.DB.prepare(
-          "SELECT id FROM modules WHERE module_code = 'mod1_bmc' LIMIT 1"
-        ).first() as any
-
-        let bmcAnswers = new Map<number, string>()
-        let hasQuestionnaireData = false
-
-        if (bmcModule) {
-          const bmcProgress = await c.env.DB.prepare(
-            'SELECT id FROM progress WHERE user_id = ? AND module_id = ?'
-          ).bind(payload.userId, bmcModule.id).first() as any
-
-          if (bmcProgress) {
-            const qRows = await c.env.DB.prepare(
-              'SELECT question_number, user_response FROM questions WHERE progress_id = ? AND user_response IS NOT NULL ORDER BY question_number'
-            ).bind(bmcProgress.id).all()
-            for (const row of (qRows.results || []) as any[]) {
-              if (row.user_response?.trim()) {
-                bmcAnswers.set(row.question_number, row.user_response)
-                hasQuestionnaireData = true
-              }
-            }
-          }
-        }
-
-        // Fallback: extract from uploaded BMC document if no questionnaire data
-        if (!hasQuestionnaireData) {
-          const bmcUpload = await c.env.DB.prepare(
-            "SELECT extracted_text FROM uploads WHERE user_id = ? AND category = 'bmc' ORDER BY uploaded_at DESC LIMIT 1"
-          ).bind(payload.userId).first() as any
-          if (bmcUpload?.extracted_text) {
-            bmcAnswers.set(1, bmcUpload.extracted_text)
-          }
-        }
-
-        if (bmcAnswers.size > 0) {
-          // Get project info (projects table only has: id, user_id, name, description, status)
-          const project = await c.env.DB.prepare(
-            'SELECT name, description FROM projects WHERE user_id = ? LIMIT 1'
-          ).bind(payload.userId).first() as any
-
-          const companyName = (project?.name as string) || (user?.name as string) || 'Mon Projet'
-          // Sector/location/country are not in projects table — extract from answers or use defaults
-          const sector = ''
-          const location = ''
-          const country = 'Côte d\'Ivoire'
-
-          const bmcDeliverableData: BmcDeliverableData = {
-            companyName,
-            entrepreneurName: (user?.name as string) || 'Entrepreneur',
-            sector,
-            location,
-            country,
-            brandName: '',
-            tagline: '',
-            analysisDate: new Date().toISOString(),
-            answers: bmcAnswers,
-            apiKey: c.env.ANTHROPIC_API_KEY
-          }
-
-          // Try Claude AI first, fallback to rule-based
-          let html: string
-          try {
-            html = await generateFullBmcDeliverable(bmcDeliverableData)
-          } catch {
-            html = generateFullBmcDeliverableFallback(bmcDeliverableData)
-          }
-          return c.html(html)
-        }
-      } catch (err: any) {
-        console.error('[BMC Deliverable Page] Error:', err.message)
+      // 1. Try to serve pre-stored HTML (generated at generation time)
+      const bmcHtml = await c.env.DB.prepare(
+        "SELECT content FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'bmc_html' ORDER BY version DESC LIMIT 1"
+      ).bind(payload.userId).first() as any
+      
+      if (bmcHtml?.content) {
+        console.log('[BMC Deliverable Page] Serving pre-stored HTML (' + bmcHtml.content.length + ' chars)')
+        return c.html(bmcHtml.content)
       }
 
-      // Ultimate fallback: use old template with stored data
+      // 2. Fallback: use old template with stored JSON data
       if (isAvailable) {
         const bmcData = adaptBMCData(content, (user?.name as string) || 'Entrepreneur', (user?.name as string) || 'Entrepreneur')
         return c.html(renderBMCPage(bmcData, (user?.name as string) || 'Entrepreneur'))
@@ -2458,8 +2527,11 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
       delivMap[d.type] = d
     }
 
-    // BMC Claude AI HTML will be loaded async when user clicks BMC
-    const bmcClaudeHtml = ''
+    // Load pre-stored BMC Claude AI HTML from database (instant display)
+    const bmcHtmlRow = await c.env.DB.prepare(
+      "SELECT content FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'bmc_html' ORDER BY version DESC LIMIT 1"
+    ).bind(payload.userId).first() as any
+    const bmcClaudeHtml = bmcHtmlRow?.content || ''
 
     // Fetch chat messages
     const chatMessages = await c.env.DB.prepare(
@@ -3077,12 +3149,13 @@ ${hasGenerated ? `<body class="ev2-app-shell">` : `<body>`}
     </div>
   </div>
 
+  <script type="text/html" id="bmc-html-template">${bmcClaudeHtml}</script>
+
   <script>
     // ── State ──
     let currentDelivType = 'diagnostic';
     const deliverables = ${JSON.stringify(delivMap)};
     const scoresDim = ${JSON.stringify(scoresDim)};
-    const bmcFullHtml = ${JSON.stringify(bmcClaudeHtml)};
 
     // ── Upload toggle ──
     function toggleUpload() {
@@ -3212,24 +3285,19 @@ ${hasGenerated ? `<body class="ev2-app-shell">` : `<body>`}
       if (type === 'diagnostic') {
         el.innerHTML = renderDiagHTML(content, scoresDim, score, sColor);
       } else if (type === 'bmc_analysis') {
-        // Load Claude AI deliverable async
-        el.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:300px;gap:16px"><div class="ev2-spinner" style="width:40px;height:40px;border:4px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:spin 0.8s linear infinite"></div><div style="color:#64748b;font-size:14px">Chargement du livrable BMC Claude AI...</div><style>@keyframes spin{to{transform:rotate(360deg)}}</style></div>';
-        var bmcUrl = '/deliverable/bmc_analysis';
-        var tkn = localStorage.getItem('auth_token');
-        var fetchOpts = { credentials: 'include' };
-        if (tkn) {
-          bmcUrl += '?token=' + encodeURIComponent(tkn);
-          fetchOpts.headers = { 'Authorization': 'Bearer ' + tkn };
+        // Display pre-stored Claude AI HTML instantly (no fetch, no wait)
+        var tmpl = document.getElementById('bmc-html-template');
+        if (tmpl && tmpl.textContent && tmpl.textContent.length > 100) {
+          var iframe = document.createElement('iframe');
+          iframe.style.cssText = 'width:100%;min-height:80vh;border:none;border-radius:12px;background:#fff';
+          iframe.srcdoc = tmpl.textContent;
+          iframe.onload = function() { try { iframe.style.height = iframe.contentDocument.body.scrollHeight + 40 + 'px'; } catch(e) {} };
+          el.innerHTML = '';
+          el.appendChild(iframe);
+        } else {
+          // Fallback: render from JSON data
+          el.innerHTML = renderBMCHTML(content, score, sColor);
         }
-        fetch(bmcUrl, fetchOpts)
-          .then(r => { if (!r.ok) throw new Error(r.status); return r.text(); })
-          .then(html => {
-            el.innerHTML = '<div style="background:#fff;border-radius:12px;overflow:auto;max-height:80vh;padding:0">' + html + '</div>';
-          })
-          .catch(() => {
-            el.innerHTML = renderBMCHTML(content, score, sColor);
-          });
-        return;
       } else if (type === 'sic_analysis') {
         el.innerHTML = renderSICHTML(content, score, sColor);
       } else if (type === 'plan_ovo') {
