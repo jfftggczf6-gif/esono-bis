@@ -2458,54 +2458,8 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
       delivMap[d.type] = d
     }
 
-    // ── Pre-generate BMC Claude AI HTML for inline display ──
-    let bmcClaudeHtml = ''
-    if (delivMap['bmc_analysis']) {
-      try {
-        const bmcModule = await c.env.DB.prepare(
-          "SELECT id FROM modules WHERE module_code = 'mod1_bmc' LIMIT 1"
-        ).first() as any
-        let bmcAnswers = new Map<number, string>()
-        if (bmcModule) {
-          const bmcProgress = await c.env.DB.prepare(
-            'SELECT id FROM progress WHERE user_id = ? AND module_id = ?'
-          ).bind(payload.userId, bmcModule.id).first() as any
-          if (bmcProgress) {
-            const qRows = await c.env.DB.prepare(
-              'SELECT question_number, user_response FROM questions WHERE progress_id = ? AND user_response IS NOT NULL ORDER BY question_number'
-            ).bind(bmcProgress.id).all()
-            for (const row of (qRows.results || []) as any[]) {
-              if (row.user_response?.trim()) bmcAnswers.set(row.question_number, row.user_response)
-            }
-          }
-        }
-        if (bmcAnswers.size === 0) {
-          const bmcUpload = await c.env.DB.prepare(
-            "SELECT extracted_text FROM uploads WHERE user_id = ? AND category = 'bmc' ORDER BY uploaded_at DESC LIMIT 1"
-          ).bind(payload.userId).first() as any
-          if (bmcUpload?.extracted_text) bmcAnswers.set(1, bmcUpload.extracted_text)
-        }
-        if (bmcAnswers.size > 0) {
-          const project = await c.env.DB.prepare('SELECT name FROM projects WHERE user_id = ? LIMIT 1').bind(payload.userId).first() as any
-          const bmcData: BmcDeliverableData = {
-            companyName: (project?.name as string) || (user?.name as string) || 'Mon Projet',
-            entrepreneurName: (user?.name as string) || 'Entrepreneur',
-            sector: '', location: '', country: "Côte d'Ivoire",
-            brandName: '', tagline: '',
-            analysisDate: new Date().toISOString(),
-            answers: bmcAnswers,
-            apiKey: c.env.ANTHROPIC_API_KEY
-          }
-          try {
-            bmcClaudeHtml = await generateFullBmcDeliverable(bmcData)
-          } catch {
-            bmcClaudeHtml = generateFullBmcDeliverableFallback(bmcData)
-          }
-        }
-      } catch (err: any) {
-        console.error('[Entrepreneur] BMC pre-gen error:', err.message)
-      }
-    }
+    // BMC Claude AI HTML will be loaded async when user clicks BMC
+    const bmcClaudeHtml = ''
 
     // Fetch chat messages
     const chatMessages = await c.env.DB.prepare(
@@ -3245,12 +3199,17 @@ ${hasGenerated ? `<body class="ev2-app-shell">` : `<body>`}
       if (type === 'diagnostic') {
         el.innerHTML = renderDiagHTML(content, scoresDim, score, sColor);
       } else if (type === 'bmc_analysis') {
-        // Display the FULL Claude AI deliverable HTML directly
-        if (bmcFullHtml) {
-          el.innerHTML = '<div class="ev2-bmc-claude-wrapper" style="background:#fff;border-radius:12px;overflow:auto;max-height:80vh;padding:0">' + bmcFullHtml + '</div>';
-        } else {
-          el.innerHTML = renderBMCHTML(content, score, sColor);
-        }
+        // Load Claude AI deliverable async
+        el.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:300px;gap:16px"><div class="ev2-spinner" style="width:40px;height:40px;border:4px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:spin 0.8s linear infinite"></div><div style="color:#64748b;font-size:14px">Chargement du livrable BMC Claude AI...</div><style>@keyframes spin{to{transform:rotate(360deg)}}</style></div>';
+        fetch('/deliverable/bmc_analysis', { credentials: 'include' })
+          .then(r => { if (!r.ok) throw new Error(r.status); return r.text(); })
+          .then(html => {
+            el.innerHTML = '<div style="background:#fff;border-radius:12px;overflow:auto;max-height:80vh;padding:0">' + html + '</div>';
+          })
+          .catch(() => {
+            el.innerHTML = renderBMCHTML(content, score, sColor);
+          });
+        return;
       } else if (type === 'sic_analysis') {
         el.innerHTML = renderSICHTML(content, score, sColor);
       } else if (type === 'plan_ovo') {
