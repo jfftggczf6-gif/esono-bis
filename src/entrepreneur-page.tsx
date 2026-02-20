@@ -11,6 +11,7 @@ import { generateFullBmcDeliverable, generateFullBmcDeliverableFallback, type Bm
 import { generateFullSicDeliverable, generateFullSicDeliverableFallback, type SicDeliverableData } from './sic-deliverable-engine'
 import { analyzeInputsWithAI, generateInputsDiagnosticHtml, analyzeInputs, type InputTabKey } from './inputs-engine'
 import { analyzePmeWithAI, analyzePme, generatePmePreviewHtml, generatePmeExcelXml, type PmeInputData } from './framework-pme-engine'
+import { fillFrameworkExcel } from './framework-excel-filler'
 import type { KBContext } from './claude-api'
 
 type Bindings = {
@@ -1446,6 +1447,65 @@ entrepreneurRoutes.get('/api/deliverable/:type', async (c) => {
   }
 })
 
+// ─── API: Download Framework Excel (.xlsx) — filled template ────
+entrepreneurRoutes.get('/api/download/framework-excel', async (c) => {
+  try {
+    const token = getAuthToken(c)
+    if (!token) return c.json({ error: 'Non authentifié' }, 401)
+    const payload = await verifyToken(token)
+    if (!payload) return c.json({ error: 'Token invalide' }, 401)
+
+    // Get the framework deliverable data
+    const frameworkDel = await c.env.DB.prepare(
+      "SELECT content FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'framework' ORDER BY version DESC LIMIT 1"
+    ).bind(payload.userId).first() as any
+
+    if (!frameworkDel?.content) {
+      return c.json({ error: 'Aucun livrable framework généré. Lancez d\'abord la génération.' }, 404)
+    }
+
+    // Get user info
+    const user = await c.env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(payload.userId).first() as any
+    const companyName = user?.company || user?.name || 'Entreprise'
+    const userCountry = user?.country || "Côte d'Ivoire"
+
+    // Parse the deliverable content
+    let content: any
+    try {
+      content = typeof frameworkDel.content === 'string' ? JSON.parse(frameworkDel.content) : frameworkDel.content
+    } catch { content = {} }
+
+    // Build PmeInputData from the framework deliverable
+    const pmeData: PmeInputData = _buildPmeInputDataFromDeliverable(content, companyName, userCountry)
+
+    // Run analysis
+    const apiKey = c.env.ANTHROPIC_API_KEY || ''
+    let analysis
+    try {
+      analysis = await analyzePmeWithAI(pmeData, apiKey)
+    } catch {
+      analysis = analyzePme(pmeData)
+    }
+
+    // Fill the real Excel template
+    const xlsxBytes = fillFrameworkExcel(pmeData, analysis)
+
+    // Return as downloadable .xlsx file
+    const fileName = `Framework_Analyse_PME_${companyName.replace(/\s+/g, '_')}_${new Date().toISOString().slice(0, 10)}.xlsx`
+
+    return new Response(xlsxBytes, {
+      headers: {
+        'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'Content-Disposition': `attachment; filename="${fileName}"`,
+        'Cache-Control': 'no-cache',
+      },
+    })
+  } catch (error: any) {
+    console.error('Download framework Excel error:', error)
+    return c.json({ error: `Erreur génération Excel: ${error.message}` }, 500)
+  }
+})
+
 
 
 // ═══════════════════════════════════════════════════════════════════
@@ -2412,7 +2472,11 @@ entrepreneurRoutes.get('/deliverable/:type', async (c) => {
       const btn = document.getElementById('btn-download');
       if(btn){ btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Génération...'; btn.disabled = true; }
       try {
-        if (['framework','odd','plan_ovo'].includes(DLIV_TYPE)) {
+        if (DLIV_TYPE === 'framework') {
+          // Download filled template from server
+          downloadFrameworkExcelFromServer();
+          return;
+        } else if (['odd','plan_ovo'].includes(DLIV_TYPE)) {
           generateExcel();
         } else if (DLIV_TYPE === 'business_plan') {
           generateWord();
@@ -2420,7 +2484,35 @@ entrepreneurRoutes.get('/deliverable/:type', async (c) => {
           generatePrintPDF();
         }
       } catch(e) { alert('Erreur: ' + e.message); }
-      finally { if(btn){ btn.innerHTML = '<i class="fas fa-check"></i> Téléchargé !'; setTimeout(() => { btn.innerHTML = btn.dataset.originalHtml || 'Télécharger'; btn.disabled = false; }, 2000); } }
+      finally { if(DLIV_TYPE !== 'framework' && btn){ btn.innerHTML = '<i class="fas fa-check"></i> Téléchargé !'; setTimeout(() => { btn.innerHTML = btn.dataset.originalHtml || 'Télécharger'; btn.disabled = false; }, 2000); } }
+    }
+
+    // ═══ FRAMEWORK EXCEL — Server-side filled template ═══
+    async function downloadFrameworkExcelFromServer() {
+      const btn = document.getElementById('btn-download');
+      try {
+        const resp = await fetch('/api/download/framework-excel');
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({ error: 'Erreur inconnue' }));
+          throw new Error(err.error || 'Erreur ' + resp.status);
+        }
+        const blob = await resp.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        // Get filename from Content-Disposition header or use default
+        const cd = resp.headers.get('Content-Disposition');
+        const fnMatch = cd && cd.match(/filename="?([^"]+)"?/);
+        a.download = fnMatch ? fnMatch[1] : 'Framework_Analyse_PME_' + USER_NAME.replace(/\\s+/g, '_') + '_' + new Date().toISOString().slice(0,10) + '.xlsx';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        if(btn){ btn.innerHTML = '<i class="fas fa-check"></i> Téléchargé !'; setTimeout(() => { btn.innerHTML = btn.dataset.originalHtml || 'Télécharger'; btn.disabled = false; }, 3000); }
+      } catch(e) {
+        alert('Erreur téléchargement Excel: ' + e.message);
+        if(btn){ btn.innerHTML = '<i class="fas fa-exclamation-triangle"></i> Erreur'; btn.disabled = false; }
+      }
     }
 
     // ═══ EXCEL GENERATION ═══
