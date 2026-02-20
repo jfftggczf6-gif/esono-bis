@@ -3292,7 +3292,7 @@ ${hasGenerated ? `<body class="ev2-app-shell">` : `<body>`}
       
       // ── Canvas grid (BMC 9-block layout) ──
       const canvasNames = ['Partenaires Clés', 'Activités Clés', 'Ressources Clés', 'Proposition de Valeur', 'Relations Client', 'Canaux', 'Segments Clients', 'Structure de Coûts', 'Sources de Revenus'];
-      html += '<div style="margin-bottom:24px"><div style="font-size:16px;font-weight:700;color:#1e293b;margin-bottom:12px"><i class="fas fa-th" style="color:' + col + ';margin-right:8px"></i>Canvas — Vue d\'ensemble</div>';
+      html += '<div style="margin-bottom:24px"><div style="font-size:16px;font-weight:700;color:#1e293b;margin-bottom:12px"><i class="fas fa-th" style="color:' + col + ';margin-right:8px"></i>Canvas \\u2014 Vue d\\x27ensemble</div>';
       html += '<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:2px;background:#e2e8f0;border-radius:12px;overflow:hidden;font-size:12px">';
       
       // Row 1: Partners | Activities | Value Prop | Relationships | Segments
