@@ -1012,11 +1012,37 @@ entrepreneurRoutes.get('/deliverable/:type', async (c) => {
     // Build sections HTML depending on type
     let blocksHtml = ''
 
+    // ═══════════════════════════════════════════════════════════════
+    // DIAGNOSTIC EXPERT — style Dashboard + Thèmes (format PDF)
+    // ═══════════════════════════════════════════════════════════════
     if (dtype === 'diagnostic') {
       const dims = content.dimensions || []
+      const avgScore = dims.length ? Math.round(dims.reduce((s: number, d: any) => s + (d.score || 0), 0) / dims.length) : dScore
+      const verdictColor = avgScore >= 70 ? '#059669' : avgScore >= 50 ? '#d97706' : '#dc2626'
+      const verdictText = avgScore >= 70 ? 'INVESTISSABLE' : avgScore >= 50 ? 'EN ATTENTE — POTENTIEL MAIS CORRECTIONS NÉCESSAIRES' : 'INSUFFISANT — CORRECTIONS STRUCTURELLES REQUISES'
       blocksHtml = `
+        <!-- DASHBOARD -->
+        <div class="dlv-section" style="background:linear-gradient(135deg,#0f172a 0%,#1e293b 100%);border:none;color:white">
+          <p style="font-size:10px;text-transform:uppercase;letter-spacing:2px;color:#94a3b8;margin-bottom:4px">TABLEAU DE BORD — VUE D'ENSEMBLE</p>
+          <div style="display:flex;align-items:center;gap:16px;margin-bottom:16px">
+            <div style="font-size:48px;font-weight:800;color:${verdictColor}">${dScore}<span style="font-size:20px;color:#94a3b8">/100</span></div>
+            <div><p style="font-size:13px;font-weight:700;color:${verdictColor}">${verdictText}</p></div>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px">
+            ${dims.map((d: any) => {
+              const sc = d.score || 0
+              const sColor = sc >= 70 ? '#22c55e' : sc >= 50 ? '#f59e0b' : '#ef4444'
+              return `<div style="background:rgba(255,255,255,0.06);border-radius:10px;padding:12px;border:1px solid rgba(255,255,255,0.08)">
+                <div style="font-size:22px;font-weight:800;color:${sColor}">${sc}</div>
+                <div style="font-size:11px;color:#94a3b8;margin-top:2px">${escapeHtml(d.name || '')}</div>
+              </div>`
+            }).join('')}
+          </div>
+        </div>
+
+        <!-- DIMENSIONS -->
         <div class="dlv-section">
-          <h2 class="dlv-section__title"><i class="fas fa-chart-bar"></i> Dimensions évaluées</h2>
+          <h2 class="dlv-section__title"><i class="fas fa-chart-bar" style="color:#6366f1"></i> Dimensions évaluées</h2>
           <div class="dlv-blocks">
             ${dims.map((d: any) => `
               <div class="dlv-block">
@@ -1030,138 +1056,235 @@ entrepreneurRoutes.get('/deliverable/:type', async (c) => {
             `).join('')}
           </div>
         </div>
+
+        <!-- FORCES -->
         ${content.strengths?.length ? `
-          <div class="dlv-section">
-            <h2 class="dlv-section__title"><i class="fas fa-check-circle" style="color:#059669"></i> Forces</h2>
-            <ul class="dlv-list dlv-list--green">${content.strengths.map((s: string) => `<li><i class="fas fa-check"></i> ${escapeHtml(s)}</li>`).join('')}</ul>
-          </div>` : ''}
+        <div class="dlv-section">
+          <h2 class="dlv-section__title"><i class="fas fa-shield-halved" style="color:#059669"></i> Ce qui est SOLIDE</h2>
+          <ul class="dlv-list dlv-list--green">${content.strengths.map((s: string) => `<li><i class="fas fa-check-circle"></i> ${escapeHtml(s)}</li>`).join('')}</ul>
+        </div>` : ''}
+
+        <!-- FAIBLESSES -->
         ${content.weaknesses?.length ? `
-          <div class="dlv-section">
-            <h2 class="dlv-section__title"><i class="fas fa-exclamation-triangle" style="color:#dc2626"></i> Faiblesses</h2>
-            <ul class="dlv-list dlv-list--red">${content.weaknesses.map((w: string) => `<li><i class="fas fa-times"></i> ${escapeHtml(w)}</li>`).join('')}</ul>
-          </div>` : ''}
+        <div class="dlv-section">
+          <h2 class="dlv-section__title"><i class="fas fa-triangle-exclamation" style="color:#dc2626"></i> Ce qui DOIT CHANGER</h2>
+          <ul class="dlv-list dlv-list--red">${content.weaknesses.map((w: string) => `<li><i class="fas fa-xmark"></i> ${escapeHtml(w)}</li>`).join('')}</ul>
+        </div>` : ''}
+
+        <!-- RECOMMANDATIONS -->
         ${content.recommendations?.length ? `
-          <div class="dlv-section">
-            <h2 class="dlv-section__title"><i class="fas fa-lightbulb" style="color:#d97706"></i> Recommandations</h2>
-            <ul class="dlv-list dlv-list--amber">${content.recommendations.map((r: string) => `<li><i class="fas fa-arrow-right"></i> ${escapeHtml(r)}</li>`).join('')}</ul>
-          </div>` : ''}
-        ${content.suggested_funders?.length ? `
-          <div class="dlv-section">
-            <h2 class="dlv-section__title"><i class="fas fa-hand-holding-dollar" style="color:#7c3aed"></i> Bailleurs recommandés</h2>
-            <ul class="dlv-list">${content.suggested_funders.map((f: string) => `<li style="background:#f5f3ff;border-color:#ede9fe"><i class="fas fa-building-columns" style="color:#7c3aed"></i> ${escapeHtml(f)}</li>`).join('')}</ul>
-          </div>` : ''}
+        <div class="dlv-section">
+          <h2 class="dlv-section__title"><i class="fas fa-list-check" style="color:#d97706"></i> Plan d'action recommandé</h2>
+          <div class="dlv-blocks">
+            ${content.recommendations.map((r: string, i: number) => `
+              <div class="dlv-block" style="border-left:3px solid #d97706">
+                <div class="dlv-block__header">
+                  <span class="dlv-block__name"><span style="display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:50%;background:#d97706;color:white;font-size:11px;font-weight:700;margin-right:6px">${i + 1}</span>${escapeHtml(r.split(':')[0] || r.split('—')[0] || '')}</span>
+                </div>
+                ${r.includes(':') || r.includes('—') ? `<p class="dlv-block__text">${escapeHtml(r.substring(r.indexOf(':') + 1 || r.indexOf('—') + 1).trim())}</p>` : ''}
+              </div>
+            `).join('')}
+          </div>
+        </div>` : ''}
+
+        <!-- ALERTES -->
         ${content.alerts?.length ? `
-          <div class="dlv-section">
-            <h2 class="dlv-section__title"><i class="fas fa-bell" style="color:#dc2626"></i> Alertes</h2>
-            <ul class="dlv-list dlv-list--red">${content.alerts.map((a: string) => `<li><i class="fas fa-circle-exclamation"></i> ${escapeHtml(a)}</li>`).join('')}</ul>
+        <div class="dlv-section" style="border-color:#fecaca;background:#fff5f5">
+          <h2 class="dlv-section__title"><i class="fas fa-bell" style="color:#dc2626"></i> Alertes critiques</h2>
+          <div class="dlv-blocks">
+            ${content.alerts.map((a: string) => `
+              <div class="dlv-block" style="background:#fef2f2;border-color:#fecaca;border-left:3px solid #ef4444">
+                <p class="dlv-block__text" style="color:#991b1b;font-weight:500"><i class="fas fa-circle-exclamation" style="color:#ef4444;margin-right:6px"></i>${escapeHtml(a)}</p>
+              </div>
+            `).join('')}
+          </div>
+        </div>` : ''}
+
+        <!-- BAILLEURS RECOMMANDÉS -->
+        ${content.suggested_funders?.length ? `
+        <div class="dlv-section">
+          <h2 class="dlv-section__title"><i class="fas fa-hand-holding-dollar" style="color:#7c3aed"></i> Bailleurs recommandés</h2>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px">
+            ${content.suggested_funders.map((f: string) => {
+              const parts = f.split(' - ')
+              return `<div style="background:#f5f3ff;border:1px solid #ede9fe;border-radius:12px;padding:14px;display:flex;align-items:flex-start;gap:10px">
+                <i class="fas fa-building-columns" style="color:#7c3aed;margin-top:3px"></i>
+                <div>
+                  <p style="font-size:13px;font-weight:600;color:#5b21b6">${escapeHtml(parts[0] || f)}</p>
+                  ${parts[1] ? `<p style="font-size:12px;color:#7c3aed;margin-top:2px">${escapeHtml(parts[1])}</p>` : ''}
+                </div>
+              </div>`
+            }).join('')}
+          </div>
+        </div>` : ''}
+
+        <!-- VERDICT -->
+        <div class="dlv-section" style="background:linear-gradient(135deg,${verdictColor}10,${verdictColor}05);border-color:${verdictColor}30">
+          <h2 class="dlv-section__title"><i class="fas fa-gavel" style="color:${verdictColor}"></i> Verdict final</h2>
+          <p style="font-size:15px;font-weight:700;color:${verdictColor};margin-bottom:8px">Score d'investissabilité : ${dScore}/100</p>
+          <p style="font-size:13px;color:#4b5563;line-height:1.7">${escapeHtml(content.verdict || `Le dossier nécessite des clarifications et corrections avant de pouvoir conclure sur l'investissabilité. Le modèle économique présente un potentiel réel, mais les données actuelles ne permettent pas une décision éclairée.`)}</p>
+        </div>
+      `
+    }
+    // ═══════════════════════════════════════════════════════════════
+    // BMC ANALYSIS — style Canvas + Diagnostic Expert (format PDF)
+    // ═══════════════════════════════════════════════════════════════
+    else if (dtype === 'bmc_analysis') {
+      const blocks = content.blocks || content.pillars || []
+      const warnings = content.warnings || content.weaknesses || []
+      // Separate high-scoring blocks as strengths, low as vigilance
+      const sortedBlocks = [...blocks].sort((a: any, b: any) => (b.score || 0) - (a.score || 0))
+      const strengths = sortedBlocks.filter((b: any) => (b.score || 0) >= 70)
+      const vigilance = sortedBlocks.filter((b: any) => (b.score || 0) < 70)
+
+      blocksHtml = `
+        <!-- BMC HEADER -->
+        <div class="dlv-section" style="background:linear-gradient(135deg,#312e81 0%,#4338ca 100%);border:none;color:white">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:16px">
+            <div>
+              <p style="font-size:10px;text-transform:uppercase;letter-spacing:2px;color:rgba(255,255,255,0.6);margin-bottom:2px">BUSINESS MODEL CANVAS</p>
+              <p style="font-size:14px;color:rgba(255,255,255,0.9);margin-top:4px">Analyse des 9 blocs du Canvas</p>
+            </div>
+            <div style="text-align:center">
+              <div style="font-size:48px;font-weight:800;color:white">${dScore}<span style="font-size:18px;color:rgba(255,255,255,0.6)">%</span></div>
+              <div style="font-size:11px;color:rgba(255,255,255,0.7)">Score BMC Global</div>
+            </div>
+          </div>
+          ${content.coherence_score !== undefined ? `
+          <div style="margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.15)">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="font-size:11px;color:rgba(255,255,255,0.7)">Cohérence inter-blocs</span>
+              <div style="flex:1;height:6px;background:rgba(255,255,255,0.15);border-radius:99px;overflow:hidden"><div style="height:100%;width:${content.coherence_score}%;background:${content.coherence_score >= 70 ? '#22c55e' : '#f59e0b'};border-radius:99px"></div></div>
+              <span style="font-size:13px;font-weight:700;color:white">${content.coherence_score}%</span>
+            </div>
           </div>` : ''}
-      `
-    } else if (dtype === 'plan_ovo') {
-      const proj = content.projections || {}
-      blocksHtml = `
-        <div class="dlv-section">
-          <h2 class="dlv-section__title"><i class="fas fa-chart-line"></i> Projections</h2>
-          ${content.analysis ? `<p class="dlv-analysis">${escapeHtml(content.analysis)}</p>` : ''}
-          <div class="dlv-blocks">
-            ${Object.entries(proj).map(([key, val]: [string, any]) => `
-              <div class="dlv-block">
-                <div class="dlv-block__header"><span class="dlv-block__name">${escapeHtml(key)}</span></div>
-                <p class="dlv-block__text">${escapeHtml(typeof val === 'object' ? JSON.stringify(val) : String(val))}</p>
-              </div>
-            `).join('')}
-          </div>
         </div>
-      `
-    } else if (dtype === 'business_plan') {
-      const sections = content.sections || []
-      blocksHtml = `
+
+        <!-- SCORES PAR BLOC -->
         <div class="dlv-section">
-          <h2 class="dlv-section__title"><i class="fas fa-list-ol"></i> Sections du Business Plan</h2>
-          <div class="dlv-blocks">
-            ${sections.map((s: any) => `
-              <div class="dlv-block">
-                <div class="dlv-block__header"><span class="dlv-block__name">${escapeHtml(s.title || '')}</span></div>
-                <p class="dlv-block__text">${escapeHtml(s.content || '')}</p>
-              </div>
-            `).join('')}
-          </div>
-        </div>
-      `
-    } else if (dtype === 'odd') {
-      const criteria = content.criteria || []
-      blocksHtml = `
-        <div class="dlv-section">
-          <h2 class="dlv-section__title"><i class="fas fa-clipboard-list"></i> Critères ODD</h2>
-          <div class="dlv-blocks">
-            ${criteria.map((cr: any) => {
-              const stColor = cr.status === 'Complet' ? '#059669' : cr.status === 'Partiel' ? '#d97706' : '#dc2626'
-              return `
-                <div class="dlv-block">
-                  <div class="dlv-block__header">
-                    <span class="dlv-block__name">${escapeHtml(cr.name || '')}</span>
-                    <span class="dlv-block__score" style="color:${stColor}">${escapeHtml(cr.status || '')}</span>
-                  </div>
-                  <p class="dlv-block__text">${escapeHtml(cr.comment || '')}</p>
-                </div>`
+          <h2 class="dlv-section__title"><i class="fas fa-th-large" style="color:#6366f1"></i> Scores par bloc BMC</h2>
+          <div style="display:grid;grid-template-columns:1fr;gap:8px">
+            ${blocks.map((b: any) => {
+              const sc = b.score || 0
+              const sColor = getScoreColor(sc)
+              return `<div style="display:flex;align-items:center;gap:12px;padding:10px 14px;background:#f9fafb;border-radius:10px;border:1px solid #f3f4f6">
+                <div style="min-width:36px;text-align:center;font-size:18px;font-weight:800;color:${sColor}">${sc}<span style="font-size:10px;color:#9ca3af">%</span></div>
+                <div style="flex:1">
+                  <div style="font-size:13px;font-weight:600;color:#1f2937">${escapeHtml(b.name || b.block || '')}</div>
+                  <div style="height:4px;background:#e5e7eb;border-radius:99px;overflow:hidden;margin-top:4px"><div style="height:100%;width:${sc}%;background:${sColor};border-radius:99px"></div></div>
+                </div>
+              </div>`
             }).join('')}
           </div>
         </div>
-        ${content.action_plan?.length ? `
+
+        <!-- ANALYSE DÉTAILLÉE PAR BLOC -->
         <div class="dlv-section">
-          <h2 class="dlv-section__title"><i class="fas fa-list-check" style="color:#7c3aed"></i> Plan d'action</h2>
-          <ul class="dlv-list dlv-list--amber">${content.action_plan.map((a: string) => `<li><i class="fas fa-arrow-right"></i> ${escapeHtml(a)}</li>`).join('')}</ul>
-        </div>` : ''}
-      `
-    } else if (dtype === 'bmc_analysis') {
-      const blocks = content.blocks || content.pillars || []
-      const allRecs = blocks.flatMap((b: any) => (b.recommendations || []).map((r: string) => `[${b.name || ''}] ${r}`))
-      const warnings = content.warnings || content.weaknesses || []
-      blocksHtml = `
-        ${content.coherence_score !== undefined ? `
-        <div class="dlv-section">
-          <h2 class="dlv-section__title"><i class="fas fa-link"></i> Cohérence globale du Canvas</h2>
-          <div class="dlv-block">
-            <div class="dlv-block__header">
-              <span class="dlv-block__name">Score de cohérence inter-blocs</span>
-              <span class="dlv-block__score" style="color:${getScoreColor(content.coherence_score)}">${content.coherence_score}/100</span>
-            </div>
-            <div class="dlv-block__bar"><div class="dlv-block__bar-fill" style="width:${content.coherence_score}%;background:${getScoreColor(content.coherence_score)}"></div></div>
-          </div>
-        </div>` : ''}
-        ${blocks.length ? `
-        <div class="dlv-section">
-          <h2 class="dlv-section__title"><i class="fas fa-th-large"></i> Analyse des 9 Blocs</h2>
+          <h2 class="dlv-section__title"><i class="fas fa-microscope" style="color:#6366f1"></i> Analyse détaillée</h2>
           <div class="dlv-blocks">
             ${blocks.map((b: any) => `
               <div class="dlv-block">
                 <div class="dlv-block__header">
                   <span class="dlv-block__name">${escapeHtml(b.name || b.block || '')}</span>
-                  <span class="dlv-block__score" style="color:${getScoreColor(b.score || 0)}">${b.score || 0}/100</span>
+                  <span class="dlv-block__score" style="color:${getScoreColor(b.score || 0)}">${b.score || 0}%</span>
                 </div>
                 <div class="dlv-block__bar"><div class="dlv-block__bar-fill" style="width:${b.score || 0}%;background:${getScoreColor(b.score || 0)}"></div></div>
                 <p class="dlv-block__text">${escapeHtml(b.analysis || b.comment || '')}</p>
-                ${(b.recommendations || []).length ? `<div style="margin-top:8px;padding-top:8px;border-top:1px solid #e5e7eb"><p style="font-size:12px;font-weight:600;color:#d97706;margin-bottom:4px"><i class="fas fa-lightbulb"></i> Recommandations :</p>${b.recommendations.map((r: string) => `<p style="font-size:12px;color:#6b7280;padding-left:12px">→ ${escapeHtml(r)}</p>`).join('')}</div>` : ''}
+                ${(b.recommendations || []).length ? `
+                <div style="margin-top:10px;padding-top:10px;border-top:1px dashed #e5e7eb">
+                  <p style="font-size:11px;font-weight:700;color:#d97706;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px"><i class="fas fa-lightbulb"></i> Recommandations</p>
+                  ${b.recommendations.map((r: string) => `<p style="font-size:12px;color:#6b7280;padding-left:14px;margin-bottom:4px;position:relative"><span style="position:absolute;left:0;color:#d97706">→</span>${escapeHtml(r)}</p>`).join('')}
+                </div>` : ''}
+              </div>
+            `).join('')}
+          </div>
+        </div>
+
+        <!-- FORCES -->
+        ${strengths.length ? `
+        <div class="dlv-section">
+          <h2 class="dlv-section__title"><i class="fas fa-shield-halved" style="color:#059669"></i> Forces — ${strengths.length} atouts majeurs</h2>
+          <ul class="dlv-list dlv-list--green">${strengths.map((b: any) => `<li><i class="fas fa-check-circle"></i> <strong>${escapeHtml(b.name || '')}</strong> (${b.score}%) — ${escapeHtml(b.analysis?.substring(0, 120) || '')}${(b.analysis?.length || 0) > 120 ? '...' : ''}</li>`).join('')}</ul>
+        </div>` : ''}
+
+        <!-- POINTS DE VIGILANCE -->
+        ${vigilance.length ? `
+        <div class="dlv-section">
+          <h2 class="dlv-section__title"><i class="fas fa-triangle-exclamation" style="color:#dc2626"></i> Points de vigilance — ${vigilance.length} risques identifiés</h2>
+          <ul class="dlv-list dlv-list--red">${vigilance.map((b: any) => `<li><i class="fas fa-exclamation-circle"></i> <strong>${escapeHtml(b.name || '')}</strong> (${b.score}%) — ${escapeHtml(b.analysis?.substring(0, 120) || '')}${(b.analysis?.length || 0) > 120 ? '...' : ''}</li>`).join('')}</ul>
+        </div>` : ''}
+
+        <!-- ALERTES CAPEX/WARNINGS -->
+        ${warnings.length ? `
+        <div class="dlv-section" style="border-color:#fecaca;background:#fff5f5">
+          <h2 class="dlv-section__title"><i class="fas fa-bell" style="color:#dc2626"></i> Alertes</h2>
+          <div class="dlv-blocks">
+            ${warnings.map((w: string) => `
+              <div class="dlv-block" style="background:#fef2f2;border-color:#fecaca;border-left:3px solid #ef4444">
+                <p class="dlv-block__text" style="color:#991b1b;font-weight:500"><i class="fas fa-circle-exclamation" style="color:#ef4444;margin-right:6px"></i>${escapeHtml(w)}</p>
               </div>
             `).join('')}
           </div>
         </div>` : ''}
-        ${warnings.length ? `
-          <div class="dlv-section">
-            <h2 class="dlv-section__title"><i class="fas fa-exclamation-triangle" style="color:#dc2626"></i> Alertes</h2>
-            <ul class="dlv-list dlv-list--red">${warnings.map((w: string) => `<li><i class="fas fa-times"></i> ${escapeHtml(w)}</li>`).join('')}</ul>
-          </div>` : ''}
-        ${content.strengths?.length ? `
-          <div class="dlv-section">
-            <h2 class="dlv-section__title"><i class="fas fa-check-circle" style="color:#059669"></i> Forces</h2>
-            <ul class="dlv-list dlv-list--green">${content.strengths.map((s: string) => `<li><i class="fas fa-check"></i> ${escapeHtml(s)}</li>`).join('')}</ul>
-          </div>` : ''}
+
+        <!-- RECOMMANDATIONS STRATÉGIQUES -->
+        <div class="dlv-section">
+          <h2 class="dlv-section__title"><i class="fas fa-road" style="color:#4338ca"></i> Recommandations stratégiques</h2>
+          <div class="dlv-blocks">
+            ${blocks.filter((b: any) => (b.recommendations || []).length > 0).map((b: any) => `
+              <div class="dlv-block" style="border-left:3px solid #6366f1">
+                <div class="dlv-block__header"><span class="dlv-block__name"><i class="fas fa-tag" style="color:#6366f1;margin-right:6px;font-size:11px"></i>${escapeHtml(b.name || '')}</span></div>
+                ${b.recommendations.map((r: string) => `<p style="font-size:12px;color:#6b7280;padding-left:14px;margin-top:4px;position:relative"><span style="position:absolute;left:0;color:#6366f1">→</span>${escapeHtml(r)}</p>`).join('')}
+              </div>
+            `).join('')}
+          </div>
+        </div>
       `
-    } else if (dtype === 'sic_analysis') {
+    }
+    // ═══════════════════════════════════════════════════════════════
+    // SIC ANALYSIS — Social Impact Canvas (format PDF)
+    // ═══════════════════════════════════════════════════════════════
+    else if (dtype === 'sic_analysis') {
       const pillars = content.pillars || []
+      const im = content.impact_matrix || {} as any
+      const oddList = content.odd_alignment || []
+
       blocksHtml = `
+        <!-- SIC HEADER -->
+        <div class="dlv-section" style="background:linear-gradient(135deg,#064e3b 0%,#059669 100%);border:none;color:white">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:16px">
+            <div>
+              <p style="font-size:10px;text-transform:uppercase;letter-spacing:2px;color:rgba(255,255,255,0.6)">SOCIAL IMPACT CANVAS</p>
+              <p style="font-size:22px;font-weight:800;color:white;margin-top:4px">${dScore}<span style="font-size:14px;color:rgba(255,255,255,0.6)">/100</span></p>
+              <p style="font-size:13px;color:rgba(255,255,255,0.8);margin-top:2px">Impact Social : ${dScore >= 70 ? 'Solide' : dScore >= 50 ? 'En Construction' : 'À Structurer'}</p>
+            </div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap">
+              ${pillars.map((p: any) => `
+                <div style="text-align:center;background:rgba(255,255,255,0.1);border-radius:10px;padding:10px 14px;min-width:80px">
+                  <div style="font-size:20px;font-weight:800;color:white">${p.score || 0}%</div>
+                  <div style="font-size:9px;color:rgba(255,255,255,0.7);margin-top:2px">${escapeHtml((p.name || '').substring(0, 20))}</div>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        </div>
+
+        <!-- CHIFFRES CLÉS -->
+        ${im.beneficiaires_directs_estimes || im.beneficiaires_indirects_estimes || im.emplois_crees ? `
+        <div class="dlv-section">
+          <h2 class="dlv-section__title"><i class="fas fa-users" style="color:#059669"></i> Synthèse d'Impact</h2>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px">
+            ${im.beneficiaires_directs_estimes ? `<div style="text-align:center;padding:16px;background:#ecfdf5;border-radius:12px;border:1px solid #d1fae5"><div style="font-size:28px;font-weight:800;color:#059669">${typeof im.beneficiaires_directs_estimes === 'number' ? im.beneficiaires_directs_estimes.toLocaleString('fr-FR') : im.beneficiaires_directs_estimes}</div><div style="font-size:11px;color:#065f46;margin-top:4px">Bénéficiaires directs</div></div>` : ''}
+            ${im.beneficiaires_indirects_estimes ? `<div style="text-align:center;padding:16px;background:#ecfdf5;border-radius:12px;border:1px solid #d1fae5"><div style="font-size:28px;font-weight:800;color:#059669">${typeof im.beneficiaires_indirects_estimes === 'number' ? im.beneficiaires_indirects_estimes.toLocaleString('fr-FR') : im.beneficiaires_indirects_estimes}</div><div style="font-size:11px;color:#065f46;margin-top:4px">Bénéficiaires indirects</div></div>` : ''}
+            ${im.emplois_crees ? `<div style="text-align:center;padding:16px;background:#ecfdf5;border-radius:12px;border:1px solid #d1fae5"><div style="font-size:28px;font-weight:800;color:#059669">${im.emplois_crees}</div><div style="font-size:11px;color:#065f46;margin-top:4px">Emplois créés</div></div>` : ''}
+            <div style="text-align:center;padding:16px;background:#ecfdf5;border-radius:12px;border:1px solid #d1fae5"><div style="font-size:28px;font-weight:800;color:#059669">${oddList.length}</div><div style="font-size:11px;color:#065f46;margin-top:4px">ODD adressés</div></div>
+          </div>
+        </div>` : ''}
+
+        <!-- PILIERS D'IMPACT -->
         ${pillars.length ? `
         <div class="dlv-section">
-          <h2 class="dlv-section__title"><i class="fas fa-seedling"></i> Piliers d'Impact</h2>
+          <h2 class="dlv-section__title"><i class="fas fa-seedling" style="color:#059669"></i> Piliers d'Impact</h2>
           <div class="dlv-blocks">
             ${pillars.map((p: any) => `
               <div class="dlv-block">
@@ -1171,77 +1294,380 @@ entrepreneurRoutes.get('/deliverable/:type', async (c) => {
                 </div>
                 <div class="dlv-block__bar"><div class="dlv-block__bar-fill" style="width:${p.score || 0}%;background:${getScoreColor(p.score || 0)}"></div></div>
                 <p class="dlv-block__text">${escapeHtml(p.analysis || '')}</p>
+                ${(p.recommendations || []).length ? `
+                <div style="margin-top:10px;padding-top:10px;border-top:1px dashed #e5e7eb">
+                  <p style="font-size:11px;font-weight:700;color:#059669;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px"><i class="fas fa-lightbulb"></i> Recommandations</p>
+                  ${p.recommendations.map((r: string) => `<p style="font-size:12px;color:#6b7280;padding-left:14px;margin-bottom:4px;position:relative"><span style="position:absolute;left:0;color:#059669">→</span>${escapeHtml(r)}</p>`).join('')}
+                </div>` : ''}
               </div>
             `).join('')}
           </div>
         </div>` : ''}
-        ${content.odd_alignment?.length ? `
+
+        <!-- ALIGNEMENT ODD -->
+        ${oddList.length ? `
         <div class="dlv-section">
-          <h2 class="dlv-section__title"><i class="fas fa-bullseye" style="color:#059669"></i> Alignement ODD</h2>
-          <div class="dlv-blocks">
-            ${content.odd_alignment.map((o: any) => `
-              <div class="dlv-block">
-                <div class="dlv-block__header">
-                  <span class="dlv-block__name">${escapeHtml(o.odd || '')}</span>
-                  <span class="dlv-block__score" style="color:${getScoreColor(o.relevance || 0)}">${o.relevance || 0}%</span>
+          <h2 class="dlv-section__title"><i class="fas fa-bullseye" style="color:#059669"></i> Contribution aux ODD — Détail</h2>
+          <div style="display:grid;gap:8px">
+            ${oddList.map((o: any) => {
+              const rel = o.relevance || o.score || 0
+              return `<div style="display:flex;align-items:center;gap:12px;padding:10px 14px;background:#f9fafb;border-radius:10px;border:1px solid #f3f4f6">
+                <div style="min-width:48px;height:48px;border-radius:10px;background:${getScoreColor(rel)};display:flex;align-items:center;justify-content:center;color:white;font-size:11px;font-weight:700">ODD ${(o.odd || '').replace(/[^0-9]/g, '').substring(0, 2)}</div>
+                <div style="flex:1">
+                  <div style="font-size:13px;font-weight:600;color:#1f2937">${escapeHtml(o.odd || '')}</div>
+                  ${o.contribution ? `<div style="font-size:12px;color:#6b7280;margin-top:2px">${escapeHtml(o.contribution)}</div>` : ''}
+                  <div style="height:4px;background:#e5e7eb;border-radius:99px;overflow:hidden;margin-top:4px"><div style="height:100%;width:${rel}%;background:${getScoreColor(rel)};border-radius:99px"></div></div>
                 </div>
-                <div class="dlv-block__bar"><div class="dlv-block__bar-fill" style="width:${o.relevance || 0}%;background:${getScoreColor(o.relevance || 0)}"></div></div>
-              </div>
-            `).join('')}
+                <div style="font-size:15px;font-weight:700;color:${getScoreColor(rel)}">${rel}%</div>
+              </div>`
+            }).join('')}
           </div>
         </div>` : ''}
-        ${content.impact_matrix ? `
+
+        <!-- MATRICE D'IMPACT -->
+        ${im.indicateurs_manquants?.length || im.recommandations_bailleurs?.length ? `
         <div class="dlv-section">
-          <h2 class="dlv-section__title"><i class="fas fa-users" style="color:#6366f1"></i> Matrice d'Impact</h2>
+          <h2 class="dlv-section__title"><i class="fas fa-table-cells" style="color:#6366f1"></i> Matrice d'Impact — Détails</h2>
+          ${im.indicateurs_manquants?.length ? `
+            <p style="font-size:12px;font-weight:600;color:#dc2626;margin-bottom:8px"><i class="fas fa-triangle-exclamation"></i> Indicateurs manquants</p>
+            <ul class="dlv-list dlv-list--red">${im.indicateurs_manquants.map((ind: string) => `<li><i class="fas fa-xmark"></i> ${escapeHtml(ind)}</li>`).join('')}</ul>
+          ` : ''}
+          ${im.recommandations_bailleurs?.length ? `
+            <p style="font-size:12px;font-weight:600;color:#059669;margin-top:16px;margin-bottom:8px"><i class="fas fa-hand-holding-heart"></i> Recommandations pour les bailleurs</p>
+            <ul class="dlv-list dlv-list--green">${im.recommandations_bailleurs.map((r: string) => `<li><i class="fas fa-arrow-right"></i> ${escapeHtml(r)}</li>`).join('')}</ul>
+          ` : ''}
+        </div>` : ''}
+
+        <!-- NIVEAU DE MATURITÉ -->
+        <div class="dlv-section">
+          <h2 class="dlv-section__title"><i class="fas fa-signal" style="color:#6366f1"></i> Niveau de Maturité de l'Impact</h2>
+          <div style="display:flex;gap:4px;margin-bottom:12px">
+            ${['Idée', 'Test/Pilote', 'Déployé', 'Mesuré', 'Scalé'].map((phase, i) => {
+              const currentPhase = dScore >= 80 ? 4 : dScore >= 65 ? 3 : dScore >= 50 ? 2 : dScore >= 30 ? 1 : 0
+              const isActive = i <= currentPhase
+              const isCurrent = i === currentPhase
+              return `<div style="flex:1;text-align:center;padding:10px 4px;border-radius:8px;font-size:10px;font-weight:${isCurrent ? '700' : '500'};
+                background:${isActive ? '#059669' : '#f3f4f6'};color:${isActive ? 'white' : '#9ca3af'};
+                ${isCurrent ? 'box-shadow:0 0 0 2px #059669,0 0 0 4px #05966920;' : ''}">
+                ${isCurrent ? '← VOUS ÊTES ICI' : phase}
+              </div>`
+            }).join('')}
+          </div>
+        </div>
+      `
+    }
+    // ═══════════════════════════════════════════════════════════════
+    // FRAMEWORK D'ANALYSE — format Excel multi-onglets
+    // ═══════════════════════════════════════════════════════════════
+    else if (dtype === 'framework') {
+      const sections = content.sections || []
+      blocksHtml = `
+        <!-- FRAMEWORK HEADER -->
+        <div class="dlv-section" style="background:linear-gradient(135deg,#92400e 0%,#f59e0b 100%);border:none;color:white">
+          <p style="font-size:10px;text-transform:uppercase;letter-spacing:2px;color:rgba(255,255,255,0.6)">FRAMEWORK D'ANALYSE FINANCIÈRE PME</p>
+          <p style="font-size:20px;font-weight:800;color:white;margin-top:6px">Analyse Financière Complète</p>
+          <p style="font-size:12px;color:rgba(255,255,255,0.8);margin-top:4px">8 onglets : Données Historiques · Marges · Coûts · Trésorerie · Hypothèses · Projections 5 ans · Scénarios · Synthèse</p>
+        </div>
+
+        ${content.analysis ? `
+        <div class="dlv-section">
+          <p class="dlv-analysis">${escapeHtml(content.analysis)}</p>
+        </div>` : ''}
+
+        <!-- SECTIONS (onglets) -->
+        ${sections.length ? `
+        <div class="dlv-section">
+          <h2 class="dlv-section__title"><i class="fas fa-layer-group" style="color:#f59e0b"></i> Onglets de l'Analyse</h2>
           <div class="dlv-blocks">
-            <div class="dlv-block">
-              <p class="dlv-block__text"><strong>Bénéficiaires directs estimés :</strong> ${content.impact_matrix.beneficiaires_directs_estimes?.toLocaleString('fr-FR') || 'N/A'}</p>
-              <p class="dlv-block__text"><strong>Bénéficiaires indirects estimés :</strong> ${content.impact_matrix.beneficiaires_indirects_estimes?.toLocaleString('fr-FR') || 'N/A'}</p>
-            </div>
+            ${sections.map((s: any, i: number) => {
+              const icons = ['fa-table', 'fa-chart-pie', 'fa-money-bill-wave', 'fa-wallet', 'fa-sliders', 'fa-chart-line', 'fa-balance-scale', 'fa-star']
+              return `
+              <div class="dlv-block" style="border-left:3px solid #f59e0b">
+                <div class="dlv-block__header">
+                  <span class="dlv-block__name"><i class="fas ${icons[i] || 'fa-file-alt'}" style="color:#f59e0b;margin-right:6px"></i>${escapeHtml(s.title || '')}</span>
+                  ${s.score ? `<span class="dlv-block__score" style="color:${getScoreColor(s.score)}">${s.score}/100</span>` : ''}
+                </div>
+                ${s.score ? `<div class="dlv-block__bar"><div class="dlv-block__bar-fill" style="width:${s.score}%;background:${getScoreColor(s.score)}"></div></div>` : ''}
+                <p class="dlv-block__text" style="white-space:pre-line">${escapeHtml(s.content || '')}</p>
+              </div>`
+            }).join('')}
+          </div>
+        </div>` : ''}
+
+        <!-- RATIOS -->
+        ${content.ratios ? `
+        <div class="dlv-section">
+          <h2 class="dlv-section__title"><i class="fas fa-calculator" style="color:#6366f1"></i> Ratios Clés d'Efficacité</h2>
+          <div style="overflow-x:auto">
+            <table style="width:100%;border-collapse:collapse;font-size:12px">
+              <thead>
+                <tr style="background:#f8fafc">
+                  <th style="text-align:left;padding:10px 12px;border-bottom:2px solid #e5e7eb;font-weight:600;color:#64748b">Ratio</th>
+                  <th style="text-align:right;padding:10px 12px;border-bottom:2px solid #e5e7eb;font-weight:600;color:#64748b">Valeur</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${Object.entries(content.ratios).map(([key, val]: [string, any]) => `
+                  <tr style="border-bottom:1px solid #f3f4f6">
+                    <td style="padding:8px 12px;color:#374151;font-weight:500">${escapeHtml(key)}</td>
+                    <td style="text-align:right;padding:8px 12px;color:#1f2937;font-weight:600">${escapeHtml(typeof val === 'object' ? JSON.stringify(val) : String(val))}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>` : ''}
+
+        <!-- FORCES & RECOMMANDATIONS -->
+        ${content.strengths?.length ? `
+        <div class="dlv-section">
+          <h2 class="dlv-section__title"><i class="fas fa-check-circle" style="color:#059669"></i> Points forts</h2>
+          <ul class="dlv-list dlv-list--green">${content.strengths.map((s: string) => `<li><i class="fas fa-check"></i> ${escapeHtml(s)}</li>`).join('')}</ul>
+        </div>` : ''}
+        ${content.recommendations?.length ? `
+        <div class="dlv-section">
+          <h2 class="dlv-section__title"><i class="fas fa-lightbulb" style="color:#d97706"></i> Actions recommandées</h2>
+          <div class="dlv-blocks">
+            ${content.recommendations.map((r: string, i: number) => `
+              <div class="dlv-block" style="border-left:3px solid #f59e0b">
+                <div class="dlv-block__header"><span class="dlv-block__name"><span style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:#f59e0b;color:white;font-size:10px;font-weight:700;margin-right:6px">${i + 1}</span>${escapeHtml(r.split(':')[0] || r.split('—')[0] || r)}</span></div>
+                ${r.includes(':') ? `<p class="dlv-block__text">${escapeHtml(r.substring(r.indexOf(':') + 1).trim())}</p>` : ''}
+              </div>
+            `).join('')}
           </div>
         </div>` : ''}
       `
-    } else if (dtype === 'framework') {
+    }
+    // ═══════════════════════════════════════════════════════════════
+    // PLAN OVO — Projections financières 5 ans
+    // ═══════════════════════════════════════════════════════════════
+    else if (dtype === 'plan_ovo') {
+      const proj = content.projections || {}
+      const km = content.key_metrics || {} as any
+      blocksHtml = `
+        <!-- PLAN OVO HEADER -->
+        <div class="dlv-section" style="background:linear-gradient(135deg,#0c4a6e 0%,#0284c7 100%);border:none;color:white">
+          <p style="font-size:10px;text-transform:uppercase;letter-spacing:2px;color:rgba(255,255,255,0.6)">PLAN FINANCIER OVO</p>
+          <p style="font-size:20px;font-weight:800;color:white;margin-top:6px">Projections Financières — 5 ans</p>
+          <p style="font-size:12px;color:rgba(255,255,255,0.8);margin-top:4px">Scénarios Base · Optimiste · Pessimiste</p>
+        </div>
+
+        ${content.analysis ? `
+        <div class="dlv-section">
+          <p class="dlv-analysis">${escapeHtml(content.analysis)}</p>
+        </div>` : ''}
+
+        <!-- MÉTRIQUES CLÉS -->
+        ${Object.keys(km).length ? `
+        <div class="dlv-section">
+          <h2 class="dlv-section__title"><i class="fas fa-gauge-high" style="color:#0284c7"></i> Métriques Clés</h2>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px">
+            ${Object.entries(km).map(([key, val]: [string, any]) => {
+              const labels: Record<string, string> = { marge_brute_pct: 'Marge Brute', marge_ebitda_2029_pct: 'Marge EBITDA An5', runway_mois: 'Runway (mois)', seuil_rentabilite_2026: 'Seuil Rentabilité', payback_period_annees: 'Payback', van_10pct_xof: 'VAN (10%)', tir_pct: 'TRI', dscr_2026: 'DSCR', besoin_financement_total_xof: 'Besoin Financement', ca_par_employe_2025_xof: 'CA/Employé' }
+              if (typeof val === 'object') return ''
+              return `<div style="text-align:center;padding:14px;background:#f0f9ff;border-radius:12px;border:1px solid #bae6fd">
+                <div style="font-size:20px;font-weight:800;color:#0284c7">${escapeHtml(String(val))}</div>
+                <div style="font-size:10px;color:#0369a1;margin-top:4px">${escapeHtml(labels[key] || key.replace(/_/g, ' '))}</div>
+              </div>`
+            }).join('')}
+          </div>
+        </div>` : ''}
+
+        <!-- SCÉNARIOS -->
+        ${Object.keys(proj).length ? `
+        <div class="dlv-section">
+          <h2 class="dlv-section__title"><i class="fas fa-chart-line" style="color:#0284c7"></i> Projections par Scénario</h2>
+          <div class="dlv-blocks">
+            ${Object.entries(proj).map(([scenarioKey, scenarioData]: [string, any]) => {
+              const scenarioLabels: Record<string, string> = { scenario_base: 'Scénario Central', scenario_optimiste: 'Scénario Optimiste', scenario_pessimiste: 'Scénario Prudent' }
+              const scenarioColors: Record<string, string> = { scenario_base: '#0284c7', scenario_optimiste: '#059669', scenario_pessimiste: '#d97706' }
+              const scenarioIcons: Record<string, string> = { scenario_base: 'fa-bullseye', scenario_optimiste: 'fa-rocket', scenario_pessimiste: 'fa-shield-halved' }
+              const label = scenarioLabels[scenarioKey] || scenarioKey
+              const color = scenarioColors[scenarioKey] || '#6366f1'
+              const icon = scenarioIcons[scenarioKey] || 'fa-chart-line'
+              if (typeof scenarioData !== 'object') return ''
+              return `
+                <div class="dlv-block" style="border-left:3px solid ${color}">
+                  <div class="dlv-block__header"><span class="dlv-block__name"><i class="fas ${icon}" style="color:${color};margin-right:6px"></i>${escapeHtml(label)}</span></div>
+                  <div style="overflow-x:auto;margin-top:8px">
+                    <table style="width:100%;border-collapse:collapse;font-size:11px">
+                      <thead><tr style="background:#f8fafc">${Object.keys(scenarioData).map((k: string) => `<th style="padding:6px 8px;border-bottom:1px solid #e5e7eb;text-align:right;color:#64748b;font-weight:600">${escapeHtml(k)}</th>`).join('')}</tr></thead>
+                      <tbody><tr>${Object.values(scenarioData).map((v: any) => `<td style="padding:6px 8px;text-align:right;color:#1f2937;font-weight:500">${escapeHtml(typeof v === 'object' ? JSON.stringify(v) : String(v))}</td>`).join('')}</tr></tbody>
+                    </table>
+                  </div>
+                </div>`
+            }).join('')}
+          </div>
+        </div>` : ''}
+
+        <!-- HYPOTHÈSES -->
+        ${content.assumptions?.length ? `
+        <div class="dlv-section">
+          <h2 class="dlv-section__title"><i class="fas fa-sliders" style="color:#64748b"></i> Hypothèses de Projection</h2>
+          <div class="dlv-blocks">
+            ${content.assumptions.map((a: string, i: number) => `
+              <div class="dlv-block">
+                <div class="dlv-block__header"><span class="dlv-block__name"><span style="display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;background:#e2e8f0;color:#64748b;font-size:10px;font-weight:700;margin-right:6px">${i + 1}</span></span></div>
+                <p class="dlv-block__text">${escapeHtml(a)}</p>
+              </div>
+            `).join('')}
+          </div>
+        </div>` : ''}
+      `
+    }
+    // ═══════════════════════════════════════════════════════════════
+    // BUSINESS PLAN — format Word structuré
+    // ═══════════════════════════════════════════════════════════════
+    else if (dtype === 'business_plan') {
       const sections = content.sections || []
       blocksHtml = `
-        ${content.analysis ? `<div class="dlv-section"><p class="dlv-analysis">${escapeHtml(content.analysis)}</p></div>` : ''}
+        <!-- BP HEADER -->
+        <div class="dlv-section" style="background:linear-gradient(135deg,#4c1d95 0%,#7c3aed 100%);border:none;color:white">
+          <p style="font-size:10px;text-transform:uppercase;letter-spacing:2px;color:rgba(255,255,255,0.6)">BUSINESS PLAN</p>
+          <p style="font-size:20px;font-weight:800;color:white;margin-top:6px">Document de synthèse prêt pour les investisseurs</p>
+          <p style="font-size:12px;color:rgba(255,255,255,0.8);margin-top:4px">Présentation · Opérations · Projet d'investissement</p>
+        </div>
+
+        <!-- TABLE DES MATIÈRES -->
         ${sections.length ? `
         <div class="dlv-section">
-          <h2 class="dlv-section__title"><i class="fas fa-chart-bar"></i> Sections de l'Analyse</h2>
-          <div class="dlv-blocks">
-            ${sections.map((s: any) => `
-              <div class="dlv-block">
-                <div class="dlv-block__header">
-                  <span class="dlv-block__name">${escapeHtml(s.title || '')}</span>
-                  ${s.score ? `<span class="dlv-block__score" style="color:${getScoreColor(s.score)}">${s.score}/100</span>` : ''}
-                </div>
-                <p class="dlv-block__text">${escapeHtml(s.content || '')}</p>
+          <h2 class="dlv-section__title"><i class="fas fa-list-ol" style="color:#7c3aed"></i> Table des matières</h2>
+          <div style="display:flex;flex-direction:column;gap:4px">
+            ${sections.map((s: any, i: number) => `
+              <div style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:8px;background:#f9fafb;cursor:pointer" onclick="document.getElementById('bp-section-${i}').scrollIntoView({behavior:'smooth'})">
+                <span style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:8px;background:#7c3aed;color:white;font-size:12px;font-weight:700">${i + 1}</span>
+                <span style="font-size:13px;font-weight:500;color:#374151">${escapeHtml(s.title || '')}</span>
               </div>
             `).join('')}
           </div>
         </div>` : ''}
-        ${content.ratios ? `
+
+        <!-- SECTIONS -->
+        ${sections.map((s: any, i: number) => `
+          <div class="dlv-section" id="bp-section-${i}">
+            <h2 class="dlv-section__title">
+              <span style="display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:10px;background:#7c3aed;color:white;font-size:14px;font-weight:700">${i + 1}</span>
+              ${escapeHtml(s.title || '')}
+            </h2>
+            <div style="font-size:13px;color:#4b5563;line-height:1.8;white-space:pre-line">${escapeHtml(s.content || '')}</div>
+          </div>
+        `).join('')}
+      `
+    }
+    // ═══════════════════════════════════════════════════════════════
+    // ODD — Due Diligence Opérationnelle (format Excel évaluation)
+    // ═══════════════════════════════════════════════════════════════
+    else if (dtype === 'odd') {
+      const criteria = content.criteria || []
+      const summary = content.summary || {} as any
+      const categoryCounts: Record<string, { total: number, complet: number, partiel: number, nonConf: number }> = {}
+      criteria.forEach((cr: any) => {
+        const cat = cr.category || 'Autre'
+        if (!categoryCounts[cat]) categoryCounts[cat] = { total: 0, complet: 0, partiel: 0, nonConf: 0 }
+        categoryCounts[cat].total++
+        if (cr.status === 'Complet' || cr.status === 'Conforme') categoryCounts[cat].complet++
+        else if (cr.status === 'Partiel') categoryCounts[cat].partiel++
+        else categoryCounts[cat].nonConf++
+      })
+
+      blocksHtml = `
+        <!-- ODD HEADER -->
+        <div class="dlv-section" style="background:linear-gradient(135deg,#78350f 0%,#d97706 100%);border:none;color:white">
+          <p style="font-size:10px;text-transform:uppercase;letter-spacing:2px;color:rgba(255,255,255,0.6)">DUE DILIGENCE OPÉRATIONNELLE</p>
+          <div style="display:flex;align-items:center;gap:16px;margin-top:8px">
+            <div style="font-size:48px;font-weight:800;color:white">${dScore}<span style="font-size:18px;color:rgba(255,255,255,0.6)">/100</span></div>
+            <div>
+              <p style="font-size:14px;font-weight:600;color:white">${criteria.length} critères évalués</p>
+              <p style="font-size:12px;color:rgba(255,255,255,0.7)">${criteria.filter((c: any) => c.status === 'Complet' || c.status === 'Conforme').length} conformes · ${criteria.filter((c: any) => c.status === 'Partiel').length} partiels · ${criteria.filter((c: any) => c.status !== 'Complet' && c.status !== 'Conforme' && c.status !== 'Partiel').length} non conformes</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- RÉSUMÉ PAR CATÉGORIE -->
+        ${Object.keys(categoryCounts).length ? `
         <div class="dlv-section">
-          <h2 class="dlv-section__title"><i class="fas fa-calculator" style="color:#6366f1"></i> Ratios Clés</h2>
-          <div class="dlv-blocks">
-            ${Object.entries(content.ratios).map(([key, val]: [string, any]) => `
-              <div class="dlv-block">
-                <div class="dlv-block__header"><span class="dlv-block__name">${escapeHtml(key)}</span></div>
-                <p class="dlv-block__text">${escapeHtml(typeof val === 'object' ? JSON.stringify(val) : String(val))}</p>
+          <h2 class="dlv-section__title"><i class="fas fa-chart-pie" style="color:#d97706"></i> Aperçu par catégorie</h2>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px">
+            ${Object.entries(categoryCounts).map(([cat, counts]) => `
+              <div style="padding:14px;background:#fffbeb;border-radius:12px;border:1px solid #fde68a">
+                <p style="font-size:13px;font-weight:600;color:#92400e;margin-bottom:8px">${escapeHtml(cat)}</p>
+                <div style="display:flex;gap:6px">
+                  <span style="font-size:11px;padding:2px 8px;border-radius:99px;background:#dcfce7;color:#059669;font-weight:600">${counts.complet} ✓</span>
+                  <span style="font-size:11px;padding:2px 8px;border-radius:99px;background:#fef3c7;color:#d97706;font-weight:600">${counts.partiel} ◐</span>
+                  <span style="font-size:11px;padding:2px 8px;border-radius:99px;background:#fef2f2;color:#dc2626;font-weight:600">${counts.nonConf} ✗</span>
+                </div>
+                <div style="height:4px;background:#e5e7eb;border-radius:99px;overflow:hidden;margin-top:8px">
+                  <div style="height:100%;width:${Math.round(counts.complet / counts.total * 100)}%;background:#059669;border-radius:99px"></div>
+                </div>
               </div>
             `).join('')}
           </div>
         </div>` : ''}
-        ${content.strengths?.length ? `
-          <div class="dlv-section">
-            <h2 class="dlv-section__title"><i class="fas fa-check-circle" style="color:#059669"></i> Forces</h2>
-            <ul class="dlv-list dlv-list--green">${content.strengths.map((s: string) => `<li><i class="fas fa-check"></i> ${escapeHtml(s)}</li>`).join('')}</ul>
-          </div>` : ''}
-        ${content.recommendations?.length ? `
-          <div class="dlv-section">
-            <h2 class="dlv-section__title"><i class="fas fa-lightbulb" style="color:#d97706"></i> Recommandations</h2>
-            <ul class="dlv-list dlv-list--amber">${content.recommendations.map((r: string) => `<li><i class="fas fa-arrow-right"></i> ${escapeHtml(r)}</li>`).join('')}</ul>
-          </div>` : ''}
+
+        <!-- CRITÈRES DÉTAILLÉS -->
+        <div class="dlv-section">
+          <h2 class="dlv-section__title"><i class="fas fa-clipboard-list" style="color:#d97706"></i> Évaluation des critères</h2>
+          <div style="overflow-x:auto">
+            <table style="width:100%;border-collapse:collapse;font-size:12px">
+              <thead>
+                <tr style="background:#f8fafc">
+                  <th style="text-align:left;padding:10px 12px;border-bottom:2px solid #e5e7eb;font-weight:600;color:#64748b">Critère</th>
+                  <th style="text-align:left;padding:10px 12px;border-bottom:2px solid #e5e7eb;font-weight:600;color:#64748b">Catégorie</th>
+                  <th style="text-align:center;padding:10px 12px;border-bottom:2px solid #e5e7eb;font-weight:600;color:#64748b">Statut</th>
+                  <th style="text-align:left;padding:10px 12px;border-bottom:2px solid #e5e7eb;font-weight:600;color:#64748b">Commentaire</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${criteria.map((cr: any) => {
+                  const st = cr.status || ''
+                  const stColor = (st === 'Complet' || st === 'Conforme') ? '#059669' : st === 'Partiel' ? '#d97706' : '#dc2626'
+                  const stBg = (st === 'Complet' || st === 'Conforme') ? '#dcfce7' : st === 'Partiel' ? '#fef3c7' : '#fef2f2'
+                  return `<tr style="border-bottom:1px solid #f3f4f6">
+                    <td style="padding:8px 12px;color:#374151;font-weight:500">${escapeHtml(cr.name || '')}</td>
+                    <td style="padding:8px 12px;color:#6b7280;font-size:11px">${escapeHtml(cr.category || '')}</td>
+                    <td style="text-align:center;padding:8px 12px"><span style="padding:2px 10px;border-radius:99px;font-size:11px;font-weight:600;background:${stBg};color:${stColor}">${escapeHtml(st)}</span></td>
+                    <td style="padding:8px 12px;color:#6b7280;font-size:11px;max-width:300px">${escapeHtml(cr.comment || '')}</td>
+                  </tr>`
+                }).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- PLAN D'ACTION -->
+        ${content.action_plan?.length ? `
+        <div class="dlv-section">
+          <h2 class="dlv-section__title"><i class="fas fa-list-check" style="color:#7c3aed"></i> Plan d'action prioritaire</h2>
+          <div class="dlv-blocks">
+            ${content.action_plan.map((a: string, i: number) => {
+              const isUrgent = a.toLowerCase().includes('urgent') || a.toLowerCase().includes('0-3 mois')
+              return `
+              <div class="dlv-block" style="border-left:3px solid ${isUrgent ? '#dc2626' : '#d97706'}">
+                <div class="dlv-block__header">
+                  <span class="dlv-block__name">
+                    <span style="display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:50%;background:${isUrgent ? '#dc2626' : '#d97706'};color:white;font-size:11px;font-weight:700;margin-right:6px">${i + 1}</span>
+                    ${isUrgent ? '<span style="font-size:9px;padding:2px 6px;border-radius:99px;background:#fef2f2;color:#dc2626;font-weight:700;margin-right:6px">URGENT</span>' : ''}
+                  </span>
+                </div>
+                <p class="dlv-block__text">${escapeHtml(a)}</p>
+              </div>`
+            }).join('')}
+          </div>
+        </div>` : ''}
+
+        <!-- RÉSUMÉ ODD -->
+        ${summary.points_forts?.length || summary.criteres_bloquants?.length ? `
+        <div class="dlv-section">
+          <h2 class="dlv-section__title"><i class="fas fa-file-shield" style="color:#d97706"></i> Synthèse ODD</h2>
+          ${summary.points_forts?.length ? `
+            <p style="font-size:12px;font-weight:600;color:#059669;margin-bottom:8px"><i class="fas fa-check-circle"></i> Points forts</p>
+            <ul class="dlv-list dlv-list--green">${summary.points_forts.map((p: string) => `<li><i class="fas fa-check"></i> ${escapeHtml(p)}</li>`).join('')}</ul>
+          ` : ''}
+          ${summary.criteres_bloquants?.length ? `
+            <p style="font-size:12px;font-weight:600;color:#dc2626;margin-top:16px;margin-bottom:8px"><i class="fas fa-ban"></i> Critères bloquants</p>
+            <ul class="dlv-list dlv-list--red">${summary.criteres_bloquants.map((c: string) => `<li><i class="fas fa-xmark"></i> ${escapeHtml(c)}</li>`).join('')}</ul>
+          ` : ''}
+        </div>` : ''}
       `
     }
 
@@ -1339,56 +1765,36 @@ entrepreneurRoutes.get('/deliverable/:type', async (c) => {
       </div>
     </header>
 
-    <!-- Main content -->
-    <div class="grid gap-6 md:grid-cols-5">
-      <!-- Left: Downloads -->
-      <div class="md:col-span-2 space-y-4">
-        <div class="dlv-section">
-          <h2 class="dlv-section__title"><i class="fas fa-download" style="color:${meta.color}"></i> Livrables disponibles</h2>
-          <div class="space-y-3">
-            ${isAvailable ? `
-              <a href="/api/deliverable/${dtype}" target="_blank" class="dlv-download-card" style="border-color:${meta.color}40;background:${meta.color}08">
-                <div class="dlv-download-card__icon" style="background:${meta.color}">
-                  <i class="fas fa-file-lines"></i>
-                </div>
-                <div class="dlv-download-card__info">
-                  <p class="dlv-download-card__name" style="color:${meta.color}">${escapeHtml(meta.title)} Complet</p>
-                  <p class="dlv-download-card__desc" style="color:${meta.color}">${escapeHtml(meta.format)}</p>
-                  <span class="inline-flex items-center gap-1 mt-1 px-2 py-0.5 rounded-full text-[10px] font-bold" style="background:${meta.color}15;color:${meta.color}">
-                    <i class="fas fa-star text-[8px]"></i> RECOMMANDÉ
-                  </span>
-                </div>
-              </a>
-              <div class="dlv-download-card" style="border-color:#e5e7eb;background:#f9fafb;cursor:default;">
-                <div class="dlv-download-card__icon" style="background:#d1d5db">
-                  <i class="fas fa-file-pdf"></i>
-                </div>
-                <div class="dlv-download-card__info">
-                  <p class="dlv-download-card__name text-slate-500">Export PDF</p>
-                  <p class="dlv-download-card__desc text-slate-400">Prochainement disponible</p>
-                </div>
-              </div>
-            ` : `
-              <div class="text-center py-8 text-slate-400">
-                <i class="fas fa-file-circle-question text-3xl mb-3 block"></i>
-                <p class="text-sm">Aucun livrable disponible</p>
-                <p class="text-xs mt-1">Générez les livrables depuis la page principale</p>
-              </div>
-            `}
-          </div>
+    <!-- Downloads bar -->
+    <div class="dlv-section" style="padding:16px">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
+        <h2 style="font-size:14px;font-weight:600;color:#1f2937;display:flex;align-items:center;gap:8px;margin:0"><i class="fas fa-download" style="color:${meta.color}"></i> Livrables disponibles</h2>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          ${isAvailable ? `
+            <a href="/api/deliverable/${dtype}" target="_blank" style="display:inline-flex;align-items:center;gap:8px;padding:8px 16px;border-radius:10px;background:${meta.color};color:white;text-decoration:none;font-size:12px;font-weight:600;transition:all 0.2s">
+              <i class="fas fa-file-lines"></i> Voir JSON complet
+            </a>
+            <span style="display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:10px;background:#f3f4f6;color:#9ca3af;font-size:12px;font-weight:500;cursor:default">
+              <i class="fas fa-file-pdf"></i> Export PDF (bientôt)
+            </span>
+          ` : `
+            <span style="display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:10px;background:#fef3c7;color:#92400e;font-size:12px;font-weight:500">
+              <i class="fas fa-hourglass-half"></i> Non encore généré
+            </span>
+          `}
         </div>
       </div>
+    </div>
 
-      <!-- Right: Content -->
-      <div class="md:col-span-3 space-y-0">
-        ${isAvailable ? blocksHtml : `
-          <div class="dlv-section text-center py-16">
-            <i class="fas fa-rocket text-4xl text-slate-300 mb-4 block"></i>
-            <p class="text-slate-500 font-medium">Contenu en attente de génération</p>
-            <p class="text-slate-400 text-sm mt-2">Uploadez vos documents et lancez la génération depuis la page principale.</p>
-          </div>
-        `}
-      </div>
+    <!-- Main content — full width -->
+    <div class="space-y-0">
+      ${isAvailable ? blocksHtml : `
+        <div class="dlv-section text-center py-16">
+          <i class="fas fa-rocket text-4xl text-slate-300 mb-4 block"></i>
+          <p class="text-slate-500 font-medium">Contenu en attente de génération</p>
+          <p class="text-slate-400 text-sm mt-2">Uploadez vos documents et lancez la génération depuis la page principale.</p>
+        </div>
+      `}
     </div>
   </main>
 </body>
