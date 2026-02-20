@@ -35,8 +35,8 @@ export const renderer = jsxRenderer(({ children }) => {
           href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=Source+Sans+Pro:wght@400;600;700&display=swap"
           rel="stylesheet"
         />
-        {raw(`<script>${tailwindConfig}</script>`)}
         <script src="https://cdn.tailwindcss.com"></script>
+        {raw(`<script>${tailwindConfig}</script>`)}
         <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet" />
         <link href="/static/esono.css" rel="stylesheet" />
         <link href="/static/style.css" rel="stylesheet" />
