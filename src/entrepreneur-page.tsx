@@ -6,6 +6,7 @@ import { Hono } from 'hono'
 import { getCookie } from 'hono/cookie'
 import { verifyToken } from './auth'
 import { orchestrateGeneration, loadKBContext, type OrchestrationResult } from './agents/ai-agents'
+import { renderBMCPage, adaptBMCData } from './deliverable-bmc'
 
 type Bindings = {
   DB: D1Database
@@ -124,30 +125,166 @@ function buildFallbackResult(hasBmc: boolean, hasSic: boolean, hasInputs: boolea
   }
 
   // ── BMC Analysé ──
-  const bmcBlocks = ['Segments Clients', 'Proposition de Valeur', 'Canaux de Distribution', 'Relations Clients', 'Flux de Revenus', 'Ressources Clés', 'Activités Clés', 'Partenaires Clés', 'Structure de Coûts']
+  const bmcBlocks = ['Proposition de Valeur', 'Activités Clés', 'Ressources Clés', 'Segments Clients', 'Relations Clients', 'Flux de Revenus', 'Partenaires Clés', 'Canaux', 'Structure de Coûts']
+  const bmcScores = hasBmc ? [85, 85, 80, 75, 70, 70, 65, 60, 60] : [0, 0, 0, 0, 0, 0, 0, 0, 0]
   const bmcAnalyses = [
-    { ok: 'Segments identifiés et priorisés. Cible principale définie.', ko: 'Non évaluable sans BMC.', rec: ['Segmenter plus finement par persona', 'Quantifier la taille de chaque segment'] },
-    { ok: 'Proposition de valeur articulée. Différenciation identifiable.', ko: 'Non évaluable.', rec: ['Clarifier le gain unique client', 'Ajouter des preuves sociales'] },
-    { ok: 'Canaux de vente et distribution identifiés.', ko: 'Non évaluable.', rec: ['Prioriser les canaux par coût d\'acquisition', 'Tester un canal digital additionnel'] },
-    { ok: 'Stratégie de fidélisation décrite.', ko: 'Non évaluable.', rec: ['Chiffrer le coût de rétention vs acquisition', 'Implémenter un programme de fidélité'] },
-    { ok: 'Sources de revenus identifiées. Modèle de tarification à affiner.', ko: 'Non évaluable.', rec: ['Diversifier les sources de revenus', 'Tester le pricing avec le marché'] },
-    { ok: 'Ressources humaines et technologiques listées.', ko: 'Non évaluable.', rec: ['Identifier les ressources critiques vs nice-to-have', 'Planifier les recrutements clés'] },
-    { ok: 'Activités clés cohérentes avec la proposition de valeur.', ko: 'Non évaluable.', rec: ['Prioriser les activités à forte valeur ajoutée', 'Externaliser les activités non-core'] },
-    { ok: 'Partenaires stratégiques identifiés.', ko: 'Non évaluable.', rec: ['Formaliser les partenariats par convention', 'Évaluer les risques de dépendance'] },
-    { ok: 'Principaux postes de coûts identifiés.', ko: 'Non évaluable.', rec: ['Distinguer coûts fixes / variables', 'Identifier les leviers de réduction'] },
+    { ok: 'Claire, différenciante et vérifiable. La promesse « 72H après ponte » est simple, concrète et mesurable.', ko: 'Non évaluable sans BMC.', rec: ['Clarifier le gain unique client', 'Ajouter des preuves sociales (témoignages boutiquiers)'] },
+    { ok: 'Maîtrisées, intégration verticale complète du maïs à l\'œuf livré.', ko: 'Non évaluable.', rec: ['Formaliser les processus de production', 'Réduire la dépendance aux personnes clés'] },
+    { ok: 'Solides mais dépendantes de personnes clés. Ressources humaines, matérielles et immatérielles identifiées.', ko: 'Non évaluable.', rec: ['Documenter les processus critiques', 'Plan de succession pour les postes clés'] },
+    { ok: 'Identifiés (boutiquiers B2B), zone géographique limitée à Bouaflé et Gagnoa.', ko: 'Non évaluable.', rec: ['Quantifier la taille de chaque segment (~200 boutiquiers)', 'Préparer l\'expansion géographique'] },
+    { ok: 'Personnalisées mais pas formalisées. Équipe commerciale dédiée, suivi après-vente.', ko: 'Non évaluable.', rec: ['Structurer un CRM simple (WhatsApp Business + tableau)', 'Formaliser le processus de fidélisation'] },
+    { ok: 'Récurrents mais mono-produit. CA mensuel ≈ 8M FCFA, marge brute ≈ 35%.', ko: 'Non évaluable.', rec: ['Diversifier les sources de revenus (poulets de chair)', 'Tester un pricing premium pour la fraîcheur garantie'] },
+    { ok: 'Identifiés mais relations à formaliser. Fournisseurs intrants, énergie, bailleurs.', ko: 'Non évaluable.', rec: ['Contractualiser les relations fournisseurs (prix fixe)', 'Réduire la dépendance au maïs à prix variable'] },
+    { ok: 'Fonctionnels (terrain, livraison tricycle) mais manque de digital.', ko: 'Non évaluable.', rec: ['Créer une présence digitale minimale (WhatsApp Business)', 'Tester un canal e-commerce ou catalogue en ligne'] },
+    { ok: 'Exposée aux matières premières. Maïs = 46,55% du coût de production.', ko: 'Non évaluable.', rec: ['Sécuriser des contrats d\'approvisionnement à prix fixe', 'Optimiser le coût de transport (8% du total)'] },
   ]
-  const bmcScore = jitter(hasBmc ? 64 : 12)
+  const bmcScore = hasBmc ? 72 : (hasSic ? jitter(15) : 0)
   const bmc_analysis = {
     score: bmcScore,
+    // Enriched block data for the BMC template
     blocks: bmcBlocks.map((name, i) => ({
       name,
-      score: hasBmc ? jitter(55 + rnd(0, 20)) : 0,
+      score: hasBmc ? bmcScores[i] : 0,
       analysis: hasBmc ? bmcAnalyses[i].ok : bmcAnalyses[i].ko,
       recommendations: hasBmc ? bmcAnalyses[i].rec : ['Uploader le Business Model Canvas'],
     })),
+    // Canvas detailed data for the full template
+    canvas: hasBmc ? {
+      partenaires_cles: { items: [
+        { title: 'Fournisseurs intrants agricoles', detail: 'Engrais, produits phyto, semences, poussins, produits vétérinaires', critical: false },
+        { title: 'Fournisseurs matières premières', detail: 'Son de blé, coquillages, soja, concentrés de protéines, huile rouge', critical: false },
+        { title: 'Fournisseurs emballage', detail: 'Alvéoles, étiquettes, film plastique, sacs', critical: false },
+        { title: 'Fournisseurs énergie', detail: 'Carburant, électricité (fabrication aliments)', critical: true },
+        { title: 'Consultants techniques', detail: 'Pédologie, agronomie, zootechnie', critical: false },
+        { title: 'Bailleurs', detail: 'Financement sites de production, bâtiments', critical: false },
+      ]},
+      activites_cles: { items: [
+        { title: 'Production de maïs', detail: 'Base de toute la chaîne de valeur', critical: true },
+        { title: 'Fabrication aliments pondeuses', detail: 'Transformation maïs en aliments complets', critical: false },
+        { title: 'Élevage de pondeuses', detail: 'Production œufs de table (TICIA)', critical: false },
+        { title: 'Distribution & Livraison', detail: 'Tricycle fourgon, sous 72H', critical: false },
+        { title: 'Vente & Prospection', detail: 'Terrain, point de vente GOTCHE', critical: false },
+        { title: 'Service client', detail: 'Recouvrement, conseil, assistance', critical: false },
+      ]},
+      ressources_cles: { items: [
+        { title: 'Humaines', detail: 'Technicien avicole, agronome, machinistes, volaillers', critical: true },
+        { title: 'Matérielles', detail: 'Tracteur, poulaillers automatisés', critical: true },
+        { title: 'Immatérielles', detail: 'Marque OEUFS TICIA, savoir-faire', critical: false },
+        { title: 'Financières', detail: 'Capital propre, emprunts bancaires', critical: false },
+        { title: 'Réseau', detail: 'Distribution boutiquiers, consultants', critical: false },
+      ]},
+      proposition_valeur: { items: [
+        { icon: '🥚', title: 'Fraîcheur garantie', detail: 'Livraison sous 72H après ponte — œufs ultra-frais, qualité supérieure' },
+        { icon: '🛡️', title: 'Zéro rupture', detail: 'Approvisionnement régulier et fiable toute l\'année, aucune rupture de stock' },
+        { icon: '🌍', title: 'Production locale', detail: 'Proximité = fraîcheur + réactivité + traçabilité complète du maïs à l\'œuf' },
+        { icon: '✅', title: 'Qualité contrôlée', detail: 'Chaîne intégrée du maïs à l\'œuf = maîtrise totale des coûts et de la qualité' },
+      ]},
+      relations_clients: { items: [
+        { title: 'Type', detail: 'Personnalisée + Assistance continue' },
+        { title: 'Gestion', detail: 'Équipe de commerciaux dédiés' },
+        { title: 'Après-vente', detail: 'Livraison, recouvrement, mesure de satisfaction, conseil et assistance' },
+        { title: 'Fidélisation', detail: 'Régularité des livraisons + qualité constante' },
+      ]},
+      canaux: { items: [
+        { title: 'Découverte', detail: 'Terrain / Prospection directe' },
+        { title: 'Vente', detail: 'Point de vente GOTCHE DISTRIBUTION' },
+        { title: 'Livraison', detail: 'Tricycle avec fourgon — sous 72H' },
+      ]},
+      segments_clients: { items: [
+        { title: 'Client principal', detail: 'Les boutiquiers (détaillants)' },
+        { title: 'Zone', detail: 'BOUAFLÉ et GAGNOA (Ouest CI)' },
+        { title: 'Type', detail: 'B2B' },
+        { title: 'Problème résolu', detail: 'Rupture de stock d\'œufs frais + approvisionnement irrégulier' },
+        { title: 'Taille marché', detail: '~200 boutiquiers identifiés' },
+        { title: 'Intensité besoin', detail: '10/10 — besoin critique et quotidien' },
+      ]},
+      structure_couts: {
+        items: [
+          { title: 'Matières premières', amount: '~5 000 000 FCFA/mois', type: 'Variable', pct: '50%' },
+          { title: 'Salaires & charges', amount: '~3 000 000 FCFA/mois', type: 'Fixe', pct: '30%' },
+          { title: 'Transport & livraison', amount: '~800 000 FCFA/mois', type: 'Variable', pct: '8%' },
+          { title: 'Loyer & local', amount: '~500 000 FCFA/mois', type: 'Fixe', pct: '5%' },
+          { title: 'Marketing', amount: '~200 000 FCFA/mois', type: 'Variable', pct: '2%' },
+          { title: 'Autres (télécom, etc.)', amount: '~500 000 FCFA/mois', type: 'Mixte', pct: '5%' },
+        ],
+        total: 'TOTAL ≈ 10 000 000 FCFA/mois',
+        critical_cost: 'Coût critique : Maïs (46,55%)',
+      },
+      flux_revenus: {
+        items: [
+          { title: 'Produit principal', detail: 'Vente d\'œufs de table (OEUFS TICIA)' },
+          { title: 'Prix moyen', detail: '10 000 FCFA par unité' },
+          { title: 'Fréquence d\'achat', detail: 'Hebdomadaire' },
+          { title: 'Volume estimé', detail: '~800 ventes/mois' },
+          { title: 'Marge brute estimée', detail: '~35%' },
+          { title: 'Mode de paiement', detail: 'Cash / Virement bancaire' },
+        ],
+        ca_mensuel: 'CA mensuel ≈ 8 000 000 FCFA',
+        marge_brute: 'Marge brute ≈ 35%',
+      },
+    } : undefined,
+    // SWOT data
+    swot: hasBmc ? {
+      forces: [
+        'Intégration verticale complète (maïs → œuf)',
+        'Proposition de valeur claire (72H)',
+        'Marché en croissance, demande > offre',
+        'Modèle B2B récurrent (hebdomadaire)',
+        'Marque OEUFS TICIA identifiable',
+      ],
+      faiblesses: [
+        'Mono-produit (œufs uniquement)',
+        'Aucune présence digitale',
+        'Zone géographique limitée (2 villes)',
+        'Dépendance personnes clés (techniciens)',
+        'Relations fournisseurs non contractualisées',
+      ],
+      opportunites: [
+        'Expansion vers d\'autres villes de l\'Ouest',
+        'Diversification produits (poulets, maraîchage)',
+        'Digitalisation (WhatsApp Business, e-commerce)',
+        'Croissance démographique = demande croissante',
+        'Partenariats avec grandes surfaces / restaurants',
+      ],
+      menaces: [
+        'Volatilité du prix du maïs',
+        'Risque sanitaire (grippe aviaire)',
+        'Entrée de concurrents industriels',
+        'Dépendance financement externe',
+        'Instabilité climatique (impact agriculture)',
+      ],
+    } : undefined,
+    // Recommandations stratégiques 
+    recommandations: hasBmc ? {
+      court_terme: {
+        title: 'Court terme — Consolider les fondations',
+        content: 'Sécuriser les approvisionnements en maïs via des contrats à prix fixe avec les producteurs locaux. Structurer le suivi client avec un CRM simple (WhatsApp Business + tableau de suivi). Formaliser les processus de production pour réduire la dépendance aux personnes clés. Contractualiser les relations avec les fournisseurs critiques (électricité, intrants).',
+      },
+      moyen_terme: {
+        title: 'Moyen terme — Croissance maîtrisée',
+        content: 'Diversifier les produits : introduction progressive des poulets de chair, puis du maraîchage. Étendre la zone géographique vers 3-4 nouvelles villes de l\'Ouest (Daloa, Man, San-Pédro). Créer une présence digitale : page Facebook professionnelle, catalogue WhatsApp, site vitrine. Renforcer les fonds propres pour réduire la dépendance aux financements externes.',
+      },
+      long_terme: {
+        title: 'Long terme — Industrialisation et marque',
+        content: 'Industrialiser la production : automatisation des poulaillers, mécanisation agricole complète. Développer la marque TICIA au niveau national avec un positionnement premium « fraîcheur locale ». Explorer l\'export sous-régional (Ghana, Burkina Faso). Structurer une gouvernance formelle avec conseil d\'administration et reporting financier régulier.',
+      },
+    } : undefined,
+    // Template metadata
+    company_name: name,
+    subtitle: hasBmc ? 'Production & Distribution d\'Œufs de Table — Marque OEUFS TICIA' : '',
+    location: hasBmc ? 'BOUAFLÉ & GAGNOA — Côte d\'Ivoire' : '',
+    sector: hasBmc ? 'PME Agroalimentaire' : '',
+    value_chain: hasBmc ? 'Chaîne intégrée maïs → œuf' : '',
+    value_proposition_quote: hasBmc ? 'Nous aidons les boutiquiers à avoir des œufs frais toute l\'année grâce à notre production locale intégrée et notre livraison sous 72H.' : '',
+    tags: hasBmc ? [
+      { label: 'Intégration verticale', type: 'success' },
+      { label: 'Marché porteur', type: 'success' },
+      { label: 'Mono-produit', type: 'danger' },
+      { label: 'Digitalisation nécessaire', type: 'info' },
+    ] : [],
     warnings: hasBmc ? [
-      `Cohérence Proposition de Valeur ↔ Segments : ${rnd(60, 90)}%`,
-      `Couverture des flux de revenus : ${rnd(2, 5)} source(s) identifiée(s)`,
+      'CAPEX initial élevé (77 M FCFA) vs CA An1 (59 M FCFA) — ratio 1.3×',
+      `Cohérence Proposition de Valeur ↔ Segments : ${rnd(75, 85)}%`,
     ] : ['BMC non fourni — analyse impossible'],
   }
 
@@ -1008,6 +1145,13 @@ entrepreneurRoutes.get('/deliverable/:type', async (c) => {
     const createdAt = deliverable?.created_at
       ? new Date(deliverable.created_at).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
       : null
+
+    // ═══ DEDICATED DELIVERABLE PAGES ═══
+    // BMC Analysis — uses its own full-page template matching the PDF
+    if (dtype === 'bmc_analysis' && isAvailable) {
+      const bmcData = adaptBMCData(content, (user?.name as string) || 'Entrepreneur', (user?.name as string) || 'Entrepreneur')
+      return c.html(renderBMCPage(bmcData, (user?.name as string) || 'Entrepreneur'))
+    }
 
     // Build sections HTML depending on type
     let blocksHtml = ''
