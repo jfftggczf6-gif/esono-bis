@@ -1768,16 +1768,21 @@ entrepreneurRoutes.get('/deliverable/:type', async (c) => {
     <!-- Downloads bar -->
     <div class="dlv-section" style="padding:16px">
       <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
-        <h2 style="font-size:14px;font-weight:600;color:#1f2937;display:flex;align-items:center;gap:8px;margin:0"><i class="fas fa-download" style="color:${meta.color}"></i> Livrables disponibles</h2>
+        <h2 style="font-size:14px;font-weight:600;color:#1f2937;display:flex;align-items:center;gap:8px;margin:0"><i class="fas fa-download" style="color:${meta.color}"></i> Télécharger le livrable</h2>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
-          ${isAvailable ? `
-            <a href="/api/deliverable/${dtype}" target="_blank" style="display:inline-flex;align-items:center;gap:8px;padding:8px 16px;border-radius:10px;background:${meta.color};color:white;text-decoration:none;font-size:12px;font-weight:600;transition:all 0.2s">
-              <i class="fas fa-file-lines"></i> Voir JSON complet
-            </a>
-            <span style="display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:10px;background:#f3f4f6;color:#9ca3af;font-size:12px;font-weight:500;cursor:default">
-              <i class="fas fa-file-pdf"></i> Export PDF (bientôt)
-            </span>
-          ` : `
+          ${isAvailable ? (() => {
+            const excelTypes = ['framework', 'odd', 'plan_ovo']
+            const isExcel = excelTypes.includes(dtype)
+            const fileIcon = isExcel ? 'fa-file-excel' : 'fa-file-pdf'
+            const fileLabel = isExcel ? 'Télécharger Excel (.xlsx)' : dtype === 'business_plan' ? 'Télécharger Word (.docx)' : 'Télécharger PDF'
+            const fileBtnColor = isExcel ? '#059669' : dtype === 'business_plan' ? '#2563eb' : meta.color
+            return `
+              <button onclick="downloadDeliverable()" id="btn-download" style="display:inline-flex;align-items:center;gap:8px;padding:10px 20px;border-radius:10px;background:${fileBtnColor};color:white;border:none;font-size:13px;font-weight:600;cursor:pointer;transition:all 0.2s" onmouseover="this.style.opacity='0.9'" onmouseout="this.style.opacity='1'">
+                <i class="fas ${fileIcon}"></i> ${fileLabel}
+              </button>
+              ${!isExcel && dtype !== 'business_plan' ? `<button onclick="window.print()" style="display:inline-flex;align-items:center;gap:6px;padding:10px 16px;border-radius:10px;background:#f3f4f6;color:#374151;border:none;font-size:12px;font-weight:500;cursor:pointer"><i class="fas fa-print"></i> Imprimer</button>` : ''}
+            `
+          })() : `
             <span style="display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:10px;background:#fef3c7;color:#92400e;font-size:12px;font-weight:500">
               <i class="fas fa-hourglass-half"></i> Non encore généré
             </span>
@@ -1797,6 +1802,379 @@ entrepreneurRoutes.get('/deliverable/:type', async (c) => {
       `}
     </div>
   </main>
+
+  <!-- SheetJS for Excel generation -->
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+  <script>
+    // Deliverable data injected from server
+    const DLIV_TYPE = ${JSON.stringify(dtype)};
+    const DLIV_DATA = ${JSON.stringify(content)};
+    const DLIV_SCORE = ${JSON.stringify(dScore)};
+    const DLIV_META = ${JSON.stringify(meta)};
+    const USER_NAME = ${JSON.stringify(user?.name || 'Entrepreneur')};
+    const DLIV_DATE = ${JSON.stringify(new Date().toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' }))};
+
+    function downloadDeliverable() {
+      const btn = document.getElementById('btn-download');
+      if(btn){ btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Génération...'; btn.disabled = true; }
+      try {
+        if (['framework','odd','plan_ovo'].includes(DLIV_TYPE)) {
+          generateExcel();
+        } else if (DLIV_TYPE === 'business_plan') {
+          generateWord();
+        } else {
+          generatePrintPDF();
+        }
+      } catch(e) { alert('Erreur: ' + e.message); }
+      finally { if(btn){ btn.innerHTML = '<i class="fas fa-check"></i> Téléchargé !'; setTimeout(() => { btn.innerHTML = btn.dataset.originalHtml || 'Télécharger'; btn.disabled = false; }, 2000); } }
+    }
+
+    // ═══ EXCEL GENERATION ═══
+    function generateExcel() {
+      const wb = XLSX.utils.book_new();
+
+      if (DLIV_TYPE === 'framework') { buildFrameworkExcel(wb); }
+      else if (DLIV_TYPE === 'odd') { buildODDExcel(wb); }
+      else if (DLIV_TYPE === 'plan_ovo') { buildPlanOVOExcel(wb); }
+
+      const fileName = DLIV_TYPE.toUpperCase() + '_' + USER_NAME.replace(/\\s+/g, '_') + '_' + new Date().toISOString().slice(0,10) + '.xlsx';
+      XLSX.writeFile(wb, fileName);
+    }
+
+    function s(v) { return v != null ? String(v) : ''; }
+    function n(v) { return typeof v === 'number' ? v : (parseFloat(v) || 0); }
+
+    function buildFrameworkExcel(wb) {
+      const d = DLIV_DATA;
+      const sections = d.sections || [];
+
+      // 1️⃣ Données Historiques
+      const ws1Data = [
+        ['📊 FRAMEWORK D\\'ANALYSE FINANCIÈRE PME - CÔTE D\\'IVOIRE'],
+        ['Onglet 1 : Données Historiques (3 dernières années)'],
+        [''],
+        ['INFORMATIONS ENTREPRISE'],
+        ['Nom de l\\'entreprise:', USER_NAME],
+        ['Date d\\'analyse:', DLIV_DATE],
+        ['Score Framework:', s(DLIV_SCORE) + '/100'],
+        [''],
+        ['INDICATEURS', 'Année N-2', 'Année N-1', 'Année N', 'Évolution', 'Notes'],
+      ];
+      // Add sections content as rows
+      sections.forEach(sec => {
+        ws1Data.push(['']);
+        ws1Data.push([s(sec.title).toUpperCase()]);
+        const lines = s(sec.content).split('\\n').filter(l => l.trim());
+        lines.forEach(line => { ws1Data.push([line]); });
+      });
+      const ws1 = XLSX.utils.aoa_to_sheet(ws1Data);
+      ws1['!cols'] = [{wch:40},{wch:18},{wch:18},{wch:18},{wch:15},{wch:25}];
+      XLSX.utils.book_append_sheet(wb, ws1, '1️⃣ Données Historiques');
+
+      // 2️⃣ Analyse Marges
+      const ws2Data = [
+        ['Onglet 2 : Analyse des Marges par Activité'],
+        ['Objectif : Identifier où se crée (ou se détruit) la valeur'],
+        [''],
+        ['MARGE BRUTE PAR ACTIVITÉ'],
+        ['Activité', 'CA (FCFA)', 'Coûts Directs', 'Marge Brute', 'Marge (%)', 'Classification'],
+      ];
+      const ws2 = XLSX.utils.aoa_to_sheet(ws2Data);
+      ws2['!cols'] = [{wch:25},{wch:18},{wch:18},{wch:18},{wch:12},{wch:20}];
+      XLSX.utils.book_append_sheet(wb, ws2, '2️⃣ Analyse Marges');
+
+      // 3️⃣ Structure Coûts
+      const ws3Data = [
+        ['Onglet 3 : Structure de Coûts & Efficacité Opérationnelle'],
+        [''],
+        ['RATIOS CLÉS D\\'EFFICACITÉ'],
+        ['Ratio', 'Valeur', 'Benchmark'],
+      ];
+      if (d.ratios) {
+        Object.entries(d.ratios).forEach(([k, v]) => {
+          ws3Data.push([k, s(v)]);
+        });
+      }
+      const ws3 = XLSX.utils.aoa_to_sheet(ws3Data);
+      ws3['!cols'] = [{wch:35},{wch:20},{wch:20}];
+      XLSX.utils.book_append_sheet(wb, ws3, '3️⃣ Structure Coûts');
+
+      // 4️⃣ Trésorerie BFR
+      const ws4Data = [
+        ['Onglet 4 : Trésorerie & Besoin en Fonds de Roulement'],
+        [''],
+        ['ANALYSE TRÉSORERIE'],
+        ['Indicateur', 'Valeur', 'Notes'],
+      ];
+      const ws4 = XLSX.utils.aoa_to_sheet(ws4Data);
+      ws4['!cols'] = [{wch:35},{wch:20},{wch:25}];
+      XLSX.utils.book_append_sheet(wb, ws4, '4️⃣ Trésorerie BFR');
+
+      // 5️⃣ Hypothèses
+      const ws5Data = [
+        ['Onglet 5 : Hypothèses de Projection (5 ans)'],
+        ['⚠️ Important : Toutes les hypothèses doivent être justifiées'],
+        [''],
+      ];
+      if (d.assumptions) {
+        d.assumptions.forEach((a, i) => { ws5Data.push(['Hypothèse ' + (i+1), s(a)]); });
+      }
+      const ws5 = XLSX.utils.aoa_to_sheet(ws5Data);
+      ws5['!cols'] = [{wch:20},{wch:80}];
+      XLSX.utils.book_append_sheet(wb, ws5, '5️⃣ Hypothèses');
+
+      // 6️⃣ Projection 5 Ans
+      const ws6Data = [
+        ['Onglet 6 : Projection Financière 5 Ans'],
+        [''],
+      ];
+      if (d.projections) {
+        Object.entries(d.projections).forEach(([scenarioKey, scenarioData]) => {
+          const label = {scenario_base:'Scénario Central',scenario_optimiste:'Scénario Optimiste',scenario_pessimiste:'Scénario Prudent'}[scenarioKey] || scenarioKey;
+          ws6Data.push(['']);
+          ws6Data.push([label]);
+          if (typeof scenarioData === 'object' && scenarioData !== null) {
+            ws6Data.push(Object.keys(scenarioData));
+            ws6Data.push(Object.values(scenarioData).map(v => typeof v === 'object' ? JSON.stringify(v) : v));
+          }
+        });
+      }
+      const ws6 = XLSX.utils.aoa_to_sheet(ws6Data);
+      ws6['!cols'] = [{wch:25},{wch:18},{wch:18},{wch:18},{wch:18},{wch:18}];
+      XLSX.utils.book_append_sheet(wb, ws6, '6️⃣ Projection 5 Ans');
+
+      // 7️⃣ Scénarios
+      const ws7Data = [
+        ['Onglet 7 : Analyse par Scénarios'],
+        [''],
+        ['HYPOTHÈSES PAR SCÉNARIO'],
+      ];
+      const ws7 = XLSX.utils.aoa_to_sheet(ws7Data);
+      XLSX.utils.book_append_sheet(wb, ws7, '7️⃣ Scénarios');
+
+      // 📊 Synthèse Exécutive
+      const ws8Data = [
+        ['SYNTHÈSE EXÉCUTIVE'],
+        ['Format Cabinet - 3 Slides Maximum'],
+        [''],
+        ['🟢 SLIDE 1 — ÉTAT DE SANTÉ FINANCIÈRE'],
+        ['Score Framework:', s(DLIV_SCORE)],
+        [''],
+      ];
+      if (d.strengths) { d.strengths.forEach(st => ws8Data.push(['Force:', s(st)])); }
+      ws8Data.push(['']);
+      ws8Data.push(['🔵 SLIDE 2 — RECOMMANDATIONS']);
+      if (d.recommendations) { d.recommendations.forEach(r => ws8Data.push(['→', s(r)])); }
+      ws8Data.push(['']);
+      ws8Data.push(['💡 PHRASE CLÉ']);
+      ws8Data.push(['"Les chiffres ne servent pas à juger le passé, mais à décider le futur."']);
+      const ws8 = XLSX.utils.aoa_to_sheet(ws8Data);
+      ws8['!cols'] = [{wch:20},{wch:80}];
+      XLSX.utils.book_append_sheet(wb, ws8, '📊 Synthèse Exécutive');
+    }
+
+    function buildODDExcel(wb) {
+      const d = DLIV_DATA;
+      const criteria = d.criteria || [];
+      const summary = d.summary || {};
+
+      // 1 - Instructions
+      const ws1Data = [
+        ['L\\'outil d\\'évaluation ODD — ' + USER_NAME],
+        ['Score ODD global: ' + s(DLIV_SCORE) + '/100'],
+        ['Date: ' + DLIV_DATE],
+        [''],
+        ['Cet outil évalue la conformité opérationnelle aux critères de due diligence.'],
+        [''],
+        ['Instructions:'],
+        ['1. Passez en revue les critères évalués dans l\\'onglet Evaluation'],
+        ['2. Consultez l\\'aperçu par catégorie dans l\\'onglet Aperçu'],
+        ['3. Vérifiez les indicateurs d\\'impact dans l\\'onglet Indicateurs'],
+      ];
+      const ws1 = XLSX.utils.aoa_to_sheet(ws1Data);
+      ws1['!cols'] = [{wch:80}];
+      XLSX.utils.book_append_sheet(wb, ws1, 'Instructions');
+
+      // 2 - Evaluation critères
+      const ws2Data = [
+        ['Critère', 'Catégorie', 'Statut', 'Commentaire'],
+      ];
+      criteria.forEach(cr => {
+        ws2Data.push([s(cr.name), s(cr.category), s(cr.status), s(cr.comment)]);
+      });
+      const ws2 = XLSX.utils.aoa_to_sheet(ws2Data);
+      ws2['!cols'] = [{wch:35},{wch:20},{wch:15},{wch:50}];
+      XLSX.utils.book_append_sheet(wb, ws2, 'Evaluation Critères');
+
+      // 3 - Aperçu par catégorie
+      const cats = {};
+      criteria.forEach(cr => {
+        const cat = cr.category || 'Autre';
+        if (!cats[cat]) cats[cat] = { total: 0, complet: 0, partiel: 0, nc: 0 };
+        cats[cat].total++;
+        if (cr.status === 'Complet' || cr.status === 'Conforme') cats[cat].complet++;
+        else if (cr.status === 'Partiel') cats[cat].partiel++;
+        else cats[cat].nc++;
+      });
+      const ws3Data = [['Catégorie', 'Total', 'Conformes', 'Partiels', 'Non conformes', 'Taux conformité (%)']];
+      Object.entries(cats).forEach(([cat, c]) => {
+        ws3Data.push([cat, c.total, c.complet, c.partiel, c.nc, Math.round(c.complet / c.total * 100)]);
+      });
+      const ws3 = XLSX.utils.aoa_to_sheet(ws3Data);
+      ws3['!cols'] = [{wch:25},{wch:10},{wch:12},{wch:10},{wch:15},{wch:18}];
+      XLSX.utils.book_append_sheet(wb, ws3, 'Aperçu');
+
+      // 4 - Plan d'action
+      const ws4Data = [['#', 'Action prioritaire', 'Urgence']];
+      (d.action_plan || []).forEach((a, i) => {
+        const urgent = a.toLowerCase().includes('urgent') || a.toLowerCase().includes('0-3 mois') ? 'URGENT' : 'IMPORTANT';
+        ws4Data.push([i + 1, s(a), urgent]);
+      });
+      const ws4 = XLSX.utils.aoa_to_sheet(ws4Data);
+      ws4['!cols'] = [{wch:5},{wch:80},{wch:12}];
+      XLSX.utils.book_append_sheet(wb, ws4, 'Plan Action');
+
+      // 5 - Synthèse
+      const ws5Data = [
+        ['SYNTHÈSE ODD — ' + USER_NAME],
+        ['Score: ' + s(DLIV_SCORE) + '/100'],
+        [''],
+      ];
+      if (summary.points_forts) { ws5Data.push(['POINTS FORTS:']); summary.points_forts.forEach(p => ws5Data.push(['✓', s(p)])); }
+      ws5Data.push(['']);
+      if (summary.criteres_bloquants) { ws5Data.push(['CRITÈRES BLOQUANTS:']); summary.criteres_bloquants.forEach(c => ws5Data.push(['✗', s(c)])); }
+      const ws5 = XLSX.utils.aoa_to_sheet(ws5Data);
+      ws5['!cols'] = [{wch:15},{wch:80}];
+      XLSX.utils.book_append_sheet(wb, ws5, 'Synthèse');
+    }
+
+    function buildPlanOVOExcel(wb) {
+      const d = DLIV_DATA;
+      const proj = d.projections || {};
+      const km = d.key_metrics || {};
+
+      // 1 - Synthèse
+      const ws1Data = [
+        ['PLAN FINANCIER OVO — Projections 5 Ans'],
+        ['Entreprise: ' + USER_NAME],
+        ['Date: ' + DLIV_DATE],
+        ['Score: ' + s(DLIV_SCORE) + '/100'],
+        [''],
+        ['ANALYSE'],
+        [s(d.analysis)],
+        [''],
+        ['MÉTRIQUES CLÉS'],
+        ['Indicateur', 'Valeur'],
+      ];
+      Object.entries(km).forEach(([k, v]) => {
+        if (typeof v !== 'object') {
+          const labels = { marge_brute_pct:'Marge Brute (%)', marge_ebitda_2029_pct:'Marge EBITDA An5 (%)', runway_mois:'Runway (mois)', seuil_rentabilite_2026:'Seuil Rentabilité An1', payback_period_annees:'Payback (années)', van_10pct_xof:'VAN à 10%', tir_pct:'TRI (%)', dscr_2026:'DSCR', besoin_financement_total_xof:'Besoin Financement Total', ca_par_employe_2025_xof:'CA par Employé' };
+          ws1Data.push([labels[k] || k, v]);
+        }
+      });
+      const ws1 = XLSX.utils.aoa_to_sheet(ws1Data);
+      ws1['!cols'] = [{wch:35},{wch:25}];
+      XLSX.utils.book_append_sheet(wb, ws1, 'Synthèse');
+
+      // 2-4 - Scénarios
+      Object.entries(proj).forEach(([scenarioKey, scenarioData]) => {
+        if (typeof scenarioData !== 'object' || scenarioData === null) return;
+        const label = {scenario_base:'Scénario Central',scenario_optimiste:'Scénario Optimiste',scenario_pessimiste:'Scénario Prudent'}[scenarioKey] || scenarioKey;
+        const wsData = [
+          [label],
+          [''],
+          Object.keys(scenarioData),
+          Object.values(scenarioData).map(v => typeof v === 'object' ? JSON.stringify(v) : v),
+        ];
+        const ws = XLSX.utils.aoa_to_sheet(wsData);
+        ws['!cols'] = Object.keys(scenarioData).map(() => ({wch: 18}));
+        XLSX.utils.book_append_sheet(wb, ws, label.substring(0, 31));
+      });
+
+      // 5 - Hypothèses
+      if (d.assumptions && d.assumptions.length) {
+        const ws5Data = [['HYPOTHÈSES DE PROJECTION'], ['']];
+        d.assumptions.forEach((a, i) => { ws5Data.push([(i + 1), s(a)]); });
+        const ws5 = XLSX.utils.aoa_to_sheet(ws5Data);
+        ws5['!cols'] = [{wch:5},{wch:80}];
+        XLSX.utils.book_append_sheet(wb, ws5, 'Hypothèses');
+      }
+    }
+
+    // ═══ PDF GENERATION (Print-ready HTML) ═══
+    function generatePrintPDF() {
+      // Open a new window with print-optimized version
+      const printWin = window.open('', '_blank');
+      const mainContent = document.querySelector('.space-y-0') || document.querySelector('main');
+      const styles = document.querySelectorAll('style');
+      let styleHtml = '';
+      styles.forEach(s => { styleHtml += s.outerHTML; });
+
+      printWin.document.write(\`<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>\${DLIV_META.title} — \${USER_NAME}</title>
+  <script src="https://cdn.tailwindcss.com"><\\/script>
+  <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.5.0/css/all.min.css" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  \${styleHtml}
+  <style>
+    body { font-family: 'Inter', sans-serif; background: white; padding: 20px; }
+    @media print {
+      body { padding: 0; }
+      .no-print { display: none !important; }
+      .dlv-section { break-inside: avoid; page-break-inside: avoid; }
+    }
+    .print-header { text-align: center; margin-bottom: 24px; padding-bottom: 16px; border-bottom: 2px solid #e5e7eb; }
+    .print-footer { text-align: center; margin-top: 24px; padding-top: 12px; border-top: 1px solid #e5e7eb; font-size: 10px; color: #9ca3af; }
+  </style>
+</head>
+<body>
+  <div class="print-header">
+    <h1 style="font-size:24px;font-weight:800;color:#1f2937">\${DLIV_META.title}</h1>
+    <p style="font-size:13px;color:#6b7280">\${USER_NAME} — \${DLIV_DATE}</p>
+  </div>
+  <button onclick="window.print()" class="no-print" style="position:fixed;top:16px;right:16px;padding:10px 20px;background:#4338ca;color:white;border:none;border-radius:10px;font-weight:600;cursor:pointer;z-index:999;font-size:13px"><i class="fas fa-print"></i> Imprimer / PDF</button>
+  \${mainContent ? mainContent.innerHTML : ''}
+  <div class="print-footer">
+    <p>Document généré automatiquement par ESONO — \${DLIV_DATE}</p>
+    <p>"Les chiffres ne servent pas à juger le passé, mais à décider le futur."</p>
+  </div>
+</body>
+</html>\`);
+      printWin.document.close();
+    }
+
+    // ═══ WORD GENERATION ═══
+    function generateWord() {
+      const mainContent = document.querySelector('.space-y-0') || document.querySelector('main');
+      const htmlContent = \`
+        <html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
+        <head><meta charset='utf-8'><title>\${DLIV_META.title}</title>
+        <style>body{font-family:Calibri,sans-serif;font-size:11pt;color:#333}h1{font-size:18pt;color:#4c1d95}h2{font-size:14pt;color:#6d28d9;border-bottom:1pt solid #e5e7eb;padding-bottom:6pt}table{border-collapse:collapse;width:100%}td,th{border:1pt solid #e5e7eb;padding:6pt 8pt;font-size:10pt}</style>
+        </head><body>
+        <h1>\${DLIV_META.title}</h1>
+        <p><strong>Entreprise:</strong> \${USER_NAME} | <strong>Date:</strong> \${DLIV_DATE} | <strong>Score:</strong> \${DLIV_SCORE}/100</p>
+        <hr/>
+        \${mainContent ? mainContent.innerHTML : ''}
+        <hr/><p style="font-size:9pt;color:#999">Document généré par ESONO — \${DLIV_DATE}</p>
+        </body></html>\`;
+      const blob = new Blob(['\\ufeff', htmlContent], { type: 'application/msword' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'BusinessPlan_' + USER_NAME.replace(/\\s+/g, '_') + '_' + new Date().toISOString().slice(0,10) + '.doc';
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    // Store original button HTML for reset
+    document.addEventListener('DOMContentLoaded', () => {
+      const btn = document.getElementById('btn-download');
+      if (btn) btn.dataset.originalHtml = btn.innerHTML;
+    });
+  </script>
 </body>
 </html>`
 
