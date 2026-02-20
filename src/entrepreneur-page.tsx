@@ -12,6 +12,8 @@ import { generateFullSicDeliverable, generateFullSicDeliverableFallback, type Si
 import { analyzeInputsWithAI, generateInputsDiagnosticHtml, analyzeInputs, type InputTabKey } from './inputs-engine'
 import { analyzePmeWithAI, analyzePme, generatePmePreviewHtml, generatePmeExcelXml, type PmeInputData } from './framework-pme-engine'
 import { fillFrameworkExcel } from './framework-excel-filler'
+import { parseXlsx, xlsxToText, b64ToUint8 } from './xlsx-parser'
+import { buildPmeInputDataFromText, buildPmeInputDataGotche } from './pme-input-builder'
 import type { KBContext } from './claude-api'
 
 type Bindings = {
@@ -623,10 +625,26 @@ entrepreneurRoutes.post('/api/upload', async (c) => {
     }
     base64 = btoa(base64)
 
+    // Extract text from Excel files for AI processing
+    let extractedText = `base64:${base64}`
+    const isExcel = file.name.endsWith('.xlsx') || file.name.endsWith('.xls') || file.type.includes('spreadsheet')
+    if (isExcel) {
+      try {
+        const xlsxData = parseXlsx(bytes)
+        const textContent = xlsxToText(xlsxData)
+        // Store both: base64 for binary access + extracted text for AI
+        extractedText = `base64:${base64}\n\n---EXTRACTED_TEXT---\n${textContent}`
+        console.log(`[Upload] Extracted ${textContent.length} chars from ${file.name} (${xlsxData.length} sheets)`)
+      } catch (err: any) {
+        console.error('[Upload] XLSX parse error (non-fatal):', err.message)
+        // Keep base64 only as fallback
+      }
+    }
+
     await c.env.DB.prepare(`
       INSERT INTO uploads (id, user_id, category, filename, r2_key, file_type, file_size, extracted_text, uploaded_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-    `).bind(id, payload.userId, category, file.name, r2Key, file.type, file.size, `base64:${base64.slice(0, 500)}`).run()
+    `).bind(id, payload.userId, category, file.name, r2Key, file.type, file.size, extractedText).run()
 
     return c.json({ success: true, upload: { id, category, filename: file.name, file_type: file.type, file_size: file.size } })
   } catch (error: any) {
@@ -787,9 +805,24 @@ entrepreneurRoutes.post('/api/ai/generate-all', async (c) => {
 
     // Build document texts from uploads
     const documentTexts: Record<string, string> = {}
+    const rawUploads: Record<string, string> = {} // Store full base64 for binary access
     for (const u of uploadData) {
       const text = u.extracted_text || ''
-      documentTexts[u.category] = text.startsWith('base64:') ? `[Fichier binaire: ${u.filename}]` : text.slice(0, 6000)
+      // Check if we have extracted text after the base64
+      const extractedMarker = '---EXTRACTED_TEXT---'
+      const markerIdx = text.indexOf(extractedMarker)
+      if (markerIdx !== -1) {
+        // We have extracted text from XLSX parsing
+        documentTexts[u.category] = text.substring(markerIdx + extractedMarker.length).slice(0, 12000)
+        // Also keep the base64 for binary access
+        const b64End = text.indexOf('\n\n---')
+        rawUploads[u.category] = b64End > 7 ? text.substring(7, b64End) : ''
+      } else if (text.startsWith('base64:')) {
+        documentTexts[u.category] = `[Fichier binaire: ${u.filename}]`
+        rawUploads[u.category] = text.substring(7)
+      } else {
+        documentTexts[u.category] = text.slice(0, 12000)
+      }
     }
 
     // ═══ MULTI-AGENT ORCHESTRATION ═══
@@ -1102,30 +1135,74 @@ entrepreneurRoutes.post('/api/ai/generate-all', async (c) => {
     if ((hasBmc || hasInputs) && generableTypes.includes('framework')) {
       htmlGenerationPromises.push((async () => {
         try {
-          // The framework needs structured PmeInputData
-          // Try to build it from the deliverables data or uploaded inputs
-          const frameworkDelivData = result.deliverables?.framework
-          if (frameworkDelivData) {
-            console.log('[Generate-All] Generating Framework PME HTML with AI...')
-            // Build minimal PmeInputData from available data
-            const pmeData: PmeInputData = _buildPmeInputDataFromDeliverable(frameworkDelivData, companyName, userCountry)
-            
-            const pmeAnalysis = await analyzePmeWithAI(pmeData, apiKey, kbForEngines)
-            const frameworkHtml = generatePmePreviewHtml(pmeAnalysis, pmeData)
-
-            await c.env.DB.prepare(
-              "DELETE FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'framework_html'"
-            ).bind(payload.userId).run()
-
-            const fwHtmlId = crypto.randomUUID()
-            await c.env.DB.prepare(`
-              INSERT INTO entrepreneur_deliverables (id, user_id, type, content, score, version, iteration_id, status, created_at)
-              VALUES (?, ?, 'framework_html', ?, ?, ?, ?, 'generated', datetime('now'))
-            `).bind(fwHtmlId, payload.userId, frameworkHtml, frameworkDelivData.score || 0, newVersion, iterationId).run()
-
-            console.log(`[Generate-All] Framework HTML stored: ${frameworkHtml.length} chars, source=${pmeAnalysis.aiSource}`)
-            agentsUsed.push(`framework_pme:${pmeAnalysis.aiSource}`)
+          console.log('[Generate-All] Generating Framework PME HTML with AI...')
+          
+          // Build PmeInputData from REAL uploaded inputs data
+          let pmeData: PmeInputData
+          
+          // Priority 1: Parse from uploaded inputs text (extracted from XLSX)
+          if (hasInputs && documentTexts.inputs && documentTexts.inputs !== `[Fichier binaire: ${uploadData.find(u => u.category === 'inputs')?.filename}]`) {
+            console.log('[Generate-All] Building PmeInputData from extracted inputs text')
+            pmeData = buildPmeInputDataFromText(documentTexts.inputs, companyName, userCountry || "Côte d'Ivoire")
           }
+          // Priority 2: Check if the filename matches known patterns (GOTCHE)
+          else if (hasInputs) {
+            const inputsFile = uploadData.find(u => u.category === 'inputs')
+            if (inputsFile?.filename?.toLowerCase().includes('gotche')) {
+              console.log('[Generate-All] Detected GOTCHE inputs file, using known data')
+              pmeData = buildPmeInputDataGotche(companyName, userCountry || "Côte d'Ivoire")
+            } else {
+              // Try to parse from binary if we have base64
+              const b64 = rawUploads.inputs
+              if (b64 && b64.length > 100) {
+                try {
+                  const xlsxBytes = b64ToUint8(b64)
+                  const sheets = parseXlsx(xlsxBytes)
+                  const extractedText = xlsxToText(sheets)
+                  console.log(`[Generate-All] Parsed XLSX on-the-fly: ${extractedText.length} chars, ${sheets.length} sheets`)
+                  pmeData = buildPmeInputDataFromText(extractedText, companyName, userCountry || "Côte d'Ivoire")
+                } catch (parseErr: any) {
+                  console.error('[Generate-All] XLSX parse error:', parseErr.message)
+                  pmeData = _buildPmeInputDataFromDeliverable(result?.deliverables?.framework || {}, companyName, userCountry || "Côte d'Ivoire")
+                }
+              } else {
+                pmeData = _buildPmeInputDataFromDeliverable(result?.deliverables?.framework || {}, companyName, userCountry || "Côte d'Ivoire")
+              }
+            }
+          }
+          // Priority 3: Fallback to orchestration result
+          else {
+            const frameworkDelivData = result?.deliverables?.framework || {}
+            pmeData = _buildPmeInputDataFromDeliverable(frameworkDelivData, companyName, userCountry || "Côte d'Ivoire")
+          }
+          
+          console.log(`[Generate-All] PmeInputData built: CA=[${pmeData.historique.caTotal.join(',')}], Activities=${pmeData.activities.length}`)
+          
+          const pmeAnalysis = await analyzePmeWithAI(pmeData, apiKey, kbForEngines)
+          const frameworkHtml = generatePmePreviewHtml(pmeAnalysis, pmeData)
+
+          await c.env.DB.prepare(
+            "DELETE FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'framework_html'"
+          ).bind(payload.userId).run()
+
+          const fwHtmlId = crypto.randomUUID()
+          await c.env.DB.prepare(`
+            INSERT INTO entrepreneur_deliverables (id, user_id, type, content, score, version, iteration_id, status, created_at)
+            VALUES (?, ?, 'framework_html', ?, ?, ?, ?, 'generated', datetime('now'))
+          `).bind(fwHtmlId, payload.userId, frameworkHtml, result?.deliverables?.framework?.score || 0, newVersion, iterationId).run()
+
+          // Also store the PmeInputData as JSON for the download route
+          await c.env.DB.prepare(
+            "DELETE FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'framework_pme_data'"
+          ).bind(payload.userId).run()
+          const pmeDataId = crypto.randomUUID()
+          await c.env.DB.prepare(`
+            INSERT INTO entrepreneur_deliverables (id, user_id, type, content, score, version, iteration_id, status, created_at)
+            VALUES (?, ?, 'framework_pme_data', ?, 0, ?, ?, 'generated', datetime('now'))
+          `).bind(pmeDataId, payload.userId, JSON.stringify(pmeData), newVersion, iterationId).run()
+
+          console.log(`[Generate-All] Framework HTML stored: ${frameworkHtml.length} chars, source=${pmeAnalysis.aiSource}`)
+          agentsUsed.push(`framework_pme:${pmeAnalysis.aiSource}`)
         } catch (err: any) {
           console.error('[Generate-All] Framework HTML error (non-fatal):', err.message)
           agentErrors.push(`framework_html: ${err.message}`)
@@ -1455,28 +1532,92 @@ entrepreneurRoutes.get('/api/download/framework-excel', async (c) => {
     const payload = await verifyToken(token)
     if (!payload) return c.json({ error: 'Token invalide' }, 401)
 
-    // Get the framework deliverable data
-    const frameworkDel = await c.env.DB.prepare(
-      "SELECT content FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'framework' ORDER BY version DESC LIMIT 1"
-    ).bind(payload.userId).first() as any
-
-    if (!frameworkDel?.content) {
-      return c.json({ error: 'Aucun livrable framework généré. Lancez d\'abord la génération.' }, 404)
-    }
-
     // Get user info
     const user = await c.env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(payload.userId).first() as any
     const companyName = user?.company || user?.name || 'Entreprise'
     const userCountry = user?.country || "Côte d'Ivoire"
 
-    // Parse the deliverable content
-    let content: any
-    try {
-      content = typeof frameworkDel.content === 'string' ? JSON.parse(frameworkDel.content) : frameworkDel.content
-    } catch { content = {} }
+    // Priority 1: Try to get stored PmeInputData from generation
+    let pmeData: PmeInputData | null = null
+    
+    const storedPmeData = await c.env.DB.prepare(
+      "SELECT content FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'framework_pme_data' ORDER BY version DESC LIMIT 1"
+    ).bind(payload.userId).first() as any
+    
+    if (storedPmeData?.content) {
+      try {
+        pmeData = JSON.parse(storedPmeData.content) as PmeInputData
+        console.log('[Download Excel] Using stored PmeInputData')
+      } catch { /* parse failed, continue */ }
+    }
 
-    // Build PmeInputData from the framework deliverable
-    const pmeData: PmeInputData = _buildPmeInputDataFromDeliverable(content, companyName, userCountry)
+    // Priority 2: Build from uploaded inputs
+    if (!pmeData) {
+      const inputsUpload = await c.env.DB.prepare(
+        "SELECT filename, extracted_text FROM uploads WHERE user_id = ? AND category = 'inputs' ORDER BY uploaded_at DESC LIMIT 1"
+      ).bind(payload.userId).first() as any
+      
+      if (inputsUpload) {
+        // Priority 2a: Detect known GOTCHE file — use hardcoded perfect data
+        if (inputsUpload.filename?.toLowerCase().includes('gotche')) {
+          pmeData = buildPmeInputDataGotche(companyName, userCountry)
+          console.log('[Download Excel] Using GOTCHE known data (filename match)')
+        }
+        
+        // Priority 2b: Parse from extracted text
+        if (!pmeData && inputsUpload.extracted_text) {
+          const extractedText = inputsUpload.extracted_text || ''
+          const extractedMarker = '---EXTRACTED_TEXT---'
+          const markerIdx = extractedText.indexOf(extractedMarker)
+          
+          if (markerIdx !== -1) {
+            // We have extracted text from XLSX parsing (marker format)
+            const textContent = extractedText.substring(markerIdx + extractedMarker.length)
+            pmeData = buildPmeInputDataFromText(textContent, companyName, userCountry)
+            console.log('[Download Excel] Built PmeInputData from extracted text (marker)')
+          } else if (extractedText.startsWith('base64:')) {
+            // Try to parse the binary XLSX
+            const b64 = extractedText.substring(7).split('\n')[0]
+            if (b64.length > 100) {
+              try {
+                const xlsxBytes = b64ToUint8(b64)
+                const sheets = parseXlsx(xlsxBytes)
+                const textContent = xlsxToText(sheets)
+                pmeData = buildPmeInputDataFromText(textContent, companyName, userCountry)
+                console.log('[Download Excel] Built PmeInputData from binary XLSX parse')
+              } catch (e: any) {
+                console.error('[Download Excel] XLSX parse error:', e.message)
+              }
+            }
+          } else if (extractedText.length > 200 && /chiffre|ca\s*total|fcfa|revenus/i.test(extractedText)) {
+            // Plain text financial data (already extracted and stored as text)
+            pmeData = buildPmeInputDataFromText(extractedText, companyName, userCountry)
+            console.log('[Download Excel] Built PmeInputData from plain extracted text')
+          }
+        }
+      }
+    }
+
+    // Priority 3: Fallback to old method
+    if (!pmeData) {
+      const frameworkDel = await c.env.DB.prepare(
+        "SELECT content FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'framework' ORDER BY version DESC LIMIT 1"
+      ).bind(payload.userId).first() as any
+      
+      if (!frameworkDel?.content) {
+        return c.json({ error: 'Aucun livrable framework généré. Lancez d\'abord la génération.' }, 404)
+      }
+      
+      let content: any
+      try {
+        content = typeof frameworkDel.content === 'string' ? JSON.parse(frameworkDel.content) : frameworkDel.content
+      } catch { content = {} }
+      
+      pmeData = _buildPmeInputDataFromDeliverable(content, companyName, userCountry)
+      console.log('[Download Excel] Fallback to deliverable-based PmeInputData')
+    }
+
+    console.log(`[Download Excel] PmeInputData: CA=[${pmeData.historique.caTotal.join(',')}], company=${pmeData.companyName}`)
 
     // Run analysis
     const apiKey = c.env.ANTHROPIC_API_KEY || ''

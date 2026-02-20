@@ -50,49 +50,54 @@ function evolution(start: number, end: number): string {
  * Set a cell value in an OOXML sheet XML string.
  * Creates the cell if it doesn't exist, replaces value if it does.
  * Preserves existing style (s attribute).
+ * Handles both self-closing <c r="A1" s="4"/> and paired <c r="A1">...</c> tags.
  */
 function setCell(xml: string, cellRef: string, value: number | string, isString: boolean = false): string {
-  const col = cellRef.replace(/[0-9]/g, '')
   const rowNum = cellRef.replace(/[A-Z]/g, '')
   
-  // Build the new cell XML
+  // Extract style from existing cell (if any)
+  const styleRegex = new RegExp(`<c\\s+r="${cellRef}"[^>]*?\\bs="(\\d+)"`)
+  const styleMatch = xml.match(styleRegex)
+  const styleAttr = styleMatch ? ` s="${styleMatch[1]}"` : ''
+  
+  // Build the new cell XML with preserved style
   let newCellXml: string
   if (isString) {
-    // Inline string (not shared string) — uses <is><t> to avoid modifying sharedStrings.xml
-    newCellXml = `<c r="${cellRef}" t="inlineStr"><is><t>${xmlEsc(String(value))}</t></is></c>`
+    newCellXml = `<c r="${cellRef}"${styleAttr} t="inlineStr"><is><t>${xmlEsc(String(value))}</t></is></c>`
   } else {
-    newCellXml = `<c r="${cellRef}"><v>${value}</v></c>`
+    newCellXml = `<c r="${cellRef}"${styleAttr}><v>${value}</v></c>`
   }
   
-  // Check if cell already exists
-  const cellRegex = new RegExp(`<c\\s+r="${cellRef}"[^>]*>.*?</c>|<c\\s+r="${cellRef}"[^/]*/>`,'s')
-  if (cellRegex.test(xml)) {
-    // Replace existing cell — but preserve style
-    const styleMatch = xml.match(new RegExp(`<c\\s+r="${cellRef}"[^>]*?\\s+s="(\\d+)"`))
-    const styleAttr = styleMatch ? ` s="${styleMatch[1]}"` : ''
-    
-    if (isString) {
-      newCellXml = `<c r="${cellRef}"${styleAttr} t="inlineStr"><is><t>${xmlEsc(String(value))}</t></is></c>`
-    } else {
-      newCellXml = `<c r="${cellRef}"${styleAttr}><v>${value}</v></c>`
-    }
-    return xml.replace(cellRegex, newCellXml)
+  // Try to match existing cell — MUST test self-closing BEFORE paired
+  // because <c r="B12" s="4"/> would incorrectly match the paired regex
+  // (the /> ending looks like an opening tag > to the paired pattern)
+  
+  // Pattern 1: <c r="A1" .../> (self-closing) — MUST be tested first!
+  const selfCloseRegex = new RegExp(`<c\\s+r="${cellRef}"[^>]*/>`)
+  
+  if (selfCloseRegex.test(xml)) {
+    return xml.replace(selfCloseRegex, newCellXml)
   }
   
-  // Cell doesn't exist — we need to insert it into the correct row
+  // Pattern 2: <c r="A1" ...>...</c> (paired tags with content)
+  // Use negative lookbehind (?<!/) before > to ensure we don't match self-closing />
+  const pairedRegex = new RegExp(`<c\\s+r="${cellRef}"[^>]*(?<!/)>.*?</c>`, 's')
+  
+  if (pairedRegex.test(xml)) {
+    return xml.replace(pairedRegex, newCellXml)
+  }
+  
+  // Cell doesn't exist — insert into the correct row
   const rowRegex = new RegExp(`(<row\\s+r="${rowNum}"[^>]*>)(.*?)(</row>)`, 's')
   const rowMatch = xml.match(rowRegex)
   
   if (rowMatch) {
-    // Row exists — insert cell at the right position (before </row>)
-    const rowContent = rowMatch[2]
-    // Insert cell (simple append at end of row, Excel will reorder)
-    const newRowContent = rowContent + newCellXml
+    // Row exists — append cell at end of row (Excel reorders)
+    const newRowContent = rowMatch[2] + newCellXml
     return xml.replace(rowRegex, `$1${newRowContent}$3`)
   }
   
-  // Row doesn't exist — create it
-  // Find the right insertion point (before </sheetData>)
+  // Row doesn't exist — create it before </sheetData>
   const newRowXml = `<row r="${rowNum}">${newCellXml}</row>`
   return xml.replace('</sheetData>', newRowXml + '</sheetData>')
 }
