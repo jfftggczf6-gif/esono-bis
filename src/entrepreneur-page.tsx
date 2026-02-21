@@ -1197,68 +1197,15 @@ entrepreneurRoutes.post('/api/ai/generate-all', async (c) => {
             }
           }
           
-          // ═══ PRIORITY 1: If structured parser didn't work, try AI extraction ═══
+          // ═══ PRIORITY 1: Text-based parsing (no AI invention) ═══
           if (!usedStructuredParser && hasInputs && documentTexts.inputs && documentTexts.inputs !== `[Fichier binaire: ${uploadData.find(u => u.category === 'inputs')?.filename}]`) {
-            console.log('[Generate-All] Structured parser not applicable, using AI extraction')
-            if (apiKey && apiKey.length >= 20) {
-              try {
-                const bestTextForClaude = markdownUploads.inputs || documentTexts.inputs
-                const xlsxB64 = rawUploads.inputs || undefined
-                console.log(`[Generate-All] Using AI hybrid extraction, markdown=${!!markdownUploads.inputs}, hasBase64=${!!xlsxB64}`)
-                const enriched = await buildPmeInputWithAI(
-                  bestTextForClaude, apiKey, companyName,
-                  userCountry || "Cote d'Ivoire",
-                  (text: string, name: string, country: string) => buildPmeInputDataFromText(documentTexts.inputs || text, name, country),
-                  xlsxB64
-                )
-                pmeData = enriched.data
-                console.log(`[Generate-All] Hybrid extraction: source=${enriched.quality.source}, confidence=${enriched.quality.confiance}`)
-              } catch (aiErr: any) {
-                console.error('[Generate-All] AI extraction failed, falling back to regex:', aiErr.message)
-                pmeData = buildPmeInputDataFromText(documentTexts.inputs, companyName, userCountry || "Côte d'Ivoire")
-              }
-            } else {
-              pmeData = buildPmeInputDataFromText(documentTexts.inputs, companyName, userCountry || "Côte d'Ivoire")
-            }
+            console.log('[Generate-All] Structured parser not applicable, using text-based parsing')
+            pmeData = buildPmeInputDataFromText(documentTexts.inputs, companyName, userCountry || "Côte d'Ivoire")
+            console.log(`[Generate-All] Text parsing: CA=[${pmeData!.historique.caTotal.join(',')}]`)
           }
-          // ═══ PRIORITY 2: Try to parse from binary XLSX with AI ═══
-          else if (!usedStructuredParser && hasInputs) {
-            const b64 = rawUploads.inputs
-            if (b64 && b64.length > 100) {
-              try {
-                const xlsxBytes = b64ToUint8(b64)
-                const sheets = parseXlsx(xlsxBytes)
-                const legacyText = xlsxToText(sheets)
-                const mdText = xlsxToMarkdownTables(sheets)
-                console.log(`[Generate-All] Parsed XLSX on-the-fly: legacy=${legacyText.length}ch, markdown=${mdText.length}ch, ${sheets.length} sheets`)
-                if (apiKey && apiKey.length >= 20) {
-                  try {
-                    const bestText = mdText.length > 200 ? mdText : legacyText
-                    const enriched = await buildPmeInputWithAI(
-                      bestText, apiKey, companyName,
-                      userCountry || "Cote d'Ivoire",
-                      (text: string, name: string, country: string) => buildPmeInputDataFromText(legacyText || text, name, country),
-                      b64
-                    )
-                    pmeData = enriched.data
-                  } catch {
-                    pmeData = buildPmeInputDataFromText(legacyText, companyName, userCountry || "Côte d'Ivoire")
-                  }
-                } else {
-                  pmeData = buildPmeInputDataFromText(legacyText, companyName, userCountry || "Côte d'Ivoire")
-                }
-              } catch (parseErr: any) {
-                console.error('[Generate-All] XLSX parse error:', parseErr.message)
-                pmeData = _buildPmeInputDataFromDeliverable(result?.deliverables?.framework || {}, companyName, userCountry || "Côte d'Ivoire")
-              }
-            } else {
-              pmeData = _buildPmeInputDataFromDeliverable(result?.deliverables?.framework || {}, companyName, userCountry || "Côte d'Ivoire")
-            }
-          }
-          // ═══ PRIORITY 3: Fallback to orchestration result ═══
+          // ═══ PRIORITY 2: Fallback to orchestration result ═══
           else if (!usedStructuredParser) {
-            const frameworkDelivData = result?.deliverables?.framework || {}
-            pmeData = _buildPmeInputDataFromDeliverable(frameworkDelivData, companyName, userCountry || "Côte d'Ivoire")
+            pmeData = _buildPmeInputDataFromDeliverable(result?.deliverables?.framework || {}, companyName, userCountry || "Côte d'Ivoire")
           }
           
           console.log(`[Generate-All] PmeInputData built: CA=[${pmeData!.historique.caTotal.join(',')}], Activities=${pmeData!.activities.length}`)
