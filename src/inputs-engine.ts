@@ -101,7 +101,7 @@ export interface InputsAIDiagnostic {
 export const TAB_COACHING: Record<InputTabKey, { conseil: string, exemple: string, aEviter: string }> = {
   infos_generales: {
     conseil: 'Remplissez tous les champs obligatoires (*). La forme juridique et le regime fiscal impactent les projections.',
-    exemple: 'GOTCHE SARL, Abidjan, Secteur Agriculture, cree en 2020, XOF, TVA 18%, regime Reel Normal.',
+    exemple: 'ACME SARL, Abidjan, Secteur Agriculture, cree en 2020, XOF, TVA 18%, regime Reel Normal.',
     aEviter: 'Ne laissez pas le champ devise vide : toutes les projections en dependent.'
   },
   donnees_historiques: {
@@ -161,7 +161,7 @@ export interface FieldDef {
 
 export const TAB_FIELDS: Record<InputTabKey, FieldDef[]> = {
   infos_generales: [
-    { key: 'nom_entreprise', label: 'Nom de l\'entreprise', type: 'text', required: true, placeholder: 'Ex: GOTCHE SARL' },
+    { key: 'nom_entreprise', label: 'Nom de l\'entreprise', type: 'text', required: true, placeholder: 'Ex: Mon Entreprise SARL' },
     { key: 'forme_juridique', label: 'Forme juridique', type: 'select', required: false, options: ['SARL', 'SA', 'SAS', 'EI', 'Cooperative', 'Autre'] },
     { key: 'pays', label: 'Pays', type: 'text', required: true, placeholder: 'Ex: Cote d\'Ivoire', defaultValue: 'Cote d\'Ivoire' },
     { key: 'ville', label: 'Ville / Region', type: 'text', required: false, placeholder: 'Ex: Abidjan' },

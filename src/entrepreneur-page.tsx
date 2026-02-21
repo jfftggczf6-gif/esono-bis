@@ -14,7 +14,7 @@ import { analyzePmeWithAI, analyzePme, generatePmePreviewHtml, generatePmeExcelX
 import { fillFrameworkExcel } from './framework-excel-filler'
 import { parseXlsx, xlsxToText, xlsxToMarkdownTables, b64ToUint8 } from './xlsx-parser'
 import { parseDocx, docxToMarkdown } from './docx-parser'
-import { buildPmeInputDataFromText, buildPmeInputDataGotche } from './pme-input-builder'
+import { buildPmeInputDataFromText } from './pme-input-builder'
 import { buildPmeInputWithAI } from './pme-ai-extractor'
 import { crossAnalyzeBmcFinancials } from './pme-cross-analyzer'
 import type { KBContext } from './claude-api'
@@ -281,7 +281,7 @@ function buildFallbackResult(hasBmc: boolean, hasSic: boolean, hasInputs: boolea
         { title: 'Fabrication aliments pondeuses', detail: 'Transformation maïs en aliments complets', critical: false },
         { title: 'Élevage de pondeuses', detail: 'Production œufs de table (TICIA)', critical: false },
         { title: 'Distribution & Livraison', detail: 'Tricycle fourgon, sous 72H', critical: false },
-        { title: 'Vente & Prospection', detail: 'Terrain, point de vente GOTCHE', critical: false },
+        { title: 'Vente & Prospection', detail: 'Terrain, point de vente', critical: false },
         { title: 'Service client', detail: 'Recouvrement, conseil, assistance', critical: false },
       ]},
       ressources_cles: { items: [
@@ -305,7 +305,7 @@ function buildFallbackResult(hasBmc: boolean, hasSic: boolean, hasInputs: boolea
       ]},
       canaux: { items: [
         { title: 'Découverte', detail: 'Terrain / Prospection directe' },
-        { title: 'Vente', detail: 'Point de vente GOTCHE DISTRIBUTION' },
+        { title: 'Vente', detail: 'Point de vente / Distribution' },
         { title: 'Livraison', detail: 'Tricycle avec fourgon — sous 72H' },
       ]},
       segments_clients: { items: [
@@ -3775,7 +3775,7 @@ ${hasGenerated ? `<body class="ev2-app-shell">` : `<body>`}
       </div>
       <div>
         <div style="font-size:15px;font-weight:700;color:#065f46">Framework d'Analyse PME — Excel</div>
-        <div style="font-size:12px;color:#047857;margin-top:2px">Fichier Excel rempli avec les données GOTCHE (8 onglets)</div>
+        <div style="font-size:12px;color:#047857;margin-top:2px">Fichier Excel rempli avec vos données financières (8 onglets)</div>
       </div>
     </div>
     <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">

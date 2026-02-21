@@ -67,7 +67,7 @@ function findDays(text: string, keyword: string): number {
 
 /**
  * Build PmeInputData from the extracted text of a financial inputs file
- * Handles GOTCHE-style structured text format
+ * Handles structured text format from Excel financial inputs
  */
 export function buildPmeInputDataFromText(
   extractedText: string,
@@ -131,7 +131,7 @@ export function buildPmeInputDataFromText(
     caTotal[2] = findAmount(text, 'chiffre.*affaire') || findAmount(text, 'ca total') || findAmount(text, 'revenus')
   }
   
-  // If we only have the projected value and known GOTCHE pattern
+  // If we only have the projected value and known growth pattern
   if (caTotal[0] === 0 && caTotal[2] > 0) {
     // Check for explicit historical mentions like "CA historique: 8.5M, 15M"
     const histCA = text.match(/8\s*500\s*000|8,?5\s*M|8\.5\s*M/i)
@@ -366,88 +366,5 @@ export function buildPmeInputDataFromText(
   }
 }
 
-/**
- * Build PmeInputData specifically from GOTCHE-style data (known structure)
- * Call this when you know the source is the GOTCHE Excel format
- */
-export function buildPmeInputDataGotche(companyName: string = 'GOTCHE SARL', country: string = "Côte d'Ivoire"): PmeInputData {
-  return {
-    companyName,
-    sector: 'Agriculture / Industrie / Distribution / Transport Logistique',
-    analysisDate: new Date().toISOString().slice(0, 10),
-    consultant: 'ESONO AI',
-    location: 'Abidjan',
-    country,
-    activities: [
-      { name: 'Manioc', isStrategic: false },
-      { name: 'Maïs', isStrategic: false },
-      { name: 'Arachide', isStrategic: false },
-      { name: 'Oeufs TICIA', isStrategic: true },
-    ],
-    historique: {
-      // Based on GOTCHE extracted data
-      // Historical: 2023=8.5M, 2024=15M, 2025=59.13M
-      caTotal: [8_500_000, 15_000_000, 59_130_000],
-      caByActivity: [
-        [2_000_000, 4_000_000, 5_913_000],   // Manioc
-        [2_500_000, 4_500_000, 9_000_000],    // Maïs
-        [2_000_000, 3_500_000, 20_000_000],   // Arachide
-        [2_000_000, 3_000_000, 24_217_000],   // Oeufs
-      ],
-      achatsMP: [3_570_000, 6_300_000, 12_726_890],  // ~70% of variable costs
-      sousTraitance: [0, 0, 0],
-      coutsProduction: [1_530_000, 2_700_000, 5_472_794], // ~30% of variable costs
-      salaires: [1_800_000, 3_000_000, 36_975_000],       // Masse salariale annuelle
-      loyers: [300_000, 450_000, 3_000_000],
-      assurances: [0, 0, 500_000],
-      fraisGeneraux: [500_000, 750_000, 8_000_000],
-      marketing: [100_000, 150_000, 1_500_000],
-      fraisBancaires: [100_000, 150_000, 600_000],
-      resultatNet: [500_000, 1_200_000, 4_000_000],
-      tresoDebut: [500_000, 1_000_000, 2_500_000],
-      tresoFin: [1_000_000, 2_500_000, 15_000_000],
-      dso: [0, 0, 0],
-      dpo: [0, 0, 0],
-      stockJours: [3, 3, 3],
-      detteCT: [0, 0, 0],
-      detteLT: [0, 0, 15_000_000],
-      serviceDette: [0, 0, 4_200_000], // 15M/5 + 15M*0.08
-      amortissements: [0, 500_000, 15_400_000], // ~77M CAPEX / 5 years
-    },
-    hypotheses: {
-      // FIXED: Previous values [177, 184, 8, 14, 10] were HISTORICAL growth rates
-      // (2023→2024=+76%, 2024→2025=+294%) mistakenly used as PROJECTION rates.
-      // Realistic projections for a growing agri-PME: 30-25-20-15-10%
-      croissanceCA: [30, 25, 20, 15, 10],
-      croissanceParActivite: [
-        [20, 15, 10, 8, 8],      // Manioc (stable, non-strategic)
-        [25, 20, 12, 10, 8],     // Maïs (growing)
-        [35, 30, 20, 15, 10],    // Arachide (high growth)
-        [40, 35, 25, 18, 12],    // Oeufs TICIA (strategic, highest growth)
-      ],
-      evolutionPrix: [5, 5, 5, 5, 5],
-      evolutionCoutsDirects: [3, 3, 3, 3, 3],
-      inflationChargesFixes: [3, 3, 3, 3, 3],
-      // Masse salariale: inflation + prime. Le moteur cap à croissanceCA+5%
-      evolutionMasseSalariale: [5, 5, 5, 4, 4],
-      capex: [76_867_000, 10_000_000, 5_000_000, 3_000_000, 2_000_000],
-      amortissement: 5,
-      embauches: [
-        { poste: 'Technicien avicole', annee: 1, salaireMensuel: 250_000 },
-        { poste: 'Commercial terrain', annee: 1, salaireMensuel: 200_000 },
-        { poste: 'Machiniste agricole', annee: 2, salaireMensuel: 180_000 },
-        { poste: 'Ouvrier agricole (x2)', annee: 2, salaireMensuel: 100_000 },
-        { poste: 'Responsable logistique', annee: 3, salaireMensuel: 300_000 },
-        { poste: 'Comptable', annee: 4, salaireMensuel: 250_000 },
-      ],
-      investissements: [
-        { description: 'Tracteur', montants: [21_948_000, 0, 0, 0, 0] },
-        { description: 'Moissonneuse', montants: [28_084_000, 0, 0, 0, 0] },
-        { description: 'Pulvérisateur', montants: [3_835_000, 0, 0, 0, 0] },
-        { description: 'Poulaillers', montants: [15_000_000, 0, 0, 0, 0] },
-        { description: 'Véhicule de livraison', montants: [8_000_000, 0, 0, 0, 0] },
-        { description: 'Équipements complémentaires', montants: [0, 10_000_000, 5_000_000, 3_000_000, 2_000_000] },
-      ],
-    },
-  }
-}
+// NOTE: Toute extraction financière passe désormais par Claude AI (pme-ai-extractor.ts).
+// Aucun fallback hardcodé — le système est générique pour toute entreprise.
