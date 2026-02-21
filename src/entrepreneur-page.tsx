@@ -1958,9 +1958,20 @@ const DELIV_PAGE_META: Record<string, { title: string, icon: string, desc: strin
 // ═══ PUBLIC PREVIEW ROUTE (no auth) ═══
 entrepreneurRoutes.get('/preview/:userId/:type', async (c) => {
   try {
+    // Auth check: only the user themselves or a coach can access
+    const token = getAuthToken(c)
+    if (!token) return c.text('Non authentifié', 401)
+    const payload = await verifyToken(token)
+    if (!payload) return c.text('Token invalide', 401)
+    
     const userId = parseInt(c.req.param('userId'))
     const dtype = c.req.param('type')
     if (!userId || !dtype) return c.text('Invalid params', 400)
+    
+    // Security: user can only preview their own data
+    if (payload.userId !== userId) {
+      return c.text('Accès non autorisé', 403)
+    }
 
     const user = await c.env.DB.prepare('SELECT name, email FROM users WHERE id = ?')
       .bind(userId).first() as any
