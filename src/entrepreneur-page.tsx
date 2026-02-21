@@ -3909,14 +3909,13 @@ ${hasGenerated ? `<body class="ev2-app-shell">` : `<body>`}
     </div>
   </div>
 
-  <script type="text/html" id="bmc-html-template">${bmcClaudeHtml}</script>
-
   <script>
     // ── State ──
     let currentDelivType = 'diagnostic';
     const deliverables = ${JSON.stringify(delivMap)};
     const scoresDim = ${JSON.stringify(scoresDim)};
     const USER_NAME = ${JSON.stringify((user?.name as string) || 'Entrepreneur')};
+    const BMC_HTML_TEMPLATE = ${JSON.stringify(bmcClaudeHtml)};
 
     // ── Upload toggle ──
     function toggleUpload() {
@@ -4047,11 +4046,10 @@ ${hasGenerated ? `<body class="ev2-app-shell">` : `<body>`}
         el.innerHTML = renderDiagHTML(content, scoresDim, score, sColor);
       } else if (type === 'bmc_analysis') {
         // Display pre-stored Claude AI HTML instantly (no fetch, no wait)
-        var tmpl = document.getElementById('bmc-html-template');
-        if (tmpl && tmpl.textContent && tmpl.textContent.length > 100) {
+        if (BMC_HTML_TEMPLATE && BMC_HTML_TEMPLATE.length > 100) {
           var iframe = document.createElement('iframe');
           iframe.style.cssText = 'width:100%;min-height:80vh;border:none;border-radius:12px;background:#fff';
-          iframe.srcdoc = tmpl.textContent;
+          iframe.srcdoc = BMC_HTML_TEMPLATE;
           iframe.onload = function() { try { iframe.style.height = iframe.contentDocument.body.scrollHeight + 40 + 'px'; } catch(e) {} };
           el.innerHTML = '';
           el.appendChild(iframe);
@@ -4467,6 +4465,97 @@ ${hasGenerated ? `<body class="ev2-app-shell">` : `<body>`}
     // ── Auto-scroll chat ──
     const chatEl = document.getElementById('chat-messages');
     if (chatEl) chatEl.scrollTop = chatEl.scrollHeight;
+
+    // ═══════════════════════════════════════════════════════════
+    // DOWNLOAD FUNCTIONS for inline buttons in deliverable views
+    // These are called by onclick handlers in renderDiagHTML,
+    // renderBMCHTML, renderSICHTML, renderOVOHTML, renderGenericHTML
+    // ═══════════════════════════════════════════════════════════
+    
+    function downloadDeliverable(format) {
+      const type = currentDelivType;
+      const btn = event && event.target ? event.target.closest('button') : null;
+      const originalHtml = btn ? btn.innerHTML : '';
+      if (btn) { btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Génération...'; btn.disabled = true; }
+      
+      const resetBtn = (text) => {
+        if (btn) { btn.innerHTML = text || '<i class="fas fa-check"></i> OK !'; setTimeout(() => { btn.innerHTML = originalHtml; btn.disabled = false; }, 2500); }
+      };
+      
+      try {
+        if (format === 'xlsx') {
+          if (type === 'framework') {
+            downloadFrameworkExcelDirect();
+            return;
+          }
+          // ODD / Plan OVO — open full page to download
+          window.open('/deliverable/' + type, '_blank');
+          resetBtn();
+        } else if (format === 'docx') {
+          // Generate Word from current content
+          const mainContent = document.getElementById('center-content');
+          const data = deliverables[type];
+          let dTitle = type;
+          const types = ${JSON.stringify(DELIVERABLE_TYPES)};
+          const dt = types.find(t => t.type === type);
+          if (dt) dTitle = dt.label;
+          const typeLabel = type === 'bmc_analysis' ? 'BMC_Analyse' : type === 'sic_analysis' ? 'SIC_Analyse' : type === 'business_plan' ? 'BusinessPlan' : type;
+          
+          const htmlContent = '<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">'
+            + '<head><meta charset="utf-8"><title>' + dTitle + '</title>'
+            + '<style>body{font-family:Calibri,sans-serif;font-size:11pt;color:#333}h1{font-size:18pt;color:#1e3a5f}h2{font-size:14pt;color:#2563eb;border-bottom:1pt solid #e5e7eb;padding-bottom:6pt}h3{font-size:12pt;color:#334155}table{border-collapse:collapse;width:100%}td,th{border:1pt solid #e5e7eb;padding:6pt 8pt;font-size:10pt}</style>'
+            + '</head><body>'
+            + '<h1>' + dTitle + '</h1>'
+            + '<p><strong>Entrepreneur:</strong> ' + USER_NAME + ' | <strong>Date:</strong> ' + new Date().toLocaleDateString('fr-FR') + '</p><hr/>'
+            + (mainContent ? mainContent.innerHTML : '')
+            + '<hr/><p style="font-size:9pt;color:#999">Document généré par ESONO</p>'
+            + '</body></html>';
+          const blob = new Blob(['\\ufeff', htmlContent], { type: 'application/msword' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = typeLabel + '_' + USER_NAME.replace(/\\s+/g, '_') + '_' + new Date().toISOString().slice(0,10) + '.doc';
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          URL.revokeObjectURL(url);
+          resetBtn();
+        } else if (format === 'pdf' || format === 'html') {
+          // Open print-friendly page
+          const mainContent = document.getElementById('center-content');
+          const types = ${JSON.stringify(DELIVERABLE_TYPES)};
+          const dt = types.find(t => t.type === type);
+          const dTitle = dt ? dt.label : type;
+          const styles = document.querySelectorAll('style');
+          let styleHtml = '';
+          styles.forEach(s => { styleHtml += s.outerHTML; });
+          
+          const printWin = window.open('', '_blank');
+          printWin.document.write('<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><title>' + dTitle + '</title>'
+            + '<script src="https://cdn.tailwindcss.com"><\\/script>'
+            + '<link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.5.0/css/all.min.css" rel="stylesheet">'
+            + styleHtml
+            + '<style>body{font-family:Inter,sans-serif;background:white;padding:20px}@media print{.no-print{display:none!important}}</style>'
+            + '</head><body>'
+            + '<div style="text-align:center;margin-bottom:24px;padding-bottom:16px;border-bottom:2px solid #e5e7eb">'
+            + '<h1 style="font-size:24px;font-weight:800;color:#1f2937">' + dTitle + '</h1>'
+            + '<p style="font-size:13px;color:#6b7280">' + USER_NAME + ' — ' + new Date().toLocaleDateString('fr-FR') + '</p></div>'
+            + '<button onclick="window.print()" class="no-print" style="position:fixed;top:16px;right:16px;padding:10px 20px;background:#4338ca;color:white;border:none;border-radius:10px;font-weight:600;cursor:pointer;z-index:999;font-size:13px"><i class="fas fa-print"></i> Imprimer / PDF</button>'
+            + (mainContent ? mainContent.innerHTML : '')
+            + '<div style="text-align:center;margin-top:24px;padding-top:12px;border-top:1px solid #e5e7eb;font-size:10px;color:#9ca3af">'
+            + '<p>Document généré par ESONO</p></div></body></html>');
+          printWin.document.close();
+          resetBtn();
+        } else {
+          // Fallback: open deliverable full page
+          window.open('/deliverable/' + type, '_blank');
+          resetBtn();
+        }
+      } catch (e) {
+        alert('Erreur: ' + e.message);
+        if (btn) { btn.innerHTML = originalHtml; btn.disabled = false; }
+      }
+    }
   </script>
 </body>
 </html>`
