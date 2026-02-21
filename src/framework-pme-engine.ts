@@ -621,9 +621,20 @@ export function analyzePme(data: PmeInputData): PmeAnalysisResult {
   }
 
   const scenarios: Scenario[] = [
-    buildScenario('Prudent', 10, Math.min(margeBrutePct[2] - 5, 50), Math.max(chargesFixesSurCA[2] + 5, 55), 'Faible'),
-    buildScenario('Central', 25, margeBrutePct[2], chargesFixesSurCA[2], 'Moyen'),
-    buildScenario('Ambitieux', 40, Math.min(margeBrutePct[2] + 10, 70), Math.max(chargesFixesSurCA[2] - 10, 35), 'Élevé')
+    // FIXED: When chargesFixesSurCA is very high (>70%), projections should show improvement
+    // through economies of scale, not perpetuate the current unsustainable ratio
+    buildScenario('Prudent', 10, 
+      Math.max(margeBrutePct[2], 40),  // At least 40% margin target
+      Math.min(chargesFixesSurCA[2], 55),  // Cap at 55% (economies of scale expected)
+      'Faible'),
+    buildScenario('Central', 25, 
+      Math.max(margeBrutePct[2] + 5, 50),  // Improving margin
+      Math.min(chargesFixesSurCA[2] - 10, 45),  // Improvement target 
+      'Moyen'),
+    buildScenario('Ambitieux', 40, 
+      Math.min(Math.max(margeBrutePct[2] + 15, 60), 75),  // Strong margin improvement
+      Math.min(Math.max(chargesFixesSurCA[2] - 25, 30), 40),  // Significant optimization
+      'Élevé')
   ]
 
   // ═══ 5. SENSIBILITÉS ═══

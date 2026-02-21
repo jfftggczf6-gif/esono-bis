@@ -414,17 +414,20 @@ export function buildPmeInputDataGotche(companyName: string = 'GOTCHE SARL', cou
       amortissements: [0, 500_000, 15_400_000], // ~77M CAPEX / 5 years
     },
     hypotheses: {
-      croissanceCA: [177, 184, 8, 14, 10],
+      // FIXED: Previous values [177, 184, 8, 14, 10] were HISTORICAL growth rates
+      // (2023→2024=+76%, 2024→2025=+294%) mistakenly used as PROJECTION rates.
+      // Realistic projections for a growing agri-PME: 30-25-20-15-10%
+      croissanceCA: [30, 25, 20, 15, 10],
       croissanceParActivite: [
-        [30, 20, 15, 10, 10],    // Manioc
-        [40, 30, 10, 8, 8],      // Maïs
-        [100, 80, 10, 10, 8],    // Arachide
-        [300, 350, 5, 15, 10],   // Oeufs
+        [20, 15, 10, 8, 8],      // Manioc (stable, non-strategic)
+        [25, 20, 12, 10, 8],     // Maïs (growing)
+        [35, 30, 20, 15, 10],    // Arachide (high growth)
+        [40, 35, 25, 18, 12],    // Oeufs TICIA (strategic, highest growth)
       ],
       evolutionPrix: [5, 5, 5, 5, 5],
       evolutionCoutsDirects: [3, 3, 3, 3, 3],
       inflationChargesFixes: [3, 3, 3, 3, 3],
-      evolutionMasseSalariale: [15, 20, 15, 10, 10],
+      evolutionMasseSalariale: [12, 15, 10, 8, 8],
       capex: [76_867_000, 10_000_000, 5_000_000, 3_000_000, 2_000_000],
       amortissement: 5,
       embauches: [

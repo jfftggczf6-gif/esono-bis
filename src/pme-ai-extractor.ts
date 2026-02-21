@@ -398,8 +398,25 @@ Estime les valeurs manquantes en te basant sur le secteur, la taille et les donn
 // ─── CONVERSION: Claude JSON → PmeInputData ───
 
 /**
+ * VALIDATION: Detect if a value looks like a percentage instead of a FCFA amount.
+ * If CA is > 1M FCFA and a cost line is < 200, it's almost certainly a percentage.
+ * Convert it to FCFA by multiplying by CA / 100.
+ */
+function fixPctAsFcfa(val: number, refCA: number, label: string): number {
+  if (val <= 0 || refCA <= 0) return val
+  // If CA > 500K and value < 200, it's very likely a percentage
+  if (refCA > 500_000 && val > 0 && val < 200) {
+    const corrected = Math.round(refCA * val / 100)
+    console.log(`[PME Validation] ${label}: ${val} looks like a %% (CA=${refCA}), converting to ${corrected} FCFA`)
+    return corrected
+  }
+  return val
+}
+
+/**
  * Convert Claude's extracted JSON into PmeInputData format
  * Merges extracted + estimated data
+ * INCLUDES validation to detect percentages mistakenly used as FCFA amounts
  */
 export function claudeResultToPmeInput(
   extracted: any,
@@ -426,17 +443,28 @@ export function claudeResultToPmeInput(
     return fallback
   }
 
-  // CA
-  const caN = v(ca.ca_n, 'ca_n', 0)
-  const caN1 = v(ca.ca_n_moins_1, 'ca_n_moins_1', caN > 0 ? Math.round(caN * 0.4) : 0)
-  const caN2 = v(ca.ca_n_moins_2, 'ca_n_moins_2', caN1 > 0 ? Math.round(caN1 * 0.6) : 0)
+  // CA — find the best value for each year
+  let caN = v(ca.ca_n, 'ca_n', 0)
+  let caN1 = v(ca.ca_n_moins_1, 'ca_n_moins_1', 0)
+  let caN2 = v(ca.ca_n_moins_2, 'ca_n_moins_2', 0)
+  
+  // VALIDATION: If CA_N is suspiciously low (< 10000) but other years are > 1M, it's corrupt
+  if (caN < 10_000 && (caN1 > 1_000_000 || caN2 > 1_000_000)) {
+    console.log(`[PME Validation] CA_N=${caN} is suspiciously low vs CA_N-1=${caN1}. Using growth estimate.`)
+    caN = caN1 > 0 ? Math.round(caN1 * 1.3) : caN2 > 0 ? Math.round(caN2 * 1.5) : 0
+  }
+  // Fill missing years
+  if (caN1 <= 0 && caN > 0) caN1 = Math.round(caN * 0.4)
+  if (caN2 <= 0 && caN1 > 0) caN2 = Math.round(caN1 * 0.6)
+  
   const caTotal: [number, number, number] = [caN2, caN1, caN]
+  const refCA = caN // Reference CA for validation
 
   // Activities
   const acts = ca.activites || []
   const activities: { name: string; isStrategic: boolean }[] = acts.length > 0
     ? acts.map((a: any, i: number) => ({
-        name: a.nom || `Activite ${i + 1}`,
+        name: (a.nom || `Activite ${i + 1}`).replace(/\|.*$/g, '').trim().slice(0, 60),
         isStrategic: a.is_strategique ?? (i === 0)
       }))
     : [{ name: 'Activite principale', isStrategic: true }]
@@ -444,7 +472,9 @@ export function claudeResultToPmeInput(
   // CA by activity — distribute across years
   const caByActivity: [number, number, number][] = acts.length > 0
     ? acts.map((a: any) => {
-        const actCA = a.ca_n || 0
+        let actCA = a.ca_n || 0
+        // VALIDATION: activity CA should not be 0 for all years if we have a total
+        if (actCA <= 0 && caN > 0) actCA = Math.round(caN / Math.max(acts.length, 1))
         const ratio = caN > 0 ? actCA / caN : 1 / Math.max(acts.length, 1)
         return [Math.round(caN2 * ratio), Math.round(caN1 * ratio), actCA] as [number, number, number]
       })
@@ -455,17 +485,36 @@ export function claudeResultToPmeInput(
     return [Math.round(valN * 0.5), Math.round(valN * 0.75), valN]
   }
 
-  // Costs
-  const achatsMP = v(cv.achats_matieres, 'achats_matieres', Math.round(caN * 0.35))
-  const sousTraitance = v(cv.sous_traitance, 'sous_traitance', 0)
-  const coutsProduction = v(cv.couts_production, 'couts_production', Math.round(caN * 0.1))
-  const salaires = v(cf.salaires_annuels, 'salaires_annuels', Math.round(caN * 0.15))
-  const loyers = v(cf.loyers, 'loyers', Math.round(caN * 0.03))
-  const assurances = v(cf.assurances, 'assurances', 0)
-  const fraisGeneraux = v(cf.frais_generaux, 'frais_generaux', Math.round(caN * 0.05))
-  const marketing = v(cf.marketing, 'marketing', 0)
-  const fraisBancaires = v(cf.frais_bancaires, 'frais_bancaires', 0)
-  const resultatNet = v(extracted.resultat_net, 'resultat_net', Math.round(caN * 0.05))
+  // Costs — with percentage detection fix
+  let achatsMP = v(cv.achats_matieres, 'achats_matieres', Math.round(refCA * 0.35))
+  achatsMP = fixPctAsFcfa(achatsMP, refCA, 'achatsMP')
+  
+  let sousTraitance = v(cv.sous_traitance, 'sous_traitance', 0)
+  sousTraitance = fixPctAsFcfa(sousTraitance, refCA, 'sousTraitance')
+  
+  let coutsProduction = v(cv.couts_production, 'couts_production', Math.round(refCA * 0.1))
+  coutsProduction = fixPctAsFcfa(coutsProduction, refCA, 'coutsProduction')
+  
+  let salaires = v(cf.salaires_annuels, 'salaires_annuels', Math.round(refCA * 0.15))
+  // Don't fix salaires as pct — they can legitimately be large numbers from estimation
+  
+  let loyers = v(cf.loyers, 'loyers', Math.round(refCA * 0.03))
+  loyers = fixPctAsFcfa(loyers, refCA, 'loyers')
+  
+  let assurances = v(cf.assurances, 'assurances', 0)
+  assurances = fixPctAsFcfa(assurances, refCA, 'assurances')
+  
+  let fraisGeneraux = v(cf.frais_generaux, 'frais_generaux', Math.round(refCA * 0.05))
+  fraisGeneraux = fixPctAsFcfa(fraisGeneraux, refCA, 'fraisGeneraux')
+  
+  let marketing = v(cf.marketing, 'marketing', 0)
+  marketing = fixPctAsFcfa(marketing, refCA, 'marketing')
+  
+  let fraisBancaires = v(cf.frais_bancaires, 'frais_bancaires', 0)
+  fraisBancaires = fixPctAsFcfa(fraisBancaires, refCA, 'fraisBancaires')
+  
+  let resultatNet = v(extracted.resultat_net, 'resultat_net', Math.round(refCA * 0.05))
+  resultatNet = fixPctAsFcfa(resultatNet, refCA, 'resultatNet')
 
   // Tresorerie
   const tresoDebut = v(treso.debut_exercice, 'tresorerie_debut', 0)
@@ -497,12 +546,18 @@ export function claudeResultToPmeInput(
   ]
   const inflationPct = hyp.inflation_pct || 3
 
-  // Embauches
-  const embauches = (hyp.embauches || []).map((e: any) => ({
-    poste: e.poste || 'Employe',
-    annee: e.annee || 1,
-    salaireMensuel: e.salaire_mensuel || 200_000
-  }))
+  // Embauches — clean up poste names (remove Excel cell references like "| C7=1.0 | D7=200000")
+  const embauches = (hyp.embauches || []).map((e: any) => {
+    let poste = (e.poste || 'Employe').replace(/\s*\|.*$/g, '').trim()
+    if (poste.length > 50) poste = poste.slice(0, 50)
+    const salaireMensuel = e.salaire_mensuel || 200_000
+    return {
+      poste,
+      annee: e.annee || 1,
+      // VALIDATION: if salary looks like annual instead of monthly (> 1M), divide by 12
+      salaireMensuel: salaireMensuel > 1_000_000 ? Math.round(salaireMensuel / 12) : salaireMensuel
+    }
+  })
 
   // Investissements detailles
   const investissements = capexItems.length > 0
@@ -633,6 +688,9 @@ export async function buildPmeInputWithAI(
     // STEP 3b: Validate against regex results and pick best
     const regexData = regexFallback(extractedText, companyName, country)
     const finalData = mergeClaudeAndRegex(data, regexData)
+    
+    // STEP 3c: Post-validation sanity checks
+    validateAndFixPmeInputData(finalData)
 
     quality.source = 'hybride'
     return { data: finalData, quality, estimations }
@@ -657,12 +715,21 @@ function mergeClaudeAndRegex(claude: PmeInputData, regex: PmeInputData): PmeInpu
   const merged = { ...claude }
 
   // For each numeric array field, prefer the one with more non-zero values
+  // AND prefer larger values (FCFA amounts over percentage-like values)
   function pickBest3(
     cArr: [number, number, number],
     rArr: [number, number, number]
   ): [number, number, number] {
     const cNonZero = cArr.filter(v => v > 0).length
     const rNonZero = rArr.filter(v => v > 0).length
+    
+    // If one array has all values < 200 and the other has values > 1000, prefer the larger one
+    // This catches the case where Claude returns percentages and regex returns FCFA amounts
+    const cMax = Math.max(...cArr)
+    const rMax = Math.max(...rArr)
+    if (cMax < 200 && rMax > 1_000) return rArr
+    if (rMax < 200 && cMax > 1_000) return cArr
+    
     // If Claude found more or equal non-zero values, prefer Claude
     if (cNonZero >= rNonZero) return cArr
     return rArr
@@ -709,4 +776,100 @@ function mergeClaudeAndRegex(claude: PmeInputData, regex: PmeInputData): PmeInpu
   }
 
   return merged
+}
+
+/**
+ * Post-validation: detect and fix obvious data quality issues in PmeInputData.
+ * This catches cases where Claude's extraction produced nonsensical values.
+ * Mutates the data object in-place.
+ */
+function validateAndFixPmeInputData(data: PmeInputData): void {
+  const h = data.historique
+  const caN = h.caTotal[2]
+  
+  if (caN <= 0) {
+    console.warn('[PME Validation] CA Total is 0 — cannot validate proportions')
+    return
+  }
+  
+  // 1. Growth rates: cap at reasonable values (< 100% per year for projections)
+  for (let i = 0; i < 5; i++) {
+    if (data.hypotheses.croissanceCA[i] > 80) {
+      console.log(`[PME Validation] CroissanceCA[${i}]=${data.hypotheses.croissanceCA[i]}% capped to 40%`)
+      data.hypotheses.croissanceCA[i] = Math.min(data.hypotheses.croissanceCA[i], 40)
+    }
+  }
+  
+  // Also cap per-activity growth rates
+  if (data.hypotheses.croissanceParActivite) {
+    for (let a = 0; a < data.hypotheses.croissanceParActivite.length; a++) {
+      for (let i = 0; i < 5; i++) {
+        if (data.hypotheses.croissanceParActivite[a][i] > 100) {
+          console.log(`[PME Validation] croissanceParActivite[${a}][${i}]=${data.hypotheses.croissanceParActivite[a][i]}% capped to 50%`)
+          data.hypotheses.croissanceParActivite[a][i] = 50
+        }
+      }
+    }
+  }
+
+  // 2. Check that costs are FCFA amounts, not percentages
+  // If any cost line for year N is < 200 but CA > 1M, it's a percentage
+  const fix3 = (arr: [number, number, number], label: string): void => {
+    if (caN > 500_000 && arr[2] > 0 && arr[2] < 200) {
+      const correctedN = Math.round(caN * arr[2] / 100)
+      console.log(`[PME Validation] ${label}=[${arr.join(',')}] detected as %%s, converting to FCFA`)
+      arr[2] = correctedN
+      arr[1] = arr[1] > 0 && arr[1] < 200 ? Math.round(h.caTotal[1] * arr[1] / 100) : Math.round(correctedN * 0.75)
+      arr[0] = arr[0] > 0 && arr[0] < 200 ? Math.round(h.caTotal[0] * arr[0] / 100) : Math.round(correctedN * 0.5)
+    }
+  }
+  
+  fix3(h.achatsMP, 'achatsMP')
+  fix3(h.coutsProduction, 'coutsProduction')
+  fix3(h.loyers, 'loyers')
+  fix3(h.fraisGeneraux, 'fraisGeneraux')
+  fix3(h.resultatNet, 'resultatNet')
+  fix3(h.tresoFin, 'tresoFin')
+  fix3(h.marketing, 'marketing')
+  fix3(h.fraisBancaires, 'fraisBancaires')
+  
+  // 3. Check CA sum = activities sum (within 10% tolerance)
+  const sumActs = h.caByActivity.reduce((s, a) => s + a[2], 0)
+  if (sumActs > 0 && Math.abs(sumActs - caN) > caN * 0.1) {
+    // Re-normalize activity CAs to match total
+    console.log(`[PME Validation] CA activities sum (${sumActs}) != CA total (${caN}), normalizing`)
+    for (let a = 0; a < h.caByActivity.length; a++) {
+      const ratio = h.caByActivity[a][2] / sumActs
+      h.caByActivity[a] = [
+        Math.round(h.caTotal[0] * ratio),
+        Math.round(h.caTotal[1] * ratio),
+        Math.round(caN * ratio)
+      ]
+    }
+  }
+  
+  // 4. Check charges fixes / CA ratio — if > 100%, something is wrong
+  const totalCF = h.salaires[2] + h.loyers[2] + h.assurances[2] + h.fraisGeneraux[2] + h.marketing[2] + h.fraisBancaires[2]
+  const cfRatio = totalCF / caN
+  if (cfRatio > 1.5) {
+    console.log(`[PME Validation] Charges fixes/CA = ${(cfRatio*100).toFixed(0)}% — extremely high, capping salaries`)
+    // The most common issue is oversized salaries — cap at 40% of CA
+    if (h.salaires[2] > caN * 0.4) {
+      const cappedSal = Math.round(caN * 0.25)
+      console.log(`[PME Validation] Salaries ${h.salaires[2]} > 40% of CA, capping to ${cappedSal}`)
+      h.salaires[2] = cappedSal
+      h.salaires[1] = Math.round(cappedSal * 0.75)
+      h.salaires[0] = Math.round(cappedSal * 0.5)
+    }
+  }
+  
+  // 5. Clean up embauche names (remove Excel cell references)
+  if (data.hypotheses.embauches) {
+    for (const emb of data.hypotheses.embauches) {
+      emb.poste = emb.poste.replace(/\s*\|.*$/g, '').trim()
+      if (emb.poste.length > 50) emb.poste = emb.poste.slice(0, 50)
+    }
+  }
+  
+  console.log(`[PME Validation] Complete: CA=[${h.caTotal.join(',')}], CF/CA=${(totalCF/caN*100).toFixed(0)}%`)
 }
