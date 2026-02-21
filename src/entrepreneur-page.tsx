@@ -18,6 +18,7 @@ import { buildPmeInputDataFromText } from './pme-input-builder'
 import { buildPmeInputWithAI } from './pme-ai-extractor'
 import { tryParseInputsEntrepreneur } from './inputs-entrepreneur-parser'
 import { crossAnalyzeBmcFinancials } from './pme-cross-analyzer'
+import { generateDiagnosticExpert, generateDiagnosticExpertFallback, type DiagnosticInputData } from './diagnostic-expert-engine'
 import type { KBContext } from './claude-api'
 
 type Bindings = {
@@ -45,7 +46,7 @@ function getScoreLabel(score: number): string {
 }
 
 const DELIVERABLE_TYPES = [
-  { type: 'diagnostic', label: 'Diagnostic Expert', icon: 'fa-stethoscope', format: 'HTML / PDF', deps: ['bmc', 'sic', 'inputs'] as const },
+  { type: 'diagnostic', label: 'Diagnostic Expert', icon: 'fa-stethoscope', format: 'HTML / PDF', deps: ['bmc'] as const },
   { type: 'framework', label: 'Framework Analyse', icon: 'fa-table-cells', format: 'Excel / HTML', deps: ['bmc', 'inputs'] as const },
   { type: 'bmc_analysis', label: 'BMC Analysé', icon: 'fa-map', format: 'Word / PDF', deps: ['bmc'] as const },
   { type: 'sic_analysis', label: 'SIC Analysé', icon: 'fa-seedling', format: 'Word / PDF', deps: ['sic'] as const },
@@ -1356,6 +1357,73 @@ entrepreneurRoutes.post('/api/ai/generate-all', async (c) => {
       })())
     }
 
+    // 5) Diagnostic Expert HTML — croise BMC + SIC + Framework
+    if (generableTypes.includes('diagnostic')) {
+      htmlGenerationPromises.push((async () => {
+        try {
+          console.log('[Generate-All] Generating Diagnostic Expert HTML...')
+
+          // Load all available deliverables for cross-analysis
+          const loadDeliv = async (type: string) => {
+            const row = await c.env.DB.prepare(
+              "SELECT content FROM entrepreneur_deliverables WHERE user_id = ? AND type = ? ORDER BY version DESC LIMIT 1"
+            ).bind(payload.userId, type).first() as any
+            if (!row?.content) return null
+            try { return typeof row.content === 'string' ? JSON.parse(row.content) : row.content } catch { return null }
+          }
+
+          const [bmcAnalysisData, sicAnalysisData, frameworkData, frameworkPmeData] = await Promise.all([
+            loadDeliv('bmc_analysis'),
+            loadDeliv('sic_analysis'),
+            loadDeliv('framework'),
+            loadDeliv('framework_pme_data'),
+          ])
+
+          const diagInput: DiagnosticInputData = {
+            companyName: companyName,
+            entrepreneurName: userName,
+            country: userCountry || "Côte d'Ivoire",
+            sector: frameworkPmeData?.sector || '',
+            analysisDate: new Date().toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' }),
+            bmcAnalysis: bmcAnalysisData,
+            sicAnalysis: sicAnalysisData,
+            frameworkPmeData: frameworkPmeData,
+            frameworkAnalysis: frameworkData,
+            apiKey: apiKey || undefined,
+            kbContext: kbForEngines,
+          }
+
+          const { result: diagResult, html: diagHtml } = await generateDiagnosticExpert(diagInput)
+
+          // Store diagnostic_html
+          await c.env.DB.prepare(
+            "DELETE FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'diagnostic_html'"
+          ).bind(payload.userId).run()
+          const diagHtmlId = crypto.randomUUID()
+          await c.env.DB.prepare(`
+            INSERT INTO entrepreneur_deliverables (id, user_id, type, content, score, version, iteration_id, status, created_at)
+            VALUES (?, ?, 'diagnostic_html', ?, ?, ?, ?, 'generated', datetime('now'))
+          `).bind(diagHtmlId, payload.userId, diagHtml, diagResult.scoreGlobal, newVersion, iterationId).run()
+
+          // Also update the 'diagnostic' deliverable with enriched JSON data
+          await c.env.DB.prepare(
+            "DELETE FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'diagnostic'"
+          ).bind(payload.userId).run()
+          const diagJsonId = crypto.randomUUID()
+          await c.env.DB.prepare(`
+            INSERT INTO entrepreneur_deliverables (id, user_id, type, content, score, version, iteration_id, status, created_at)
+            VALUES (?, ?, 'diagnostic', ?, ?, ?, ?, 'generated', datetime('now'))
+          `).bind(diagJsonId, payload.userId, JSON.stringify(diagResult), diagResult.scoreGlobal, newVersion, iterationId).run()
+
+          console.log(`[Generate-All] Diagnostic Expert stored: ${diagHtml.length} chars, score=${diagResult.scoreGlobal}/100, source=${diagResult.aiSource}`)
+          agentsUsed.push(`diagnostic_expert:${diagResult.aiSource}`)
+        } catch (err: any) {
+          console.error('[Generate-All] Diagnostic Expert error (non-fatal):', err.message)
+          agentErrors.push(`diagnostic_html: ${err.message}`)
+        }
+      })())
+    }
+
     // Wait for ALL HTML deliverables to complete in parallel
     console.log(`[Generate-All] Waiting for ${htmlGenerationPromises.length} HTML deliverable generation(s)...`)
     await Promise.allSettled(htmlGenerationPromises)
@@ -2096,6 +2164,19 @@ entrepreneurRoutes.get('/deliverable/:type', async (c) => {
       if (fwHtml?.content) {
         console.log('[Framework Deliverable Page] Serving pre-stored HTML (' + fwHtml.content.length + ' chars)')
         return c.html(fwHtml.content)
+      }
+      // Fallback: continue to generic rendering below
+    }
+
+    // Diagnostic Expert — serve pre-generated HTML from database
+    if (dtype === 'diagnostic') {
+      const diagHtml = await c.env.DB.prepare(
+        "SELECT content FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'diagnostic_html' ORDER BY version DESC LIMIT 1"
+      ).bind(payload.userId).first() as any
+      
+      if (diagHtml?.content) {
+        console.log('[Diagnostic Expert Page] Serving pre-stored HTML (' + diagHtml.content.length + ' chars)')
+        return c.html(diagHtml.content)
       }
       // Fallback: continue to generic rendering below
     }
@@ -3443,6 +3524,12 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
     ).bind(payload.userId).first() as any
     const frameworkClaudeHtml = fwHtmlRow?.content || ''
 
+    // Load pre-stored Diagnostic Expert HTML from database (instant display)
+    const diagHtmlRow = await c.env.DB.prepare(
+      "SELECT content FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'diagnostic_html' ORDER BY version DESC LIMIT 1"
+    ).bind(payload.userId).first() as any
+    const diagnosticClaudeHtml = diagHtmlRow?.content || ''
+
     // Fetch chat messages
     const chatMessages = await c.env.DB.prepare(
       'SELECT id, role, content, created_at FROM chat_messages WHERE user_id = ? ORDER BY created_at ASC LIMIT 50'
@@ -4099,6 +4186,7 @@ ${hasGenerated ? `<body class="ev2-app-shell">` : `<body>`}
     const USER_NAME = ${JSON.stringify((user?.name as string) || 'Entrepreneur')};
     const BMC_HTML_TEMPLATE = ${JSON.stringify(bmcClaudeHtml)};
     const FRAMEWORK_HTML_TEMPLATE = ${JSON.stringify(frameworkClaudeHtml)};
+    const DIAGNOSTIC_HTML_TEMPLATE = ${JSON.stringify(diagnosticClaudeHtml)};
 
     // ── Upload toggle ──
     function toggleUpload() {
@@ -4232,7 +4320,22 @@ ${hasGenerated ? `<body class="ev2-app-shell">` : `<body>`}
       const score = data.score || content.score || 0;
       const sColor = getScoreColor(score);
       
-      if (type === 'diagnostic') {
+      if (type === 'diagnostic' && DIAGNOSTIC_HTML_TEMPLATE && DIAGNOSTIC_HTML_TEMPLATE.length > 100) {
+        // ═══ Diagnostic Expert: display pre-generated HTML in iframe ═══
+        var diagBarHtml = '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;padding:16px 20px;background:linear-gradient(135deg,#fef2f2,#fee2e2);border:1px solid #fca5a5;border-radius:12px;margin-bottom:20px">';
+        diagBarHtml += '<div style="display:flex;align-items:center;gap:10px"><i class="fas fa-stethoscope" style="font-size:24px;color:#dc2626"></i><div><div style="font-size:14px;font-weight:700;color:#991b1b">Diagnostic Expert</div><div style="font-size:12px;color:#b91c1c">Score Investment Readiness, risques, plan d\\u0027action</div></div></div>';
+        diagBarHtml += '<div style="display:flex;gap:8px;flex-wrap:wrap">';
+        diagBarHtml += '<button onclick="downloadDiagnosticHtmlInline()" id="btn-download-diag-html" style="display:inline-flex;align-items:center;gap:8px;padding:10px 20px;border-radius:10px;background:#1e3a5f;color:white;border:none;font-size:13px;font-weight:600;cursor:pointer;transition:all 0.2s;box-shadow:0 2px 8px rgba(30,58,95,0.3)" onmouseover="this.style.opacity=0.9" onmouseout="this.style.opacity=1"><i class="fas fa-file-code"></i> T\\u00e9l\\u00e9charger HTML</button>';
+        diagBarHtml += '<a href="/deliverable/diagnostic" target="_blank" style="display:inline-flex;align-items:center;gap:6px;padding:10px 16px;border-radius:10px;background:white;color:#991b1b;border:1px solid #fca5a5;font-size:12px;font-weight:600;text-decoration:none;cursor:pointer" onmouseover="this.style.background=&apos;#fef2f2&apos;" onmouseout="this.style.background=&apos;white&apos;"><i class="fas fa-expand"></i> Pleine page</a>';
+        diagBarHtml += '</div></div>';
+        
+        el.innerHTML = diagBarHtml;
+        var diagIframe = document.createElement('iframe');
+        diagIframe.style.cssText = 'width:100%;min-height:80vh;border:none;border-radius:12px;background:#fff';
+        diagIframe.srcdoc = DIAGNOSTIC_HTML_TEMPLATE;
+        diagIframe.onload = function() { try { diagIframe.style.height = diagIframe.contentDocument.body.scrollHeight + 40 + 'px'; } catch(e) {} };
+        el.appendChild(diagIframe);
+      } else if (type === 'diagnostic') {
         el.innerHTML = renderDiagHTML(content, scoresDim, score, sColor);
       } else if (type === 'bmc_analysis') {
         // Display pre-stored Claude AI HTML instantly (no fetch, no wait)
@@ -4569,6 +4672,26 @@ ${hasGenerated ? `<body class="ev2-app-shell">` : `<body>`}
       } catch (e) {
         alert('Erreur téléchargement: ' + e.message);
         if (btn) { btn.innerHTML = '<i class="fas fa-download"></i> Télécharger Excel (.xlsx)'; btn.disabled = false; }
+      }
+    }
+
+    function downloadDiagnosticHtmlInline() {
+      const btn = document.getElementById('btn-download-diag-html');
+      if (btn) { btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Préparation...'; btn.disabled = true; }
+      try {
+        const htmlContent = DIAGNOSTIC_HTML_TEMPLATE;
+        const blob = new Blob([htmlContent], { type: 'text/html;charset=utf-8' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'Diagnostic_Expert_' + USER_NAME.replace(/\\s+/g, '_') + '_' + new Date().toISOString().slice(0,10) + '.html';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(a.href);
+        if (btn) { btn.innerHTML = '<i class="fas fa-check"></i> Téléchargé !'; setTimeout(() => { btn.innerHTML = '<i class="fas fa-file-code"></i> Télécharger HTML'; btn.disabled = false; }, 3000); }
+      } catch (e) {
+        alert('Erreur: ' + e.message);
+        if (btn) { btn.innerHTML = '<i class="fas fa-file-code"></i> Télécharger HTML'; btn.disabled = false; }
       }
     }
 
