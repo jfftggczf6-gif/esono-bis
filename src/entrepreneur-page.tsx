@@ -1186,6 +1186,8 @@ entrepreneurRoutes.post('/api/ai/generate-all', async (c) => {
           // This parser reads EACH cell of the XLSX structurally — no AI, no guessing
           const xlsxB64ForParser = rawUploads.inputs || undefined
           let usedStructuredParser = false
+          let usedAIExtraction = false
+          let aiEstimations: any[] = []
           
           if (hasInputs && xlsxB64ForParser && xlsxB64ForParser.length > 100) {
             console.log('[Generate-All] Trying structured INPUTS_ENTREPRENEURS parser...')
@@ -1197,33 +1199,123 @@ entrepreneurRoutes.post('/api/ai/generate-all', async (c) => {
             }
           }
           
-          // ═══ PRIORITY 1: Text-based parsing (no AI invention) ═══
-          if (!usedStructuredParser && hasInputs && documentTexts.inputs && documentTexts.inputs !== `[Fichier binaire: ${uploadData.find(u => u.category === 'inputs')?.filename}]`) {
-            console.log('[Generate-All] Structured parser not applicable, using text-based parsing')
+          // ═══ PRIORITY 1: AI extraction fallback for NON-TEMPLATE Excel files ═══
+          // If structured parser failed but we have an XLSX file → Claude extracts the data
+          // This handles entrepreneurs who upload their own format instead of the template
+          const fwApiKey = apiKey || ''
+          if (!usedStructuredParser && hasInputs && xlsxB64ForParser && xlsxB64ForParser.length > 100) {
+            console.log('[Generate-All] ⚡ Structured parser failed → trying AI extraction (non-template Excel)...')
+            try {
+              const inputsText = documentTexts.inputs || ''
+              const enriched = await buildPmeInputWithAI(
+                inputsText,
+                fwApiKey,
+                companyName,
+                userCountry || "Côte d'Ivoire",
+                buildPmeInputDataFromText,
+                xlsxB64ForParser
+              )
+              if (enriched && enriched.data) {
+                pmeData = enriched.data
+                usedAIExtraction = true
+                aiEstimations = enriched.estimations || []
+                const caTotal = pmeData.historique.caTotal
+                console.log(`[Generate-All] ✅ AI extraction SUCCESS: CA=[${caTotal.join(',')}], confidence=${enriched.quality?.confiance || 'N/A'}, estimations=${aiEstimations.length}`)
+              }
+            } catch (aiErr: any) {
+              console.error(`[Generate-All] AI extraction failed: ${aiErr.message}`)
+            }
+          }
+
+          // ═══ PRIORITY 2: Text-based parsing (no AI, regex only) ═══
+          if (!usedStructuredParser && !usedAIExtraction && hasInputs && documentTexts.inputs && documentTexts.inputs !== `[Fichier binaire: ${uploadData.find(u => u.category === 'inputs')?.filename}]`) {
+            console.log('[Generate-All] No structured/AI parser applicable, using text-based parsing')
             pmeData = buildPmeInputDataFromText(documentTexts.inputs, companyName, userCountry || "Côte d'Ivoire")
             console.log(`[Generate-All] Text parsing: CA=[${pmeData!.historique.caTotal.join(',')}]`)
           }
-          // ═══ PRIORITY 2: Fallback to orchestration result ═══
-          else if (!usedStructuredParser) {
+          // ═══ PRIORITY 3: AI extraction from text (no XLSX available) ═══
+          // Entrepreneur uploaded a non-Excel file or text is all we have
+          else if (!usedStructuredParser && !usedAIExtraction && hasInputs && documentTexts.inputs) {
+            console.log('[Generate-All] ⚡ No XLSX → trying AI extraction from text...')
+            try {
+              const enriched = await buildPmeInputWithAI(
+                documentTexts.inputs,
+                fwApiKey,
+                companyName,
+                userCountry || "Côte d'Ivoire",
+                buildPmeInputDataFromText
+              )
+              if (enriched && enriched.data) {
+                pmeData = enriched.data
+                usedAIExtraction = true
+                aiEstimations = enriched.estimations || []
+                console.log(`[Generate-All] ✅ AI text extraction SUCCESS: CA=[${pmeData.historique.caTotal.join(',')}]`)
+              }
+            } catch (aiErr: any) {
+              console.error(`[Generate-All] AI text extraction failed: ${aiErr.message}`)
+              pmeData = buildPmeInputDataFromText(documentTexts.inputs, companyName, userCountry || "Côte d'Ivoire")
+            }
+          }
+          // ═══ PRIORITY 4: Fallback to orchestration result ═══
+          else if (!usedStructuredParser && !usedAIExtraction) {
             pmeData = _buildPmeInputDataFromDeliverable(result?.deliverables?.framework || {}, companyName, userCountry || "Côte d'Ivoire")
           }
           
-          console.log(`[Generate-All] PmeInputData built: CA=[${pmeData!.historique.caTotal.join(',')}], Activities=${pmeData!.activities.length}`)
+          const parserSource = usedStructuredParser ? 'structured' : usedAIExtraction ? 'ai_extraction' : 'text_fallback'
+          console.log(`[Generate-All] PmeInputData built (${parserSource}): CA=[${pmeData!.historique.caTotal.join(',')}], Activities=${pmeData!.activities.length}`)
           
           // CORRECTION 3: Load BMC content for cross-analysis
+          // Try multiple BMC types: bmc_analysis (JSON), bmc_html (HTML), or raw upload text
           let bmcContent = ''
           try {
-            const bmcDel = await c.env.DB.prepare(
-              "SELECT content FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'bmc_analysis_html' ORDER BY version DESC LIMIT 1"
+            // Priority 1: bmc_analysis (structured JSON content from Claude)
+            let bmcDel = await c.env.DB.prepare(
+              "SELECT content FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'bmc_analysis' ORDER BY version DESC LIMIT 1"
             ).bind(payload.userId).first<any>()
-            if (bmcDel?.content) bmcContent = bmcDel.content.slice(0, 6000)
-          } catch {}
+            if (bmcDel?.content && bmcDel.content.length > 100) {
+              bmcContent = bmcDel.content.slice(0, 6000)
+              console.log(`[Generate-All] BMC loaded from bmc_analysis: ${bmcContent.length} chars`)
+            }
+            // Priority 2: bmc_html (rendered HTML)
+            if (!bmcContent) {
+              bmcDel = await c.env.DB.prepare(
+                "SELECT content FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'bmc_html' ORDER BY version DESC LIMIT 1"
+              ).bind(payload.userId).first<any>()
+              if (bmcDel?.content && bmcDel.content.length > 100) {
+                bmcContent = bmcDel.content.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 6000)
+                console.log(`[Generate-All] BMC loaded from bmc_html (stripped): ${bmcContent.length} chars`)
+              }
+            }
+            // Priority 3: Raw uploaded BMC text from uploads table
+            if (!bmcContent) {
+              const bmcUpload = await c.env.DB.prepare(
+                "SELECT extracted_text FROM uploads WHERE user_id = ? AND category = 'bmc' ORDER BY uploaded_at DESC LIMIT 1"
+              ).bind(payload.userId).first<any>()
+              if (bmcUpload?.extracted_text && bmcUpload.extracted_text.length > 100) {
+                // Skip base64 prefix if present
+                let text = bmcUpload.extracted_text
+                if (text.startsWith('base64:')) {
+                  const mdStart = text.indexOf('\n---\n')
+                  text = mdStart > 0 ? text.substring(mdStart + 5) : ''
+                }
+                if (text.length > 100) {
+                  bmcContent = text.slice(0, 6000)
+                  console.log(`[Generate-All] BMC loaded from uploads table: ${bmcContent.length} chars`)
+                }
+              }
+            }
+            if (!bmcContent) {
+              console.log('[Generate-All] No BMC content found in any source')
+            }
+          } catch (bmcErr: any) {
+            console.error('[Generate-All] BMC loading error (non-fatal):', bmcErr.message)
+          }
 
           // CORRECTION 3: Run cross-analysis BMC ↔ Financials
           const baseAnalysis = analyzePme(pmeData)
           let crossAnalysis
           try {
-            crossAnalysis = await crossAnalyzeBmcFinancials(bmcContent, pmeData, baseAnalysis, apiKey)
+            crossAnalysis = await crossAnalyzeBmcFinancials(bmcContent, pmeData, baseAnalysis, fwApiKey)
             if (crossAnalysis?.score_coherence >= 0) {
               console.log(`[Generate-All] Cross-analysis: coherence=${crossAnalysis.score_coherence}`)
             }
@@ -1231,8 +1323,8 @@ entrepreneurRoutes.post('/api/ai/generate-all', async (c) => {
             console.error('[Generate-All] Cross-analysis error (non-fatal):', crossErr.message)
           }
 
-          // CORRECTION 4+5: Full AI enrichment with cross-analysis context
-          const pmeAnalysis = await analyzePmeWithAI(pmeData, apiKey, kbForEngines, crossAnalysis)
+          // CORRECTION 4+5: Full AI enrichment with cross-analysis context + AI estimations
+          const pmeAnalysis = await analyzePmeWithAI(pmeData, fwApiKey, kbForEngines, crossAnalysis, usedAIExtraction ? aiEstimations : undefined)
           const frameworkHtml = generatePmePreviewHtml(pmeAnalysis, pmeData)
 
           await c.env.DB.prepare(
@@ -1757,10 +1849,20 @@ entrepreneurRoutes.get('/api/download/framework-excel', async (c) => {
     // CORRECTION 3: Cross-analysis BMC ↔ Financial for download too
     let bmcContent = ''
     try {
-      const bmcDel = await c.env.DB.prepare(
-        "SELECT content FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'bmc_analysis_html' ORDER BY version DESC LIMIT 1"
+      let bmcDel = await c.env.DB.prepare(
+        "SELECT content FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'bmc_analysis' ORDER BY version DESC LIMIT 1"
       ).bind(payload.userId).first<any>()
-      if (bmcDel?.content) bmcContent = bmcDel.content.slice(0, 6000)
+      if (bmcDel?.content && bmcDel.content.length > 100) {
+        bmcContent = bmcDel.content.slice(0, 6000)
+      }
+      if (!bmcContent) {
+        bmcDel = await c.env.DB.prepare(
+          "SELECT content FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'bmc_html' ORDER BY version DESC LIMIT 1"
+        ).bind(payload.userId).first<any>()
+        if (bmcDel?.content && bmcDel.content.length > 100) {
+          bmcContent = bmcDel.content.replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ').slice(0, 6000)
+        }
+      }
     } catch {}
 
     let analysis

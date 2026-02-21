@@ -4619,10 +4619,20 @@ app.get('/api/pme/framework', async (c) => {
     // Step 4: BMC cross-check (load BMC deliverable if available)
     let bmcContent = ''
     try {
-      const bmcDel = await c.env.DB.prepare(
-        "SELECT content FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'bmc_analysis_html' ORDER BY version DESC LIMIT 1"
+      let bmcDel = await c.env.DB.prepare(
+        "SELECT content FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'bmc_analysis' ORDER BY version DESC LIMIT 1"
       ).bind(payload.userId).first<any>()
-      if (bmcDel?.content) bmcContent = bmcDel.content.slice(0, 6000)
+      if (bmcDel?.content && bmcDel.content.length > 100) {
+        bmcContent = bmcDel.content.slice(0, 6000)
+      }
+      if (!bmcContent) {
+        bmcDel = await c.env.DB.prepare(
+          "SELECT content FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'bmc_html' ORDER BY version DESC LIMIT 1"
+        ).bind(payload.userId).first<any>()
+        if (bmcDel?.content && bmcDel.content.length > 100) {
+          bmcContent = bmcDel.content.replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ').slice(0, 6000)
+        }
+      }
     } catch {}
 
     const baseAnalysis = analyzePme(pmeInput)
@@ -4713,10 +4723,20 @@ app.post('/api/pme/framework/refresh', async (c) => {
     // Load BMC for cross-check
     let bmcContent = ''
     try {
-      const bmcDel = await c.env.DB.prepare(
-        "SELECT content FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'bmc_analysis_html' ORDER BY version DESC LIMIT 1"
+      let bmcDel = await c.env.DB.prepare(
+        "SELECT content FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'bmc_analysis' ORDER BY version DESC LIMIT 1"
       ).bind(payload.userId).first<any>()
-      if (bmcDel?.content) bmcContent = bmcDel.content.slice(0, 6000)
+      if (bmcDel?.content && bmcDel.content.length > 100) {
+        bmcContent = bmcDel.content.slice(0, 6000)
+      }
+      if (!bmcContent) {
+        bmcDel = await c.env.DB.prepare(
+          "SELECT content FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'bmc_html' ORDER BY version DESC LIMIT 1"
+        ).bind(payload.userId).first<any>()
+        if (bmcDel?.content && bmcDel.content.length > 100) {
+          bmcContent = bmcDel.content.replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ').slice(0, 6000)
+        }
+      }
     } catch {}
 
     const baseAnalysis = analyzePme(pmeInput)

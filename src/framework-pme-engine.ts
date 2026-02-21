@@ -1264,6 +1264,28 @@ export function generatePmePreviewHtml(analysis: PmeAnalysisResult, data: PmeInp
   const scoreColor = hc.margeEbitdaPct[2] >= 15 ? '#059669' : hc.margeEbitdaPct[2] >= 5 ? '#0284c7' : hc.margeEbitdaPct[2] >= 0 ? '#d97706' : '#dc2626'
   const scoreLabel = hc.margeEbitdaPct[2] >= 15 ? 'Sain' : hc.margeEbitdaPct[2] >= 5 ? 'Correct' : hc.margeEbitdaPct[2] >= 0 ? 'Fragile' : 'Critique'
 
+  // Helper: render per-sheet AI verdict in HTML preview
+  const sheetCommentsPrev = analysis.aiExpertCommentary?.commentaires_par_feuille
+  function renderSheetVerdict(sheetKey: keyof NonNullable<typeof sheetCommentsPrev>): string {
+    const comment = sheetCommentsPrev?.[sheetKey]
+    if (!comment) return ''
+    let verdictHtml = `<div style="margin-top:16px;padding:16px;background:#FFFDE7;border-left:4px solid #F9A825;border-radius:0 12px 12px 0;">`
+    verdictHtml += `<div style="font-size:13px;font-weight:700;color:#6B4C00;margin-bottom:6px;">📊 VERDICT ANALYSTE :</div>`
+    if (comment.verdict) {
+      verdictHtml += `<div style="font-size:13px;font-style:italic;color:#4A3800;line-height:1.6;margin-bottom:8px;">${comment.verdict}</div>`
+    }
+    if (comment.alertes && comment.alertes.length > 0) {
+      for (const alerte of comment.alertes) {
+        verdictHtml += `<div style="font-size:12px;color:#9A3412;padding:4px 0;">⚠️ ${alerte}</div>`
+      }
+    }
+    if (comment.phrase_cle) {
+      verdictHtml += `<div style="font-size:12px;font-weight:600;color:#1565C0;margin-top:6px;">💡 ${comment.phrase_cle}</div>`
+    }
+    verdictHtml += `</div>`
+    return verdictHtml
+  }
+
   return `<!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -1342,6 +1364,7 @@ export function generatePmePreviewHtml(analysis: PmeAnalysisResult, data: PmeInp
 
     <div class="card">
       <h2>📊 Indicateurs Clés</h2>
+      ${renderSheetVerdict('donnees_historiques')}
       <div class="grid-3">
         <div class="kpi"><div class="kpi-value">${fmtPct(hc.margeBrutePct[2])}</div><div class="kpi-label">Marge Brute</div></div>
         <div class="kpi"><div class="kpi-value">${fmtPct(hc.chargesFixesSurCA[2])}</div><div class="kpi-label">Charges Fixes/CA</div></div>
@@ -1354,6 +1377,7 @@ export function generatePmePreviewHtml(analysis: PmeAnalysisResult, data: PmeInp
 
     <div class="card">
       <h2>📊 Ratios Clés d'Efficacité (Feuille 3)</h2>
+      ${renderSheetVerdict('structure_couts')}
       <table>
         <tr><th>Ratio</th><th>Année N-2</th><th>Année N-1</th><th>Année N</th><th>Benchmark</th></tr>
         <tr><td>Charges Fixes / CA</td><td>${fmtPct(hc.chargesFixesSurCA[0])}</td><td>${fmtPct(hc.chargesFixesSurCA[1])}</td><td style="font-weight:600;color:${hc.chargesFixesSurCA[2] <= 55 ? 'var(--green)' : 'var(--orange)'};">${fmtPct(hc.chargesFixesSurCA[2])}</td><td>50-60%</td></tr>
@@ -1366,6 +1390,7 @@ export function generatePmePreviewHtml(analysis: PmeAnalysisResult, data: PmeInp
 
     <div class="card">
       <h2>💰 Trésorerie & BFR (Feuille 4)</h2>
+      ${renderSheetVerdict('tresorerie_bfr')}
       <div class="grid-2" style="margin-bottom:16px;">
         <div>
           <h3 style="font-size:14px;color:var(--primary);margin-bottom:8px;">Analyse Trésorerie</h3>
@@ -1414,6 +1439,7 @@ export function generatePmePreviewHtml(analysis: PmeAnalysisResult, data: PmeInp
     <!-- SLIDE 2 — OÙ SE CRÉE LA MARGE (Feuilles 2+3) -->
     <div class="card" style="border-left:4px solid #d97706;">
       <h2>🟡 SLIDE 2 — OÙ SE CRÉE LA MARGE</h2>
+      ${renderSheetVerdict('analyse_marges')}
       <table style="margin-bottom:16px;">
         <tr><th>Activité</th><th>CA (FCFA)</th><th>Marge Brute</th><th>Marge %</th><th>Classification</th></tr>
         ${analysis.margesParActivite.map(m => {
@@ -1432,6 +1458,7 @@ export function generatePmePreviewHtml(analysis: PmeAnalysisResult, data: PmeInp
     <!-- Projection 5 ans détaillée (Feuille 6) -->
     <div class="card">
       <h2>📈 Projection Financière 5 Ans</h2>
+      ${renderSheetVerdict('projections_5ans')}
       <table>
         <tr><th>Poste</th>${[1,2,3,4,5].map(y => `<th>Année ${y}</th>`).join('')}<th>CAGR</th></tr>
         <tr><td><strong>CA Total</strong></td>${p.caTotal.map(v => `<td><strong>${fmt(v)}</strong></td>`).join('')}<td>${fmtPct(p.cagrCA)}</td></tr>
@@ -1447,11 +1474,13 @@ export function generatePmePreviewHtml(analysis: PmeAnalysisResult, data: PmeInp
         <strong style="font-size:13px;">📊 Seuil de Rentabilité (Année 1) :</strong>
         <span style="font-size:13px;"> CA au point mort = ${fmt(p.caPointMort[0])} FCFA · Atteint en ${p.moisPointMort[0]} mois</span>
       </div>
+      ${renderSheetVerdict('hypotheses')}
     </div>
 
     <!-- Scénarios (Feuille 7) -->
     <div class="card">
       <h2>📊 Analyse par Scénarios (Année 5)</h2>
+      ${renderSheetVerdict('scenarios')}
       <table>
         <tr><th>Indicateur</th><th>🔵 Prudent</th><th>🟢 Central</th><th>🔴 Ambitieux</th></tr>
         <tr><td>Croissance CA (CAGR)</td>${analysis.scenarios.map(s => `<td>${fmtPct(s.croissanceCAGR)}</td>`).join('')}</tr>
