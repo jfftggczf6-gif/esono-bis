@@ -52,7 +52,7 @@ const DELIVERABLE_TYPES = [
   { type: 'sic_analysis', label: 'SIC Analysé', icon: 'fa-seedling', format: 'Word / PDF', deps: ['sic'] as const },
   { type: 'plan_ovo', label: 'Plan Financier OVO', icon: 'fa-chart-line', format: 'XLSM', deps: ['inputs'] as const },
   { type: 'business_plan', label: 'Business Plan', icon: 'fa-file-contract', format: 'Word', deps: ['bmc', 'sic', 'inputs'] as const },
-  { type: 'odd', label: 'ODD (Due Diligence)', icon: 'fa-shield-halved', format: 'Excel', deps: ['bmc', 'sic', 'inputs'] as const },
+  { type: 'odd', label: 'ODD (Due Diligence)', icon: 'fa-shield-halved', format: 'Excel', deps: ['bmc', 'sic'] as const },
 ]
 
 const DEP_LABELS: Record<string, string> = { bmc: 'BMC', sic: 'SIC', inputs: 'Inputs Financiers' }
@@ -3577,7 +3577,13 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
       btnSub = '(3/3 inputs — 7/7 livrables · Analyse complète)'; btnClass = 'ev2-btn--green'; btnDisabled = false; btnTooltip = 'Tous les documents sont uploadés. Génération complète des 7 livrables.'
     }
 
-    // ── Build inline module cards HTML (pre-computed to avoid nested template literals) ──
+    // ── Build uploaded sources list for sidebar ──
+    const allUploads: any[] = []
+    if (uploadsByCategory.bmc) allUploads.push({ ...uploadsByCategory.bmc, category: 'bmc' })
+    if (uploadsByCategory.sic) allUploads.push({ ...uploadsByCategory.sic, category: 'sic' })
+    if (uploadsByCategory.inputs) allUploads.push({ ...uploadsByCategory.inputs, category: 'inputs' })
+    for (const sf of supplementaryFiles) allUploads.push({ ...sf, category: 'supplementary' })
+
     // ── Build HTML ──
     const html = `<!DOCTYPE html>
 <html lang="fr">
@@ -3600,137 +3606,95 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
     .ev2-header__right { display: flex; align-items: center; gap: 14px; }
     .ev2-header__user { font-size: 12px; color: #6b7280; }
     .ev2-header__user strong { color: #1f2937; }
-    .ev2-btn-sm { background: #ffffff; border: 1px solid #d1d5db; color: #374151; padding: 5px 12px; border-radius: 6px; font-size: 11px; cursor: pointer; transition: all 0.2s; font-family: inherit; }
-    .ev2-btn-sm:hover { border-color: #1e3a5f; color: #1e3a5f; background: #f3f4f6; }
+    .ev2-btn-sm { background: #ffffff; border: 1px solid #d1d5db; color: #374151; padding: 5px 12px; border-radius: 6px; font-size: 11px; cursor: pointer; transition: all 0.2s; font-family: inherit; text-decoration: none; display: inline-flex; align-items: center; gap: 4px; }
+    .ev2-btn-sm:hover { border-color: #1e3a5f; color: #1e3a5f; background: #f3f4f6; text-decoration: none; }
     .ev2-btn-sm--danger:hover { border-color: #dc2626; color: #dc2626; background: #fee2e2; }
     
-    /* ── Score Banner (full — pre-generation) ── */
-    .ev2-score { background: linear-gradient(135deg, #1e3a5f 0%, #2a4d7a 100%); border-radius: 12px; padding: 28px 32px; margin: 16px 20px; text-align: center; position: relative; overflow: hidden; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); }
-    .ev2-score::before { content: ''; position: absolute; inset: 0; background: radial-gradient(circle at 30% 50%, rgba(201,169,98,0.12) 0%, transparent 60%); }
-    .ev2-score * { position: relative; }
-    .ev2-score__title { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 3px; color: #c9a962; margin-bottom: 12px; }
-    .ev2-score__value { font-size: 52px; font-weight: 800; line-height: 1; margin-bottom: 6px; color: #ffffff; }
-    .ev2-score__bar { width: 100%; max-width: 380px; height: 7px; background: rgba(255,255,255,0.15); border-radius: 99px; margin: 10px auto; overflow: hidden; }
+    /* ── Score Banner COMPACT (always shown as thin strip) ── */
+    .ev2-score { background: linear-gradient(135deg, #1e3a5f 0%, #2a4d7a 100%); padding: 8px 20px; display: flex; align-items: center; justify-content: center; gap: 16px; flex-shrink: 0; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    .ev2-score__title { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 2px; color: #c9a962; }
+    .ev2-score__value { font-size: 22px; font-weight: 800; color: #ffffff; }
+    .ev2-score__bar { width: 120px; height: 4px; background: rgba(255,255,255,0.15); border-radius: 99px; overflow: hidden; }
     .ev2-score__bar-fill { height: 100%; border-radius: 99px; transition: width 1s ease-out; }
-    .ev2-score__meta { font-size: 12px; color: rgba(255,255,255,0.6); margin-top: 6px; }
+    .ev2-score__meta { font-size: 10px; color: rgba(255,255,255,0.6); }
     .ev2-score__meta span { margin: 0 6px; }
-    .ev2-score__placeholder { font-size: 44px; font-weight: 800; color: rgba(255,255,255,0.3); }
-    .ev2-score__placeholder-text { font-size: 13px; color: rgba(255,255,255,0.5); margin-top: 6px; }
     
-    /* ── Score Banner COMPACT (post-generation — thin strip) ── */
-    .ev2-score--compact { padding: 8px 20px; margin: 0; border-radius: 0; display: flex; align-items: center; justify-content: center; gap: 16px; flex-shrink: 0; }
-    .ev2-score--compact::before { display: none; }
-    .ev2-score--compact .ev2-score__title { margin-bottom: 0; font-size: 10px; letter-spacing: 2px; }
-    .ev2-score--compact .ev2-score__value { font-size: 22px; margin-bottom: 0; }
-    .ev2-score--compact .ev2-score__bar { max-width: 120px; margin: 0; height: 4px; }
-    .ev2-score--compact .ev2-score__meta { margin-top: 0; font-size: 10px; }
+    /* ═══ MAIN LAYOUT: Sidebar + Center + Bottom ═══ */
+    .ev2-main { display: flex; flex: 1; height: calc(100vh - 90px); overflow: hidden; }
     
-    /* ── Upload Section ── */
-    .ev2-upload-section { padding: 0 20px 16px; }
-    .ev2-upload-section--compact { padding: 0; flex-shrink: 0; }
-    .ev2-upload-toggle { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: #ffffff; border-radius: 10px; cursor: pointer; margin-bottom: 12px; border: 1px solid #e5e7eb; transition: all 0.2s; box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05); }
-    .ev2-upload-toggle:hover { border-color: #d1d5db; }
-    .ev2-upload-toggle--bar { margin: 0; border-radius: 0; border-left: 0; border-right: 0; border-top: 0; padding: 6px 20px; font-size: 12px; box-shadow: none; border-bottom: 1px solid #e5e7eb; }
-    .ev2-upload-toggle__left { display: flex; align-items: center; gap: 10px; font-size: 13px; font-weight: 600; color: #1f2937; }
-    .ev2-upload-toggle__badge { background: #059669; color: white; padding: 2px 8px; border-radius: 99px; font-size: 11px; font-weight: 600; }
-    .ev2-upload-toggle__chevron { color: #9ca3af; transition: transform 0.3s; font-size: 12px; }
-    .ev2-upload-toggle--open .ev2-upload-toggle__chevron { transform: rotate(180deg); }
-    .ev2-upload-body { overflow: hidden; transition: max-height 0.4s ease; }
-    .ev2-upload-body--collapsed { max-height: 0; padding: 0; }
-    .ev2-upload-body--open { max-height: 800px; }
-    .ev2-upload-body--compact { padding: 0 20px; }
+    /* ── LEFT SIDEBAR (NotebookLM style) ── */
+    .ev2-sidebar { width: 320px; min-width: 320px; background: #f9fafb; border-right: 1px solid #e5e7eb; display: flex; flex-direction: column; overflow: hidden; }
+    .ev2-sidebar__header { padding: 20px 18px 12px; border-bottom: 1px solid #e5e7eb; background: #ffffff; }
+    .ev2-sidebar__title { font-size: 15px; font-weight: 700; color: #1f2937; display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+    .ev2-sidebar__subtitle { font-size: 12px; color: #6b7280; }
     
-    .ev2-upload-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 12px; }
-    .ev2-upload-card { background: #ffffff; border: 2px dashed #d1d5db; border-radius: 10px; padding: 20px; text-align: center; cursor: pointer; transition: all 0.25s; position: relative; min-height: 160px; display: flex; flex-direction: column; align-items: center; justify-content: center; }
-    .ev2-upload-card:hover { border-color: #4a6fa5; background: #f3f4f6; }
-    .ev2-upload-card--done { border: 2px solid #059669; background: #d1fae5; }
-    .ev2-upload-card__icon { font-size: 24px; margin-bottom: 10px; color: #9ca3af; }
-    .ev2-upload-card--done .ev2-upload-card__icon { color: #059669; }
-    .ev2-upload-card__title { font-size: 14px; font-weight: 600; color: #1f2937; margin-bottom: 3px; }
-    .ev2-upload-card__sub { font-size: 11px; color: #6b7280; margin-bottom: 10px; }
-    .ev2-upload-card__drop { font-size: 11px; color: #9ca3af; }
-    .ev2-upload-card__status { font-size: 11px; margin-top: 8px; display: flex; align-items: center; gap: 5px; }
-    .ev2-upload-card__status--ok { color: #059669; font-weight: 500; }
-    .ev2-upload-card__status--wait { color: #9ca3af; }
-    .ev2-upload-card__rm { position: absolute; top: 6px; right: 6px; background: #fee2e2; color: #dc2626; border: none; width: 22px; height: 22px; border-radius: 50%; cursor: pointer; font-size: 10px; display: flex; align-items: center; justify-content: center; opacity: 0; transition: opacity 0.2s; }
-    .ev2-upload-card:hover .ev2-upload-card__rm { opacity: 1; }
-    .ev2-upload-card input[type="file"] { display: none; }
+    /* Template download buttons */
+    .ev2-sidebar__templates { padding: 12px 18px; display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid #e5e7eb; }
+    .ev2-tpl-btn { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 10px; border: 1px solid; font-size: 12px; font-weight: 600; text-decoration: none; transition: all 0.2s; cursor: pointer; }
+    .ev2-tpl-btn:hover { text-decoration: none; transform: translateY(-1px); box-shadow: 0 3px 8px rgba(0,0,0,0.08); }
+    .ev2-tpl-btn--bmc { background: #eff6ff; border-color: #93c5fd; color: #1e40af; }
+    .ev2-tpl-btn--bmc:hover { background: #dbeafe; color: #1e40af; }
+    .ev2-tpl-btn--fin { background: #f0fdf4; border-color: #86efac; color: #166534; }
+    .ev2-tpl-btn--fin:hover { background: #dcfce7; color: #166534; }
+    .ev2-tpl-btn__icon { font-size: 16px; flex-shrink: 0; }
+    .ev2-tpl-btn__text { flex: 1; }
+    .ev2-tpl-btn__dl { font-size: 11px; color: #9ca3af; }
     
-    .ev2-supplementary { background: #ffffff; border: 1px dashed #d1d5db; border-radius: 10px; padding: 16px; margin-bottom: 16px; }
-    .ev2-supplementary__head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-    .ev2-supplementary__title { font-size: 13px; font-weight: 600; color: #6b7280; }
-    .ev2-supplementary__badge { font-size: 10px; background: #f3f4f6; color: #9ca3af; padding: 2px 8px; border-radius: 99px; }
-    .ev2-supplementary__zone { border: 1px dashed #d1d5db; border-radius: 8px; padding: 14px; text-align: center; cursor: pointer; transition: border-color 0.2s; }
-    .ev2-supplementary__zone:hover { border-color: #4a6fa5; }
-    .ev2-supplementary__zone p { font-size: 11px; color: #9ca3af; }
-    .ev2-supplementary__list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
-    .ev2-supplementary__file { display: flex; align-items: center; gap: 5px; background: #f3f4f6; padding: 5px 8px; border-radius: 5px; font-size: 11px; color: #4b5563; }
-    .ev2-supplementary__file button { background: none; border: none; color: #dc2626; cursor: pointer; font-size: 10px; }
+    /* Add sources CTA */
+    .ev2-sidebar__add { padding: 14px 18px; border-bottom: 1px solid #e5e7eb; }
+    .ev2-add-btn { width: 100%; padding: 12px; background: #2563eb; color: white; border: none; border-radius: 10px; font-size: 13px; font-weight: 600; font-family: inherit; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; transition: all 0.2s; }
+    .ev2-add-btn:hover { background: #1d4ed8; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(37,99,235,0.3); }
+    .ev2-add-btn i { font-size: 14px; }
     
-    /* ── Generate Button ── */
-    .ev2-gen { text-align: center; padding: 4px 20px 24px; }
-    .ev2-gen--compact { padding: 0; flex-shrink: 0; border-bottom: 1px solid #e5e7eb; }
-    .ev2-gen--compact .ev2-gen__btn { border-radius: 0; width: 100%; font-size: 12px; padding: 8px 20px; letter-spacing: 0; }
-    .ev2-gen__btn { display: inline-flex; flex-direction: column; align-items: center; gap: 3px; padding: 14px 44px; border: none; border-radius: 8px; font-family: inherit; cursor: pointer; transition: all 0.3s; font-size: 15px; font-weight: 700; letter-spacing: 0.5px; }
-    .ev2-gen__btn:disabled { cursor: not-allowed; }
-    .ev2-gen__sub { font-size: 11px; font-weight: 400; opacity: 0.8; }
-    .ev2-btn--disabled { background: #e5e7eb; color: #9ca3af; }
-    .ev2-btn--orange { background: #d97706; color: white; box-shadow: 0 2px 8px rgba(217,119,6,0.3); }
-    .ev2-btn--orange:hover:not(:disabled) { background: #b45309; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(217,119,6,0.4); }
-    .ev2-btn--yellow { background: #c9a962; color: #1f2937; box-shadow: 0 2px 8px rgba(201,169,98,0.3); }
-    .ev2-btn--yellow:hover:not(:disabled) { background: #a98a42; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(201,169,98,0.4); }
-    .ev2-btn--green { background: #1e3a5f; color: white; box-shadow: 0 2px 8px rgba(30,58,95,0.3); }
-    .ev2-btn--green:hover:not(:disabled) { background: #162d4a; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(30,58,95,0.4); }
+    /* Sources list */
+    .ev2-sidebar__sources { flex: 1; overflow-y: auto; padding: 12px 18px; }
+    .ev2-sidebar__sources-title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 2px; color: #9ca3af; margin-bottom: 10px; }
+    .ev2-source-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: #ffffff; border: 1px solid #e5e7eb; border-radius: 10px; margin-bottom: 8px; transition: all 0.2s; position: relative; }
+    .ev2-source-item:hover { border-color: #d1d5db; box-shadow: 0 1px 4px rgba(0,0,0,0.04); }
+    .ev2-source-item__icon { width: 36px; height: 36px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 15px; flex-shrink: 0; }
+    .ev2-source-item__icon--bmc { background: #dbeafe; color: #2563eb; }
+    .ev2-source-item__icon--sic { background: #d1fae5; color: #059669; }
+    .ev2-source-item__icon--inputs { background: #fef3c7; color: #d97706; }
+    .ev2-source-item__icon--supp { background: #f3f4f6; color: #6b7280; }
+    .ev2-source-item__info { flex: 1; min-width: 0; }
+    .ev2-source-item__name { font-size: 12px; font-weight: 600; color: #1f2937; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .ev2-source-item__meta { font-size: 10px; color: #9ca3af; display: flex; gap: 8px; margin-top: 2px; }
+    .ev2-source-item__rm { position: absolute; top: 6px; right: 6px; background: none; border: none; color: #d1d5db; cursor: pointer; font-size: 11px; width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; transition: all 0.2s; opacity: 0; }
+    .ev2-source-item:hover .ev2-source-item__rm { opacity: 1; }
+    .ev2-source-item__rm:hover { background: #fee2e2; color: #dc2626; }
     
-    /* ── Loading ── */
-    .ev2-loading { display: none; text-align: center; padding: 36px 20px; }
-    .ev2-loading--active { display: block; }
-    .ev2-loading__spinner { width: 44px; height: 44px; border: 4px solid #e5e7eb; border-top-color: #1e3a5f; border-radius: 50%; animation: ev2spin 0.8s linear infinite; margin: 0 auto 16px; }
-    .ev2-loading__step { font-size: 13px; color: #6b7280; margin-bottom: 3px; }
-    .ev2-loading__step--active { color: #1e3a5f; font-weight: 600; }
-    .ev2-loading__step--done { color: #059669; }
-    @keyframes ev2spin { to { transform: rotate(360deg); } }
+    /* Empty sources state */
+    .ev2-source-empty { text-align: center; padding: 32px 16px; }
+    .ev2-source-empty__icon { font-size: 36px; color: #e5e7eb; margin-bottom: 12px; }
+    .ev2-source-empty__text { font-size: 13px; color: #9ca3af; }
     
-    /* ═══ 3-COLUMN LAYOUT — fills remaining viewport ═══ */
-    .ev2-layout { display: none; }
-    .ev2-layout--active { display: flex; height: calc(100vh - 160px); overflow: hidden; }
+    /* Generate CTA (bottom-fixed in sidebar) */
+    .ev2-sidebar__gen { padding: 14px 18px; border-top: 1px solid #e5e7eb; background: #ffffff; flex-shrink: 0; }
+    .ev2-gen-btn { width: 100%; padding: 14px; background: linear-gradient(135deg, #2563eb, #4f46e5); color: white; border: none; border-radius: 12px; font-size: 14px; font-weight: 700; font-family: inherit; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 10px; transition: all 0.3s; box-shadow: 0 4px 14px rgba(37,99,235,0.3); }
+    .ev2-gen-btn:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(37,99,235,0.4); }
+    .ev2-gen-btn:disabled { background: #d1d5db; color: #9ca3af; cursor: not-allowed; box-shadow: none; }
+    .ev2-gen-btn__sub { font-size: 10px; font-weight: 400; opacity: 0.8; }
     
-    /* ── App shell (post-generation): flex layout, page scrollable for module cards below ── */
-    .ev2-app-shell { display: flex; flex-direction: column; min-height: 100vh; }
-    
-    /* ── Left: Chat & Iterations ── */
-    .ev2-left { width: 270px; min-width: 270px; background: #ffffff; border-right: 1px solid #e5e7eb; display: flex; flex-direction: column; overflow: hidden; }
-    .ev2-left__section-title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 2px; color: #6b7280; padding: 12px 14px 6px; flex-shrink: 0; }
-    
-    /* Iterations list */
-    .ev2-iterations { overflow-y: auto; max-height: 160px; padding: 0 10px 6px; flex-shrink: 0; }
-    .ev2-iteration { display: flex; align-items: center; justify-content: space-between; padding: 7px 10px; border-radius: 8px; margin-bottom: 3px; cursor: pointer; transition: background 0.2s; font-size: 12px; }
-    .ev2-iteration:hover { background: #f3f4f6; }
-    .ev2-iteration--active { background: #e0f2fe; border: 1px solid #0284c7; }
-    .ev2-iteration__ver { font-weight: 700; color: #1f2937; }
-    .ev2-iteration__score { color: #1e3a5f; font-weight: 600; }
-    .ev2-iteration__time { color: #9ca3af; font-size: 11px; }
-    .ev2-iteration__badge { background: #1e3a5f; color: white; font-size: 9px; padding: 1px 6px; border-radius: 99px; font-weight: 600; }
-    
-    /* Chat area — fills remaining space in left column */
-    .ev2-chat { flex: 1; display: flex; flex-direction: column; border-top: 1px solid #e5e7eb; min-height: 0; overflow: hidden; }
-    .ev2-chat__messages { flex: 1; overflow-y: auto; padding: 10px; background: #f9fafb; min-height: 0; }
-    .ev2-chat__bubble { max-width: 88%; margin-bottom: 8px; padding: 9px 12px; border-radius: 12px; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
-    .ev2-chat__bubble--user { background: #1e3a5f; color: white; margin-left: auto; border-bottom-right-radius: 4px; }
-    .ev2-chat__bubble--ai { background: #ffffff; color: #374151; margin-right: auto; border-bottom-left-radius: 4px; border: 1px solid #e5e7eb; box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05); }
-    .ev2-chat__input-area { display: flex; gap: 6px; padding: 8px 10px; border-top: 1px solid #e5e7eb; background: #ffffff; flex-shrink: 0; }
-    .ev2-chat__input { flex: 1; background: #f9fafb; border: 1px solid #d1d5db; border-radius: 8px; padding: 8px 12px; color: #374151; font-size: 12px; font-family: inherit; resize: none; outline: none; min-height: 36px; max-height: 80px; }
-    .ev2-chat__input:focus { border-color: #1e3a5f; box-shadow: 0 0 0 2px rgba(30,58,95,0.1); }
-    .ev2-chat__send { background: #1e3a5f; border: none; color: white; padding: 0 14px; border-radius: 8px; cursor: pointer; font-size: 13px; transition: background 0.2s; }
-    .ev2-chat__send:hover { background: #2a4d7a; }
-    .ev2-chat__send:disabled { background: #d1d5db; cursor: not-allowed; }
-    
-    /* ── Center: Visualization — fills remaining horizontal space ── */
-    .ev2-center { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: #f9fafb; min-width: 0; }
+    /* ── CENTER CONTENT AREA ── */
+    .ev2-content { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
     .ev2-center__header { display: flex; align-items: center; justify-content: space-between; padding: 10px 20px; background: #ffffff; border-bottom: 1px solid #e5e7eb; flex-shrink: 0; }
     .ev2-center__title { font-size: 14px; font-weight: 700; color: #1e3a5f; display: flex; align-items: center; gap: 8px; }
     .ev2-center__actions { display: flex; gap: 6px; }
-    .ev2-center__content { flex: 1; overflow-y: auto; padding: 16px 20px; min-height: 0; }
+    .ev2-center__content { flex: 1; overflow-y: auto; padding: 16px 20px; min-height: 0; background: #f9fafb; }
+    
+    /* ── BOTTOM DELIVERABLE ICONS (7-column grid) ── */
+    .ev2-bottom { background: #ffffff; border-top: 1px solid #e5e7eb; padding: 14px 20px; flex-shrink: 0; }
+    .ev2-bottom__grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 10px; }
+    .ev2-deliv-icon { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 12px 6px; border-radius: 12px; cursor: pointer; transition: all 0.2s; border: 2px solid transparent; text-align: center; position: relative; }
+    .ev2-deliv-icon:hover { background: #f3f4f6; }
+    .ev2-deliv-icon--active { background: #eff6ff; border-color: #2563eb; }
+    .ev2-deliv-icon--disabled { opacity: 0.4; cursor: default; }
+    .ev2-deliv-icon__circle { width: 44px; height: 44px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 18px; transition: transform 0.2s; }
+    .ev2-deliv-icon:hover .ev2-deliv-icon__circle { transform: scale(1.08); }
+    .ev2-deliv-icon__label { font-size: 10px; font-weight: 600; color: #374151; line-height: 1.3; }
+    .ev2-deliv-icon__status { position: absolute; top: 6px; right: 6px; width: 16px; height: 16px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 8px; }
+    .ev2-deliv-icon__status--ok { background: #d1fae5; color: #059669; }
+    .ev2-deliv-icon__status--wait { background: #fef3c7; color: #d97706; }
     
     /* Diagnostic view */
     .ev2-diag { }
@@ -3759,100 +3723,59 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
     .ev2-deliv-view__block p { font-size: 12px; color: #6b7280; }
     .ev2-deliv-view__tag { display: inline-block; background: #e0f2fe; color: #0284c7; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin: 2px 2px 2px 0; }
     
-    /* ── Right: Navigation ── */
-    .ev2-right { width: 250px; min-width: 250px; background: #ffffff; border-left: 1px solid #e5e7eb; display: flex; flex-direction: column; overflow: hidden; }
-    .ev2-right__title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 2px; color: #6b7280; padding: 12px 14px 6px; flex-shrink: 0; }
-    .ev2-right__list { flex: 1; overflow-y: auto; padding: 0 10px; min-height: 0; }
-    .ev2-nav-item { display: flex; align-items: center; gap: 10px; padding: 10px; border-radius: 8px; margin-bottom: 4px; cursor: pointer; transition: all 0.2s; border: 1px solid transparent; }
-    .ev2-nav-item:hover { background: #f3f4f6; }
-    .ev2-nav-item--active { background: #e0f2fe; border-color: #0284c7; }
-    .ev2-nav-item__icon { width: 32px; height: 32px; border-radius: 7px; display: flex; align-items: center; justify-content: center; font-size: 14px; flex-shrink: 0; }
-    .ev2-nav-item__icon--available { background: #d1fae5; color: #059669; }
-    .ev2-nav-item__icon--pending { background: #fef3c7; color: #d97706; }
-    .ev2-nav-item__icon--none { background: #f3f4f6; color: #9ca3af; }
-    .ev2-nav-item__info { flex: 1; min-width: 0; }
-    .ev2-nav-item__name { font-size: 12px; font-weight: 600; color: #1f2937; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .ev2-nav-item__status { font-size: 10px; color: #9ca3af; }
-    .ev2-nav-item__score { font-size: 13px; font-weight: 700; }
-    .ev2-right__actions { padding: 10px; border-top: 1px solid #e5e7eb; flex-shrink: 0; }
-    .ev2-download-all { width: 100%; padding: 8px; background: #ffffff; border: 1px solid #d1d5db; border-radius: 8px; color: #374151; font-size: 11px; font-weight: 600; font-family: inherit; cursor: pointer; transition: all 0.2s; display: flex; align-items: center; justify-content: center; gap: 6px; }
-    .ev2-download-all:hover { border-color: #1e3a5f; color: #1e3a5f; background: #f3f4f6; }
-    
-    /* ── Mobile Chat Drawer ── */
-    .ev2-chat-fab { display: none; position: fixed; bottom: 20px; right: 20px; width: 52px; height: 52px; background: #1e3a5f; border: none; border-radius: 50%; color: white; font-size: 20px; cursor: pointer; box-shadow: 0 4px 12px rgba(30,58,95,0.4); z-index: 90; }
-    .ev2-drawer { display: none; }
-    
     /* ── Empty state ── */
     .ev2-empty { text-align: center; padding: 60px 20px; }
     .ev2-empty__icon { font-size: 48px; color: #d1d5db; margin-bottom: 16px; }
     .ev2-empty__text { font-size: 15px; color: #6b7280; margin-bottom: 8px; }
     .ev2-empty__sub { font-size: 13px; color: #9ca3af; }
     
-    /* ── Module cards (pre-generation only) ── */
-    .ev2-modules { padding: 0 20px 32px; }
-    .ev2-modules--hidden { display: none; }
-    .ev2-modules__title { font-size: 14px; font-weight: 700; text-transform: uppercase; letter-spacing: 2px; color: #1e3a5f; margin-bottom: 16px; padding-bottom: 8px; border-bottom: 2px solid #e5e7eb; }
-    .ev2-modules__grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
-    .ev2-mod-card { background: #ffffff; border-radius: 12px; padding: 24px 18px 18px; text-align: center; transition: all 0.3s; cursor: pointer; border: 1px solid #e5e7eb; text-decoration: none; box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.06); position: relative; display: flex; flex-direction: column; align-items: center; }
-    .ev2-mod-card:hover { border-color: #4a6fa5; transform: translateY(-3px); text-decoration: none; box-shadow: 0 8px 16px -4px rgb(30 58 95 / 0.15); }
-    .ev2-mod-card--inactive { opacity: 0.55; }
-    .ev2-mod-card--inactive:hover { opacity: 0.75; }
-    .ev2-mod-card__badge { position: absolute; top: 10px; right: 10px; width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; }
-    .ev2-mod-card__badge--ok { background: #d1fae5; color: #059669; }
-    .ev2-mod-card__badge--wait { background: #fef3c7; color: #d97706; }
-    .ev2-mod-card__icon { font-size: 32px; color: #1e3a5f; margin-bottom: 12px; width: 56px; height: 56px; background: #f3f4f6; border-radius: 12px; display: flex; align-items: center; justify-content: center; }
-    .ev2-mod-card--inactive .ev2-mod-card__icon { color: #9ca3af; background: #f9fafb; }
-    .ev2-mod-card__name { font-size: 14px; font-weight: 700; color: #1f2937; margin-bottom: 6px; }
-    .ev2-mod-card__desc { font-size: 11px; color: #6b7280; line-height: 1.4; margin-bottom: 10px; min-height: 30px; }
-    .ev2-mod-card__status { font-size: 10px; font-weight: 600; padding: 3px 10px; border-radius: 99px; margin-bottom: 10px; }
-    .ev2-mod-card__status--ok { background: #d1fae5; color: #059669; }
-    .ev2-mod-card__status--wait { background: #fef3c7; color: #d97706; }
-    .ev2-mod-card__btn { font-size: 12px; font-weight: 600; color: #1e3a5f; display: flex; align-items: center; gap: 4px; }
-    .ev2-mod-card__btn i { font-size: 10px; transition: transform 0.2s; }
-    .ev2-mod-card:hover .ev2-mod-card__btn i { transform: translateX(3px); }
+    /* ── Loading overlay ── */
+    .ev2-loading { display: none; text-align: center; padding: 36px 20px; }
+    .ev2-loading--active { display: block; }
+    .ev2-loading__spinner { width: 44px; height: 44px; border: 4px solid #e5e7eb; border-top-color: #1e3a5f; border-radius: 50%; animation: ev2spin 0.8s linear infinite; margin: 0 auto 16px; }
+    .ev2-loading__step { font-size: 13px; color: #6b7280; margin-bottom: 3px; }
+    .ev2-loading__step--active { color: #1e3a5f; font-weight: 600; }
+    .ev2-loading__step--done { color: #059669; }
+    @keyframes ev2spin { to { transform: rotate(360deg); } }
+    
+    /* ── Mobile sidebar toggle ── */
+    .ev2-sidebar-toggle { display: none; position: fixed; bottom: 20px; left: 20px; width: 52px; height: 52px; background: #2563eb; border: none; border-radius: 50%; color: white; font-size: 20px; cursor: pointer; box-shadow: 0 4px 12px rgba(37,99,235,0.4); z-index: 90; align-items: center; justify-content: center; }
+    .ev2-sidebar-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.3); z-index: 89; }
     
     /* ── Responsive ── */
     @media (max-width: 768px) {
-      .ev2-upload-grid { grid-template-columns: 1fr; }
-      .ev2-app-shell { height: auto; overflow: auto; }
-      .ev2-layout--active { flex-direction: column; height: auto; overflow: visible; }
-      .ev2-left { display: none; }
-      .ev2-right { width: 100%; min-width: unset; border-left: none; border-top: 1px solid #e5e7eb; }
-      .ev2-right__list { display: flex; overflow-x: auto; padding: 8px 12px; gap: 8px; flex-shrink: 0; }
-      .ev2-nav-item { min-width: 140px; flex-direction: column; text-align: center; gap: 6px; }
-      .ev2-center { min-height: 60vh; }
-      .ev2-chat-fab { display: flex; align-items: center; justify-content: center; }
-      .ev2-drawer { position: fixed; bottom: 0; left: 0; right: 0; height: 60vh; background: #ffffff; border-top: 2px solid #1e3a5f; z-index: 95; flex-direction: column; border-radius: 16px 16px 0 0; box-shadow: 0 -4px 12px rgba(0,0,0,0.15); }
-      .ev2-drawer--open { display: flex; }
-      .ev2-drawer__handle { text-align: center; padding: 8px; cursor: pointer; }
-      .ev2-drawer__handle span { display: inline-block; width: 40px; height: 4px; background: #d1d5db; border-radius: 99px; }
-      .ev2-modules__grid { grid-template-columns: repeat(2, 1fr); }
-      .ev2-score { margin: 12px 16px; padding: 20px; }
-      .ev2-score__value { font-size: 36px; }
-      .ev2-score--compact { flex-wrap: wrap; gap: 8px; padding: 8px 16px; }
+      .ev2-main { flex-direction: column; height: auto; }
+      .ev2-sidebar { display: none; position: fixed; top: 0; left: 0; bottom: 0; width: 300px; z-index: 91; box-shadow: 4px 0 20px rgba(0,0,0,0.15); }
+      .ev2-sidebar--open { display: flex; }
+      .ev2-sidebar-overlay--open { display: block; }
+      .ev2-sidebar-toggle { display: flex; }
+      .ev2-content { min-height: 60vh; }
+      .ev2-bottom__grid { grid-template-columns: repeat(4, 1fr); gap: 6px; }
+      .ev2-deliv-icon__label { font-size: 9px; }
+      .ev2-deliv-icon__circle { width: 36px; height: 36px; font-size: 15px; }
+      .ev2-score { flex-wrap: wrap; gap: 8px; padding: 8px 16px; }
     }
-    @media (min-width: 769px) and (max-width: 1200px) {
-      .ev2-left { width: 220px; min-width: 220px; }
-      .ev2-right { width: 210px; min-width: 210px; }
-      .ev2-chat-fab { display: none; }
-      .ev2-modules__grid { grid-template-columns: repeat(3, 1fr); }
+    @media (min-width: 769px) and (max-width: 1100px) {
+      .ev2-sidebar { width: 280px; min-width: 280px; }
+      .ev2-bottom__grid { grid-template-columns: repeat(7, 1fr); gap: 6px; }
+      .ev2-deliv-icon__label { font-size: 9px; }
     }
   </style>
 </head>
-${hasGenerated ? `<body class="ev2-app-shell">` : `<body>`}
+<body>
   <script>
     // Store token from URL in localStorage for auth persistence
     (function(){
       var p = new URLSearchParams(window.location.search);
       var t = p.get('token');
       if (t) { localStorage.setItem('auth_token', t); }
-      // Clean URL
       if (t && window.history.replaceState) {
         var clean = window.location.pathname;
         window.history.replaceState({}, '', clean);
       }
     })();
   </script>
+  
   <!-- ═══ HEADER ═══ -->
   <header class="ev2-header">
     <a href="/entrepreneur" class="ev2-header__brand">ESONO</a>
@@ -3865,121 +3788,15 @@ ${hasGenerated ? `<body class="ev2-app-shell">` : `<body>`}
     </div>
   </header>
 
-
-  ${hasGenerated ? `
-  <!-- compact score banner -->
-  <section class="ev2-score ev2-score--compact">
-    <div class="ev2-score__title">Investment Readiness</div>
-    <div class="ev2-score__value" style="color:${scoreColor}">${score}/100</div>
-    <div class="ev2-score__bar"><div class="ev2-score__bar-fill" style="width:${score}%;background:${scoreColor};"></div></div>
-    <div class="ev2-score__meta">
-      <span><i class="fas fa-code-branch"></i> v${version}</span>
-      <span><i class="fas fa-robot"></i> ${getScoreLabel(score)}</span>
-    </div>
-  </section>
-
-  <section class="ev2-upload-section ev2-upload-section--compact">
-    <div class="ev2-upload-toggle ev2-upload-toggle--bar" id="upload-toggle" onclick="toggleUpload()">
-      <div class="ev2-upload-toggle__left">
-        <i class="fas fa-cloud-arrow-up"></i>
-        <span>Documents</span>
-        <span class="ev2-upload-toggle__badge">${uploadCount}/3</span>
-      </div>
-      <i class="fas fa-chevron-down ev2-upload-toggle__chevron"></i>
-    </div>
-    <div class="ev2-upload-body ev2-upload-body--collapsed ev2-upload-body--compact" id="upload-body">
-      <div class="ev2-upload-grid" style="padding-top:12px;">
-        ${renderUploadCard('bmc', 'Business Model Canvas', 'fa-map', 'Word, PDF', '.doc,.docx,.pdf', uploadsByCategory.bmc)}
-        ${renderUploadCard('sic', "Stratégie d'Impact & Croissance", 'fa-seedling', 'Word, Excel, PDF', '.doc,.docx,.xls,.xlsx,.pdf', uploadsByCategory.sic)}
-        ${renderUploadCard('inputs', 'Inputs Financiers', 'fa-chart-line', 'Excel (recommandé)', '.xls,.xlsx,.csv,.pdf', uploadsByCategory.inputs)}
-      </div>
-    </div>
-  </section>
-
-  <section class="ev2-gen ev2-gen--compact" id="gen-section">
-    <button class="ev2-gen__btn ${btnClass}" id="btn-gen" ${btnDisabled ? 'disabled' : ''} title="${btnTooltip}" onclick="generateAll()">
-      <span><i class="fas fa-wand-magic-sparkles"></i> ${btnLabel}</span>
-      <span class="ev2-gen__sub">${btnSub}</span>
-    </button>
-  </section>
-  ` : `
-  <!-- full score banner (pre-generation) -->
+  <!-- ═══ SCORE BANNER (compact) ═══ -->
   <section class="ev2-score">
     <div class="ev2-score__title">Investment Readiness</div>
-    ${score >= 0 ? `
-      <div class="ev2-score__value" style="color:${scoreColor}">Score : ${score}/100</div>
-      <div class="ev2-score__bar"><div class="ev2-score__bar-fill" style="width:${score}%;background:${scoreColor};"></div></div>
-      <div class="ev2-score__meta">
-        <span><i class="fas fa-clock"></i> ${updatedAt}</span>
-        <span><i class="fas fa-code-branch"></i> v${version}</span>
-        <span><i class="fas fa-robot"></i> ${getScoreLabel(score)}</span>
-      </div>
-    ` : `
-      <div class="ev2-score__placeholder">— /100</div>
-      <div class="ev2-score__bar"><div class="ev2-score__bar-fill" style="width:0%;background:#d1d5db;"></div></div>
-      <div class="ev2-score__placeholder-text">Uploadez 3 documents — l'IA génère 7 livrables et un score 0-100</div>
-    `}
-  </section>
-
-  <section class="ev2-upload-section">
-    <div style="padding: 12px 16px; display: flex; align-items: center; gap: 10px; font-size: 13px; font-weight: 600; color: #1f2937;">
-      <i class="fas fa-cloud-arrow-up"></i>
-      <span>Uploadez vos documents</span>
-      <span class="ev2-upload-toggle__badge">${uploadCount}/3</span>
-    </div>
-    <div class="ev2-upload-body ev2-upload-body--open" id="upload-body">
-      <div class="ev2-upload-grid">
-        ${renderUploadCard('bmc', 'Business Model Canvas', 'fa-map', 'Word, PDF', '.doc,.docx,.pdf', uploadsByCategory.bmc)}
-        ${renderUploadCard('sic', "Stratégie d'Impact & Croissance", 'fa-seedling', 'Word, Excel, PDF', '.doc,.docx,.xls,.xlsx,.pdf', uploadsByCategory.sic)}
-        ${renderUploadCard('inputs', 'Inputs Financiers', 'fa-chart-line', 'Excel (recommandé)', '.xls,.xlsx,.csv,.pdf', uploadsByCategory.inputs)}
-      </div>
-      <div class="ev2-supplementary">
-        <div class="ev2-supplementary__head">
-          <i class="fas fa-folder-plus" style="color:#9ca3af;"></i>
-          <span class="ev2-supplementary__title">Documents supplémentaires</span>
-          <span class="ev2-supplementary__badge">Optionnel</span>
-        </div>
-        <div class="ev2-supplementary__zone" onclick="document.getElementById('file-supplementary').click()">
-          <p><i class="fas fa-cloud-arrow-up"></i> Glisser ou cliquer pour ajouter</p>
-          <input type="file" id="file-supplementary" multiple accept=".doc,.docx,.xls,.xlsx,.pdf,.csv,.txt,.png,.jpg,.jpeg" onchange="handleSuppUpload(this)" style="display:none;">
-        </div>
-        <div class="ev2-supplementary__list" id="supp-list">
-          ${supplementaryFiles.map((f: any) => `<div class="ev2-supplementary__file" id="supp-${f.id}"><i class="fas fa-file"></i> ${f.filename} <button onclick="rmUpload('${f.id}')"><i class="fas fa-times"></i></button></div>`).join('')}
-        </div>
-      </div>
+    <div class="ev2-score__value" style="color:${score >= 0 ? scoreColor : 'rgba(255,255,255,0.3)'}">${score >= 0 ? score + '/100' : '—'}</div>
+    <div class="ev2-score__bar"><div class="ev2-score__bar-fill" style="width:${score >= 0 ? score : 0}%;background:${scoreColor};"></div></div>
+    <div class="ev2-score__meta">
+      ${hasGenerated ? `<span><i class="fas fa-code-branch"></i> v${version}</span><span><i class="fas fa-robot"></i> ${getScoreLabel(score)}</span>` : '<span>Uploadez des documents pour commencer</span>'}
     </div>
   </section>
-
-  <section class="ev2-gen" id="gen-section">
-    <button class="ev2-gen__btn ${btnClass}" id="btn-gen" ${btnDisabled ? 'disabled' : ''} title="${btnTooltip}" onclick="generateAll()">
-      <span><i class="fas fa-wand-magic-sparkles"></i> ${btnLabel}</span>
-      <span class="ev2-gen__sub">${btnSub}</span>
-    </button>
-  </section>
-  `}
-
-  <!-- ═══ DOWNLOAD EXCEL BANNER (visible only when framework type is selected) ═══ -->
-  ${delivMap.framework ? `
-  <section id="excel-banner" style="margin:0 20px 16px;padding:18px 24px;background:linear-gradient(135deg,#f0fdf4,#ecfdf5);border:2px solid #86efac;border-radius:14px;display:none;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:14px;box-shadow:0 2px 8px rgba(5,150,105,0.1)">
-    <div style="display:flex;align-items:center;gap:14px">
-      <div style="width:48px;height:48px;border-radius:12px;background:#059669;display:flex;align-items:center;justify-content:center">
-        <i class="fas fa-file-excel" style="font-size:22px;color:white"></i>
-      </div>
-      <div>
-        <div style="font-size:15px;font-weight:700;color:#065f46">Framework d'Analyse PME — Excel</div>
-        <div style="font-size:12px;color:#047857;margin-top:2px">Fichier Excel rempli avec vos données financières (8 onglets)</div>
-      </div>
-    </div>
-    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
-      <button onclick="downloadFrameworkExcelDirect()" id="btn-download-excel-main" style="display:inline-flex;align-items:center;gap:8px;padding:12px 24px;border-radius:10px;background:#059669;color:white;border:none;font-size:14px;font-weight:700;cursor:pointer;transition:all 0.2s;box-shadow:0 2px 8px rgba(5,150,105,0.3)" onmouseover="this.style.background='#047857'" onmouseout="this.style.background='#059669'">
-        <i class="fas fa-download"></i> T\u00e9l\u00e9charger Excel (.xlsx)
-      </button>
-      <a href="/deliverable/framework" style="display:inline-flex;align-items:center;gap:6px;padding:10px 16px;border-radius:10px;background:white;color:#065f46;border:1px solid #86efac;font-size:12px;font-weight:600;text-decoration:none" onmouseover="this.style.background='#f0fdf4'" onmouseout="this.style.background='white'">
-        <i class="fas fa-expand"></i> Voir en pleine page
-      </a>
-    </div>
-  </section>
-  ` : ''}
 
   <!-- ═══ LOADING ═══ -->
   <section class="ev2-loading" id="loading-section">
@@ -3990,193 +3807,116 @@ ${hasGenerated ? `<body class="ev2-app-shell">` : `<body>`}
     <div class="ev2-loading__step" id="step-done"><i class="fas fa-check-circle"></i> Terminé !</div>
   </section>
 
-  <!-- ═══ 3-COLUMN LAYOUT (visible after generation) ═══ -->
-  <section class="ev2-layout ${hasGenerated ? 'ev2-layout--active' : ''}" id="three-col">
-    <!-- LEFT: Chat & Iterations -->
-    <div class="ev2-left" id="left-panel">
-      <div class="ev2-left__section-title">Itérations</div>
-      <div class="ev2-iterations" id="iterations-list">
-        ${((allIterations.results || []) as any[]).map((it: any) => {
-          const isActive = it.version === version
-          const itTime = it.created_at ? new Date(it.created_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : ''
-          return `<div class="ev2-iteration ${isActive ? 'ev2-iteration--active' : ''}" data-version="${it.version}">
-            <div>
-              <span class="ev2-iteration__ver">v${it.version}</span>
-              <span class="ev2-iteration__time"> — ${itTime}</span>
-            </div>
-            <div>
-              <span class="ev2-iteration__score">${it.score_global}/100</span>
-              ${isActive ? '<span class="ev2-iteration__badge">actuelle</span>' : ''}
-            </div>
-          </div>`
-        }).join('')}
+  <!-- ═══ MAIN LAYOUT: Sidebar + Center ═══ -->
+  <div class="ev2-main" id="main-layout">
+    <!-- LEFT SIDEBAR (NotebookLM style) -->
+    <aside class="ev2-sidebar" id="sidebar">
+      <div class="ev2-sidebar__header">
+        <div class="ev2-sidebar__title"><i class="fas fa-folder-open"></i> Sources</div>
+        <div class="ev2-sidebar__subtitle">Ajoutez vos documents d'inputs</div>
       </div>
-      
-      <div class="ev2-chat">
-        <div class="ev2-left__section-title">Chat IA</div>
-        <div class="ev2-chat__messages" id="chat-messages">
-          ${((chatMessages.results || []) as any[]).map((msg: any) => 
-            `<div class="ev2-chat__bubble ev2-chat__bubble--${msg.role === 'user' ? 'user' : 'ai'}">${escapeHtml(msg.content)}</div>`
-          ).join('') || '<div style="text-align:center;padding:20px;color:#9ca3af;font-size:12px;"><i class="fas fa-robot" style="font-size:20px;margin-bottom:8px;display:block;color:#d1d5db;"></i>Posez une question sur vos livrables</div>'}
-        </div>
-        <div class="ev2-chat__input-area">
-          <textarea class="ev2-chat__input" id="chat-input" placeholder="Posez une question..." rows="1" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat()}"></textarea>
-          <button class="ev2-chat__send" id="chat-send" onclick="sendChat()"><i class="fas fa-paper-plane"></i></button>
-        </div>
-      </div>
-    </div>
 
-    <!-- CENTER: Visualization -->
-    <div class="ev2-center">
+      <!-- Template downloads -->
+      <div class="ev2-sidebar__templates">
+        <a href="/templates/questionnaire-bmc-sic.docx" class="ev2-tpl-btn ev2-tpl-btn--bmc" download>
+          <span class="ev2-tpl-btn__icon">📋</span>
+          <span class="ev2-tpl-btn__text">Questionnaire BMC/SIC</span>
+          <span class="ev2-tpl-btn__dl"><i class="fas fa-download"></i></span>
+        </a>
+        <a href="/templates/google-sheet-financier.xlsx" class="ev2-tpl-btn ev2-tpl-btn--fin" download>
+          <span class="ev2-tpl-btn__icon">📊</span>
+          <span class="ev2-tpl-btn__text">Google Sheet Financier</span>
+          <span class="ev2-tpl-btn__dl"><i class="fas fa-download"></i></span>
+        </a>
+      </div>
+
+      <!-- Add sources CTA -->
+      <div class="ev2-sidebar__add">
+        <button class="ev2-add-btn" onclick="document.getElementById('file-multi-upload').click()">
+          <i class="fas fa-plus"></i> Ajouter des sources
+        </button>
+        <input type="file" id="file-multi-upload" multiple accept=".doc,.docx,.xls,.xlsx,.pdf,.csv" onchange="handleMultiUpload(this)" style="display:none">
+      </div>
+
+      <!-- Sources list -->
+      <div class="ev2-sidebar__sources" id="sources-list">
+        <div class="ev2-sidebar__sources-title">Documents (${allUploads.length})</div>
+        ${allUploads.length > 0 ? allUploads.map((u: any) => {
+          const catIcon = u.category === 'bmc' ? 'fa-map' : u.category === 'sic' ? 'fa-seedling' : u.category === 'inputs' ? 'fa-chart-line' : 'fa-file'
+          const catClass = u.category === 'bmc' ? 'bmc' : u.category === 'sic' ? 'sic' : u.category === 'inputs' ? 'inputs' : 'supp'
+          const catLabel = u.category === 'bmc' ? 'BMC' : u.category === 'sic' ? 'SIC' : u.category === 'inputs' ? 'Financier' : 'Supplémentaire'
+          return `<div class="ev2-source-item" id="source-${u.id}">
+            <div class="ev2-source-item__icon ev2-source-item__icon--${catClass}"><i class="fas ${catIcon}"></i></div>
+            <div class="ev2-source-item__info">
+              <div class="ev2-source-item__name">${escapeHtml(u.filename || 'Document')}</div>
+              <div class="ev2-source-item__meta"><span>${catLabel}</span></div>
+            </div>
+            <button class="ev2-source-item__rm" onclick="rmUpload('${u.id}')" title="Supprimer"><i class="fas fa-trash"></i></button>
+          </div>`
+        }).join('') : `
+          <div class="ev2-source-empty">
+            <div class="ev2-source-empty__icon"><i class="fas fa-folder-open"></i></div>
+            <div class="ev2-source-empty__text">Aucun document ajouté</div>
+          </div>
+        `}
+      </div>
+
+      <!-- Generate CTA (bottom-fixed) -->
+      <div class="ev2-sidebar__gen">
+        <button class="ev2-gen-btn" id="btn-gen" ${uploadCount === 0 ? 'disabled' : ''} onclick="generateAll()">
+          <span><i class="fas fa-wand-magic-sparkles"></i> ${hasGenerated ? 'Regénérer les livrables' : 'Générer les livrables'}</span>
+          <span class="ev2-gen-btn__sub">${uploadCount}/3 inputs · ${generableCount}/7 livrables</span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- CENTER: Content + Bottom icons -->
+    <div class="ev2-content">
       <div class="ev2-center__header">
         <div class="ev2-center__title" id="center-title"><i class="fas fa-stethoscope"></i> Diagnostic Expert</div>
         <div class="ev2-center__actions">
-          <button class="ev2-btn-sm" onclick="alert('Téléchargement PDF à venir')"><i class="fas fa-file-pdf"></i> PDF</button>
-          <button class="ev2-btn-sm" onclick="alert('Téléchargement HTML à venir')"><i class="fas fa-code"></i> HTML</button>
+          <button class="ev2-btn-sm" onclick="downloadDeliverable('html')"><i class="fas fa-file-code"></i> HTML</button>
+          <button class="ev2-btn-sm" onclick="downloadDeliverable('pdf')"><i class="fas fa-file-pdf"></i> PDF</button>
         </div>
       </div>
       <div class="ev2-center__content" id="center-content">
         ${hasGenerated ? renderDiagnosticView(delivMap.diagnostic, scoresDim) : renderEmptyState()}
       </div>
-    </div>
 
-    <!-- RIGHT: Navigation -->
-    <div class="ev2-right">
-      <div class="ev2-right__title">Livrables</div>
-      <div class="ev2-right__list" id="nav-list">
-        ${DELIVERABLE_TYPES.map((dt, idx) => {
-          const d = delivMap[dt.type]
-          const available = !!d
-          const dScore = d?.score ?? 0
-          const uploadedCategories = new Set([
-            ...(uploadsByCategory.bmc ? ['bmc'] : []),
-            ...(uploadsByCategory.sic ? ['sic'] : []),
-            ...(uploadsByCategory.inputs ? ['inputs'] : []),
-          ])
-          const depsOk = canGenerate(dt.deps, uploadedCategories)
-          const missing = missingDeps(dt.deps, uploadedCategories)
-          const iconClass = available ? 'available' : (depsOk ? 'pending' : 'none')
-          // Format badge per deliverable type
-          const formatBadge = (() => {
-            const excelTypes = ['framework', 'plan_ovo', 'odd']
-            const wordTypes = ['bmc_analysis', 'sic_analysis', 'business_plan']
-            if (excelTypes.includes(dt.type)) return '<span style="display:inline-flex;align-items:center;gap:3px;padding:1px 6px;border-radius:4px;background:#f0fdf4;color:#059669;font-size:9px;font-weight:700;border:1px solid #bbf7d0">📊 .xlsx</span>'
-            if (wordTypes.includes(dt.type)) return '<span style="display:inline-flex;align-items:center;gap:3px;padding:1px 6px;border-radius:4px;background:#eff6ff;color:#2563eb;font-size:9px;font-weight:700;border:1px solid #93c5fd">📄 .docx</span>'
-            if (dt.type === 'diagnostic') return '<span style="display:inline-flex;align-items:center;gap:3px;padding:1px 6px;border-radius:4px;background:#f0f4ff;color:#1e3a5f;font-size:9px;font-weight:700;border:1px solid #a3b8d8">🌐 .html</span>'
-            return ''
-          })()
-          const statusText = available
-            ? `${formatBadge} Disponible`
-            : (depsOk ? `${formatBadge} Prêt à générer` : `${formatBadge} Manque : ${missing.join(', ')}`)
-          return `<div class="ev2-nav-item ${idx === 0 ? 'ev2-nav-item--active' : ''}" data-type="${dt.type}" onclick="selectDeliverable('${dt.type}')">
-            <div class="ev2-nav-item__icon ev2-nav-item__icon--${iconClass}">
-              <i class="fas ${dt.icon}"></i>
-            </div>
-            <div class="ev2-nav-item__info">
-              <div class="ev2-nav-item__name">${formatBadge} ${dt.label}</div>
-              <div class="ev2-nav-item__status">${available ? 'Disponible' : (depsOk ? 'Prêt à générer' : `Manque : ${missing.join(', ')}`)}</div>
-            </div>
-            ${available ? `<div class="ev2-nav-item__score" style="color:${getScoreColor(dScore)}">${dScore}</div>` : ''}
-          </div>`
-        }).join('')}
+      <!-- ═══ BOTTOM DELIVERABLE ICONS (7-column grid) ═══ -->
+      <div class="ev2-bottom">
+        <div class="ev2-bottom__grid">
+          ${(() => {
+            const bottomIcons = [
+              { type: 'diagnostic', label: 'Diagnostic Expert Global', icon: 'fa-stethoscope', color: '#2563eb', bg: '#dbeafe' },
+              { type: 'bmc_analysis', label: 'Business Model Canvas', icon: 'fa-th', color: '#059669', bg: '#d1fae5' },
+              { type: 'sic_analysis', label: 'Social Impact Canvas', icon: 'fa-hand-holding-heart', color: '#7c3aed', bg: '#ede9fe' },
+              { type: 'framework', label: 'Plan Financier Intermédiaire', icon: 'fa-chart-pie', color: '#d97706', bg: '#fef3c7' },
+              { type: 'plan_ovo', label: 'Plan Financier Final', icon: 'fa-chart-line', color: '#ea580c', bg: '#ffedd5' },
+              { type: 'business_plan', label: 'Business Plan', icon: 'fa-building', color: '#4f46e5', bg: '#e0e7ff' },
+              { type: 'odd', label: 'ODD', icon: 'fa-shield-halved', color: '#0d9488', bg: '#ccfbf1' },
+            ]
+            return bottomIcons.map((bi, idx) => {
+              const d = delivMap[bi.type]
+              const available = !!d
+              const dScore = d?.score ?? 0
+              return `<div class="ev2-deliv-icon ${idx === 0 ? 'ev2-deliv-icon--active' : ''} ${!available && !hasGenerated ? '' : ''}" data-type="${bi.type}" onclick="selectDeliverable('${bi.type}')">
+                ${available ? `<div class="ev2-deliv-icon__status ev2-deliv-icon__status--ok"><i class="fas fa-check"></i></div>` : ''}
+                <div class="ev2-deliv-icon__circle" style="background:${bi.bg};color:${bi.color}">
+                  <i class="fas ${bi.icon}"></i>
+                </div>
+                <div class="ev2-deliv-icon__label">${bi.label}</div>
+              </div>`
+            }).join('')
+          })()}
+        </div>
       </div>
-      <div class="ev2-right__actions">
-        <button class="ev2-download-all" onclick="alert('Téléchargement ZIP à venir')">
-          <i class="fas fa-download"></i> Télécharger TOUT (.zip)
-        </button>
-      </div>
-    </div>
-  </section>
-
-  <!-- ═══ MODULE CARDS (only shown pre-generation) ═══ -->
-  <section class="ev2-modules">
-    <div class="ev2-modules__title">📚 Détails par module</div>
-    <div class="ev2-modules__grid">
-      ${renderModuleCard({
-        icon: 'fa-file-lines', emoji: '📄',
-        name: 'Business Model Canvas',
-        desc: "Canvas détaillé avec l'analyse IA des 9 blocs",
-        href: '/deliverable/bmc_analysis',
-        delivKey: 'bmc_analysis',
-        altHref: '/deliverable/bmc_analysis',
-        delivMap, progressMap
-      })}
-      ${renderModuleCard({
-        icon: 'fa-seedling', emoji: '📊',
-        name: "Social Impact Canvas (SIC)",
-        desc: "Diagnostic d'impact social avec scoring, alignement ODD et matrice d'impact",
-        href: '/deliverable/sic_analysis',
-        delivKey: 'sic_analysis',
-        altHref: '/deliverable/sic_analysis',
-        delivMap, progressMap
-      })}
-      ${renderModuleCard({
-        icon: 'fa-coins', emoji: '💰',
-        name: 'Inputs Financiers',
-        desc: "Données financières validées avec alertes de cohérence",
-        href: '/deliverable/plan_ovo',
-        delivKey: 'plan_ovo',
-        altHref: '/deliverable/plan_ovo',
-        delivMap, progressMap
-      })}
-      ${renderModuleCard({
-        icon: 'fa-chart-line', emoji: '📈',
-        name: "Framework d'Analyse",
-        desc: "Analyse financière complète : ratios, benchmarks, scénarios",
-        href: '/deliverable/framework',
-        delivKey: 'framework',
-        altHref: '/deliverable/framework',
-        delivMap, progressMap
-      })}
-      ${renderModuleCard({
-        icon: 'fa-magnifying-glass-chart', emoji: '🔍',
-        name: 'Diagnostic Expert',
-        desc: "Score Investment Readiness et recommandations détaillées",
-        href: '/deliverable/diagnostic',
-        delivKey: 'diagnostic',
-        altHref: '/deliverable/diagnostic',
-        delivMap, progressMap
-      })}
-      ${renderModuleCard({
-        icon: 'fa-ruler-combined', emoji: '📐',
-        name: 'Plan Financier OVO',
-        desc: "Projections financières 5 ans au format OVO",
-        href: '/deliverable/plan_ovo',
-        delivKey: 'plan_ovo',
-        altHref: '/deliverable/plan_ovo',
-        delivMap, progressMap
-      })}
-      ${renderModuleCard({
-        icon: 'fa-file-contract', emoji: '📑',
-        name: 'Business Plan',
-        desc: "Business plan structuré prêt pour les investisseurs",
-        href: '/deliverable/business_plan',
-        delivKey: 'business_plan',
-        altHref: '/deliverable/business_plan',
-        delivMap, progressMap
-      })}
-      ${renderModuleCard({
-        icon: 'fa-clipboard-check', emoji: '📋',
-        name: 'Due Diligence Opérationnelle',
-        desc: "Checklist ODD pour les bailleurs de fonds",
-        href: '/deliverable/odd',
-        delivKey: 'odd',
-        altHref: '/deliverable/odd',
-        delivMap, progressMap
-      })}
-    </div>
-  </section>
-
-  <!-- ═══ Mobile Chat FAB ═══ -->
-  <button class="ev2-chat-fab" id="chat-fab" onclick="toggleChatDrawer()"><i class="fas fa-comments"></i></button>
-  <div class="ev2-drawer" id="chat-drawer">
-    <div class="ev2-drawer__handle" onclick="toggleChatDrawer()"><span></span></div>
-    <div class="ev2-chat__messages" id="chat-messages-mobile" style="flex:1;overflow-y:auto;padding:12px;"></div>
-    <div class="ev2-chat__input-area">
-      <textarea class="ev2-chat__input" id="chat-input-mobile" placeholder="Posez une question..." rows="1" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat('mobile')}"></textarea>
-      <button class="ev2-chat__send" onclick="sendChat('mobile')"><i class="fas fa-paper-plane"></i></button>
     </div>
   </div>
+
+  <!-- Mobile sidebar toggle -->
+  <button class="ev2-sidebar-toggle" id="sidebar-toggle" onclick="toggleSidebar()"><i class="fas fa-folder-open"></i></button>
+  <div class="ev2-sidebar-overlay" id="sidebar-overlay" onclick="toggleSidebar()"></div>
 
   <script>
     // ── State ──
@@ -4187,43 +3927,36 @@ ${hasGenerated ? `<body class="ev2-app-shell">` : `<body>`}
     const BMC_HTML_TEMPLATE = ${JSON.stringify(bmcClaudeHtml)};
     const FRAMEWORK_HTML_TEMPLATE = ${JSON.stringify(frameworkClaudeHtml)};
     const DIAGNOSTIC_HTML_TEMPLATE = ${JSON.stringify(diagnosticClaudeHtml)};
+    const sources = ${JSON.stringify(allUploads.map((u: any) => ({ id: u.id, filename: u.filename, category: u.category })))};
 
-    // ── Upload toggle ──
-    function toggleUpload() {
-      const toggle = document.getElementById('upload-toggle');
-      const body = document.getElementById('upload-body');
-      if (!toggle || !body) return;
-      const isOpen = body.classList.contains('ev2-upload-body--open');
-      body.classList.toggle('ev2-upload-body--open', !isOpen);
-      body.classList.toggle('ev2-upload-body--collapsed', isOpen);
-      toggle.classList.toggle('ev2-upload-toggle--open', !isOpen);
+    // ── Mobile sidebar toggle ──
+    function toggleSidebar() {
+      document.getElementById('sidebar').classList.toggle('ev2-sidebar--open');
+      document.getElementById('sidebar-overlay').classList.toggle('ev2-sidebar-overlay--open');
     }
 
-    // ── File upload ──
-    async function handleUpload(input, cat) {
-      const file = input.files[0];
-      if (!file) return;
-      const fd = new FormData();
-      fd.append('file', file);
-      fd.append('category', cat);
-      try {
-        const res = await fetch('/api/upload', { method: 'POST', body: fd, credentials: 'include' });
-        const d = await res.json();
-        if (d.success) location.reload();
-        else alert(d.error || 'Erreur');
-      } catch (e) { alert('Erreur réseau: ' + e.message); }
-    }
-
-    async function handleSuppUpload(input) {
+    // ── Multi-file upload (auto-detect category) ──
+    async function handleMultiUpload(input) {
+      if (!input.files || input.files.length === 0) return;
+      const genBtn = document.getElementById('btn-gen');
+      if (genBtn) { genBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Upload en cours...'; genBtn.disabled = true; }
+      
       for (const file of input.files) {
         const fd = new FormData();
         fd.append('file', file);
-        fd.append('category', 'supplementary');
+        // Auto-detect category from filename
+        const name = file.name.toLowerCase();
+        let cat = 'supplementary';
+        if (name.includes('bmc') || name.includes('canvas') || name.includes('business model')) cat = 'bmc';
+        else if (name.includes('sic') || name.includes('impact') || name.includes('social')) cat = 'sic';
+        else if (name.includes('financ') || name.includes('input') || name.includes('budget') || name.includes('prevision') || name.includes('projection') || file.name.match(/\\.(xls|xlsx|csv)$/i)) cat = 'inputs';
+        fd.append('category', cat);
         try { await fetch('/api/upload', { method: 'POST', body: fd, credentials: 'include' }); } catch {}
       }
       location.reload();
     }
 
+    // ── Delete upload ──
     async function rmUpload(id) {
       try { await fetch('/api/upload/' + id, { method: 'DELETE', credentials: 'include' }); location.reload(); } catch (e) { alert('Erreur: ' + e.message); }
     }
@@ -4232,16 +3965,16 @@ ${hasGenerated ? `<body class="ev2-app-shell">` : `<body>`}
     async function generateAll() {
       const btn = document.getElementById('btn-gen');
       const load = document.getElementById('loading-section');
-      const gen = document.getElementById('gen-section');
-      btn.disabled = true;
-      gen.style.display = 'none';
-      load.classList.add('ev2-loading--active');
+      const main = document.getElementById('main-layout');
+      if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Génération en cours...'; }
+      if (main) main.style.display = 'none';
+      if (load) load.classList.add('ev2-loading--active');
       
       const steps = ['step-extract', 'step-analyze', 'step-gen', 'step-done'];
       function setStep(idx) {
         steps.forEach((s, i) => {
           const el = document.getElementById(s);
-          el.className = 'ev2-loading__step' + (i < idx ? ' ev2-loading__step--done' : i === idx ? ' ev2-loading__step--active' : '');
+          if (el) el.className = 'ev2-loading__step' + (i < idx ? ' ev2-loading__step--done' : i === idx ? ' ev2-loading__step--active' : '');
         });
       }
       setStep(0);
@@ -4252,49 +3985,32 @@ ${hasGenerated ? `<body class="ev2-app-shell">` : `<body>`}
         const res = await fetch('/api/ai/generate-all', { method: 'POST', credentials: 'include' });
         const data = await res.json();
         clearTimeout(t1); clearTimeout(t2);
-        if (data.success) {
-          setStep(3);
-          // Show partial generation info if applicable
-          if (data.skipped && data.skipped.length > 0) {
-            const skippedList = data.skipped.map(s => s.label + ' (manque: ' + s.missing.join(', ') + ')').join(', ');
-            console.log('Livrables non générés: ' + skippedList);
-          }
-          setTimeout(() => location.reload(), 1200);
-        }
-        else { alert(data.error || 'Erreur'); gen.style.display = ''; load.classList.remove('ev2-loading--active'); btn.disabled = false; }
-      } catch (e) { clearTimeout(t1); clearTimeout(t2); alert('Erreur: ' + e.message); gen.style.display = ''; load.classList.remove('ev2-loading--active'); btn.disabled = false; }
+        if (data.success) { setStep(3); setTimeout(() => location.reload(), 1200); }
+        else { alert(data.error || 'Erreur'); if (main) main.style.display = ''; if (load) load.classList.remove('ev2-loading--active'); if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-wand-magic-sparkles"></i> Générer les livrables'; } }
+      } catch (e) { clearTimeout(t1); clearTimeout(t2); alert('Erreur: ' + e.message); if (main) main.style.display = ''; if (load) load.classList.remove('ev2-loading--active'); if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-wand-magic-sparkles"></i> Générer les livrables'; } }
     }
 
-    // ── Select deliverable ──
+    // ── Select deliverable (bottom icons) ──
     function selectDeliverable(type) {
       currentDelivType = type;
-      // Update nav active
-      document.querySelectorAll('.ev2-nav-item').forEach(el => {
-        el.classList.toggle('ev2-nav-item--active', el.dataset.type === type);
+      // Update bottom icon active state
+      document.querySelectorAll('.ev2-deliv-icon').forEach(el => {
+        el.classList.toggle('ev2-deliv-icon--active', el.dataset.type === type);
       });
       // Update title
       const types = ${JSON.stringify(DELIVERABLE_TYPES)};
       const dt = types.find(t => t.type === type);
-      document.getElementById('center-title').innerHTML = '<i class="fas ' + (dt?.icon || 'fa-file') + '"></i> ' + (dt?.label || type);
-      
-      // ═══ Show/hide Excel banner based on selected type ═══
-      var excelBanner = document.getElementById('excel-banner');
-      if (excelBanner) {
-        excelBanner.style.display = (type === 'framework') ? 'flex' : 'none';
-      }
-      
+      const titleEl = document.getElementById('center-title');
+      if (titleEl) titleEl.innerHTML = '<i class="fas ' + (dt?.icon || 'fa-file') + '"></i> ' + (dt?.label || type);
       // Render content
       renderDeliverableContent(type);
-      // Scroll to center panel
-      const center = document.querySelector('.ev2-center');
-      if (center) center.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 
     function renderDeliverableContent(type) {
       const el = document.getElementById('center-content');
+      if (!el) return;
       const data = deliverables[type];
       if (!data) {
-        // Show dependency info for non-generated deliverables
         const types = ${JSON.stringify(DELIVERABLE_TYPES)};
         const dt = types.find(t => t.type === type);
         const deps = dt?.deps || [];
@@ -4305,10 +4021,8 @@ ${hasGenerated ? `<body class="ev2-app-shell">` : `<body>`}
         ])))});
         const depLabels = ${JSON.stringify(DEP_LABELS)};
         const missingList = deps.filter(d => !uploadedCats.has(d)).map(d => depLabels[d] || d);
-        const hasDeps = missingList.length === 0;
-        
-        if (hasDeps) {
-          el.innerHTML = '<div class="ev2-empty"><div class="ev2-empty__icon"><i class="fas fa-wand-magic-sparkles"></i></div><div class="ev2-empty__text">Prêt à être généré</div><div class="ev2-empty__sub">Tous les documents nécessaires sont uploadés. Cliquez sur "Générer" pour créer ce livrable.</div></div>';
+        if (missingList.length === 0) {
+          el.innerHTML = '<div class="ev2-empty"><div class="ev2-empty__icon"><i class="fas fa-wand-magic-sparkles"></i></div><div class="ev2-empty__text">Prêt à être généré</div><div class="ev2-empty__sub">Cliquez sur "Générer les livrables" dans la barre latérale.</div></div>';
         } else {
           el.innerHTML = '<div class="ev2-empty"><div class="ev2-empty__icon"><i class="fas fa-file-circle-question"></i></div><div class="ev2-empty__text">Livrable non encore généré</div><div class="ev2-empty__sub">Documents manquants : <strong>' + missingList.join(', ') + '</strong><br>Uploadez ces documents puis cliquez sur "Générer".</div></div>';
         }
@@ -4321,15 +4035,7 @@ ${hasGenerated ? `<body class="ev2-app-shell">` : `<body>`}
       const sColor = getScoreColor(score);
       
       if (type === 'diagnostic' && DIAGNOSTIC_HTML_TEMPLATE && DIAGNOSTIC_HTML_TEMPLATE.length > 100) {
-        // ═══ Diagnostic Expert: display pre-generated HTML in iframe ═══
-        var diagBarHtml = '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;padding:16px 20px;background:linear-gradient(135deg,#fef2f2,#fee2e2);border:1px solid #fca5a5;border-radius:12px;margin-bottom:20px">';
-        diagBarHtml += '<div style="display:flex;align-items:center;gap:10px"><i class="fas fa-stethoscope" style="font-size:24px;color:#dc2626"></i><div><div style="font-size:14px;font-weight:700;color:#991b1b">Diagnostic Expert</div><div style="font-size:12px;color:#b91c1c">Score Investment Readiness, risques, plan d\\u0027action</div></div></div>';
-        diagBarHtml += '<div style="display:flex;gap:8px;flex-wrap:wrap">';
-        diagBarHtml += '<button onclick="downloadDiagnosticHtmlInline()" id="btn-download-diag-html" style="display:inline-flex;align-items:center;gap:8px;padding:10px 20px;border-radius:10px;background:#1e3a5f;color:white;border:none;font-size:13px;font-weight:600;cursor:pointer;transition:all 0.2s;box-shadow:0 2px 8px rgba(30,58,95,0.3)" onmouseover="this.style.opacity=0.9" onmouseout="this.style.opacity=1"><i class="fas fa-file-code"></i> T\\u00e9l\\u00e9charger HTML</button>';
-        diagBarHtml += '<a href="/deliverable/diagnostic" target="_blank" style="display:inline-flex;align-items:center;gap:6px;padding:10px 16px;border-radius:10px;background:white;color:#991b1b;border:1px solid #fca5a5;font-size:12px;font-weight:600;text-decoration:none;cursor:pointer" onmouseover="this.style.background=&apos;#fef2f2&apos;" onmouseout="this.style.background=&apos;white&apos;"><i class="fas fa-expand"></i> Pleine page</a>';
-        diagBarHtml += '</div></div>';
-        
-        el.innerHTML = diagBarHtml;
+        el.innerHTML = '';
         var diagIframe = document.createElement('iframe');
         diagIframe.style.cssText = 'width:100%;min-height:80vh;border:none;border-radius:12px;background:#fff';
         diagIframe.srcdoc = DIAGNOSTIC_HTML_TEMPLATE;
@@ -4337,42 +4043,21 @@ ${hasGenerated ? `<body class="ev2-app-shell">` : `<body>`}
         el.appendChild(diagIframe);
       } else if (type === 'diagnostic') {
         el.innerHTML = renderDiagHTML(content, scoresDim, score, sColor);
+      } else if (type === 'bmc_analysis' && BMC_HTML_TEMPLATE && BMC_HTML_TEMPLATE.length > 100) {
+        el.innerHTML = '';
+        var iframe = document.createElement('iframe');
+        iframe.style.cssText = 'width:100%;min-height:80vh;border:none;border-radius:12px;background:#fff';
+        iframe.srcdoc = BMC_HTML_TEMPLATE;
+        iframe.onload = function() { try { iframe.style.height = iframe.contentDocument.body.scrollHeight + 40 + 'px'; } catch(e) {} };
+        el.appendChild(iframe);
       } else if (type === 'bmc_analysis') {
-        // Display pre-stored Claude AI HTML instantly (no fetch, no wait)
-        if (BMC_HTML_TEMPLATE && BMC_HTML_TEMPLATE.length > 100) {
-          // Add download bar BEFORE iframe
-          var barHtml = '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;padding:16px 20px;background:linear-gradient(135deg,#eff6ff,#dbeafe);border:1px solid #93c5fd;border-radius:12px;margin-bottom:20px">';
-          barHtml += '<div style="display:flex;align-items:center;gap:10px"><i class="fas fa-file-word" style="font-size:24px;color:#2563eb"></i><div><div style="font-size:14px;font-weight:700;color:#1e40af">BMC Analys\\u00e9</div><div style="font-size:12px;color:#3b82f6">T\\u00e9l\\u00e9chargeable en Word ou PDF</div></div></div>';
-          barHtml += '<div style="display:flex;gap:8px;flex-wrap:wrap">';
-          barHtml += '<button data-download="docx" style="display:inline-flex;align-items:center;gap:8px;padding:10px 20px;border-radius:10px;background:#2563eb;color:white;border:none;font-size:13px;font-weight:600;cursor:pointer;transition:all 0.2s;box-shadow:0 2px 8px rgba(37,99,235,0.3)" onmouseover="this.style.opacity=0.9" onmouseout="this.style.opacity=1"><i class="fas fa-file-word"></i> Word (.docx)</button>';
-          barHtml += '<button data-download="pdf" style="display:inline-flex;align-items:center;gap:8px;padding:10px 16px;border-radius:10px;background:#7c2d12;color:white;border:none;font-size:13px;font-weight:600;cursor:pointer;transition:all 0.2s;box-shadow:0 2px 8px rgba(124,45,18,0.3)" onmouseover="this.style.opacity=0.9" onmouseout="this.style.opacity=1"><i class="fas fa-file-pdf"></i> PDF</button>';
-          barHtml += '<a href="/deliverable/bmc_analysis" style="display:inline-flex;align-items:center;gap:6px;padding:10px 16px;border-radius:10px;background:white;color:#1e40af;border:1px solid #93c5fd;font-size:12px;font-weight:600;text-decoration:none;cursor:pointer" onmouseover="this.style.background=&apos;#eff6ff&apos;" onmouseout="this.style.background=&apos;white&apos;"><i class="fas fa-expand"></i> Pleine page</a>';
-          barHtml += '</div></div>';
-          
-          el.innerHTML = barHtml;
-          var iframe = document.createElement('iframe');
-          iframe.style.cssText = 'width:100%;min-height:80vh;border:none;border-radius:12px;background:#fff';
-          iframe.srcdoc = BMC_HTML_TEMPLATE;
-          iframe.onload = function() { try { iframe.style.height = iframe.contentDocument.body.scrollHeight + 40 + 'px'; } catch(e) {} };
-          el.appendChild(iframe);
-        } else {
-          // Fallback: render from JSON data
-          el.innerHTML = renderBMCHTML(content, score, sColor);
-        }
+        el.innerHTML = renderBMCHTML(content, score, sColor);
       } else if (type === 'sic_analysis') {
         el.innerHTML = renderSICHTML(content, score, sColor);
       } else if (type === 'plan_ovo') {
         el.innerHTML = renderOVOHTML(content, score, sColor);
       } else if (type === 'framework' && FRAMEWORK_HTML_TEMPLATE && FRAMEWORK_HTML_TEMPLATE.length > 100) {
-        // ═══ Framework PME: display pre-generated HTML in iframe ═══
-        var fwBarHtml = '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;padding:16px 20px;background:linear-gradient(135deg,#f0fdf4,#ecfdf5);border:1px solid #bbf7d0;border-radius:12px;margin-bottom:20px">';
-        fwBarHtml += '<div style="display:flex;align-items:center;gap:10px"><i class="fas fa-file-excel" style="font-size:24px;color:#059669"></i><div><div style="font-size:14px;font-weight:700;color:#065f46">📊 Fichier Excel disponible</div><div style="font-size:12px;color:#047857">Framework Analyse PME rempli avec vos données</div></div></div>';
-        fwBarHtml += '<div style="display:flex;gap:8px;flex-wrap:wrap">';
-        fwBarHtml += '<button onclick="downloadFrameworkExcelInline()" id="btn-download-inline" style="display:inline-flex;align-items:center;gap:8px;padding:10px 20px;border-radius:10px;background:#059669;color:white;border:none;font-size:13px;font-weight:600;cursor:pointer;transition:all 0.2s;box-shadow:0 2px 8px rgba(5,150,105,0.3)" onmouseover="this.style.opacity=0.9" onmouseout="this.style.opacity=1"><i class="fas fa-download"></i> Télécharger Excel (.xlsx)</button>';
-        fwBarHtml += '<a href="/deliverable/framework" target="_blank" style="display:inline-flex;align-items:center;gap:6px;padding:10px 16px;border-radius:10px;background:white;color:#065f46;border:1px solid #bbf7d0;font-size:12px;font-weight:600;text-decoration:none;cursor:pointer" onmouseover="this.style.background=&apos;#f0fdf4&apos;" onmouseout="this.style.background=&apos;white&apos;"><i class="fas fa-expand"></i> Voir en pleine page</a>';
-        fwBarHtml += '</div></div>';
-        
-        el.innerHTML = fwBarHtml;
+        el.innerHTML = '';
         var fwIframe = document.createElement('iframe');
         fwIframe.style.cssText = 'width:100%;min-height:80vh;border:none;border-radius:12px;background:#fff';
         fwIframe.srcdoc = FRAMEWORK_HTML_TEMPLATE;
@@ -4695,214 +4380,90 @@ ${hasGenerated ? `<body class="ev2-app-shell">` : `<body>`}
       }
     }
 
-    // ── Chat ──
-    async function sendChat(mode) {
-      const inputEl = mode === 'mobile' ? document.getElementById('chat-input-mobile') : document.getElementById('chat-input');
-      const msg = inputEl.value.trim();
-      if (!msg) return;
-
-      // Add user bubble
-      addChatBubble(msg, 'user', mode);
-      inputEl.value = '';
-
-      // Disable send
-      const sendBtn = mode === 'mobile' ? inputEl.nextElementSibling : document.getElementById('chat-send');
-      if (sendBtn) sendBtn.disabled = true;
-
-      try {
-        const res = await fetch('/api/chat/message', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message: msg, context: currentDelivType }),
-          credentials: 'include'
-        });
-        const data = await res.json();
-        if (data.success && data.response) {
-          addChatBubble(data.response.content, 'ai', mode);
-          // If chat triggered a regeneration, reload the page to reflect new deliverables
-          if (data.regenerated) {
-            addChatBubble('🔄 Mise à jour des livrables... rechargement en cours.', 'ai', mode);
-            setTimeout(() => location.reload(), 2000);
-          }
-        } else {
-          addChatBubble(data.error || 'Erreur du serveur', 'ai', mode);
-        }
-      } catch (e) {
-        addChatBubble('Erreur réseau: ' + e.message, 'ai', mode);
-      }
-
-      if (sendBtn) sendBtn.disabled = false;
-    }
-
-    function addChatBubble(text, role, mode) {
-      const containers = mode === 'mobile' 
-        ? [document.getElementById('chat-messages-mobile')]
-        : [document.getElementById('chat-messages')];
-      // Also sync to other view
-      if (mode !== 'mobile') containers.push(document.getElementById('chat-messages-mobile'));
-      else containers.push(document.getElementById('chat-messages'));
-      
-      for (const container of containers) {
-        if (!container) continue;
-        const bubble = document.createElement('div');
-        bubble.className = 'ev2-chat__bubble ev2-chat__bubble--' + (role === 'user' ? 'user' : 'ai');
-        bubble.textContent = text;
-        container.appendChild(bubble);
-        container.scrollTop = container.scrollHeight;
-      }
-    }
-
-    // ── Mobile drawer ──
-    function toggleChatDrawer() {
-      const drawer = document.getElementById('chat-drawer');
-      drawer.classList.toggle('ev2-drawer--open');
-    }
-
-    // ── Tablet: toggle left panel ──
-    function toggleLeftPanel() {
-      document.getElementById('left-panel').classList.toggle('ev2-left--open');
-    }
-
-    // ── Event delegation for download buttons (data-download="format") ──
-    // This avoids inline onclick with quotes that break JS parsing
-    document.addEventListener('click', function(e) {
-      var btn = e.target.closest('[data-download]');
-      if (btn) {
-        e.preventDefault();
-        var format = btn.getAttribute('data-download');
-        if (format) downloadDeliverable(format);
-      }
-    });
-
-    // ── Drag & drop ──
-    document.querySelectorAll('.ev2-upload-card').forEach(card => {
-      card.addEventListener('dragover', e => { e.preventDefault(); card.style.borderColor = '#4a6fa5'; });
-      card.addEventListener('dragleave', () => { card.style.borderColor = ''; });
-      card.addEventListener('drop', e => {
-        e.preventDefault();
-        card.style.borderColor = '';
-        const input = card.querySelector('input[type="file"]');
-        if (input && e.dataTransfer.files.length) { input.files = e.dataTransfer.files; input.dispatchEvent(new Event('change')); }
-      });
-    });
-
-    // ── Download Framework Excel (main page) ──
+    // ── Download functions ──
     async function downloadFrameworkExcelDirect() {
-      const btn = document.getElementById('btn-download-excel-main');
-      if (btn) { btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> G\u00e9n\u00e9ration...'; btn.disabled = true; }
       try {
         const resp = await fetch('/api/download/framework-excel', { credentials: 'include' });
-        if (!resp.ok) { const err = await resp.json().catch(() => ({})); throw new Error(err.error || 'Erreur ' + resp.status); }
+        if (!resp.ok) throw new Error('Erreur ' + resp.status);
         const blob = await resp.blob();
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
-        const cd = resp.headers.get('Content-Disposition') || '';
-        const fnMatch = cd.match(/filename="?([^";]+)/);
-        a.download = fnMatch ? fnMatch[1] : 'Framework_Analyse_PME.xlsx';
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(a.href);
-        if (btn) { btn.innerHTML = '<i class="fas fa-check-circle"></i> T\u00e9l\u00e9charg\u00e9 !'; btn.style.background = '#065f46'; setTimeout(() => { btn.innerHTML = '<i class="fas fa-download"></i> T\u00e9l\u00e9charger Excel (.xlsx)'; btn.disabled = false; btn.style.background = '#059669'; }, 3000); }
-      } catch (e) {
-        alert('Erreur t\u00e9l\u00e9chargement: ' + e.message);
-        if (btn) { btn.innerHTML = '<i class="fas fa-download"></i> T\u00e9l\u00e9charger Excel (.xlsx)'; btn.disabled = false; }
-      }
+        a.download = 'Framework_Analyse_PME_' + USER_NAME.replace(/\\s+/g, '_') + '.xlsx';
+        document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(a.href);
+      } catch (e) { alert('Erreur: ' + e.message); }
     }
 
-    // ── Auto-scroll chat ──
-    const chatEl = document.getElementById('chat-messages');
-    if (chatEl) chatEl.scrollTop = chatEl.scrollHeight;
-
-    // ═══════════════════════════════════════════════════════════
-    // DOWNLOAD FUNCTIONS for inline buttons in deliverable views
-    // These are called by onclick handlers in renderDiagHTML,
-    // renderBMCHTML, renderSICHTML, renderOVOHTML, renderGenericHTML
-    // ═══════════════════════════════════════════════════════════
-    
     function downloadDeliverable(format) {
       const type = currentDelivType;
-      const btn = event && event.target ? event.target.closest('button') : null;
-      const originalHtml = btn ? btn.innerHTML : '';
-      if (btn) { btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Génération...'; btn.disabled = true; }
-      
-      const resetBtn = (text) => {
-        if (btn) { btn.innerHTML = text || '<i class="fas fa-check"></i> OK !'; setTimeout(() => { btn.innerHTML = originalHtml; btn.disabled = false; }, 2500); }
-      };
-      
       try {
-        if (format === 'xlsx') {
-          if (type === 'framework') {
-            downloadFrameworkExcelDirect();
-            return;
-          }
-          // ODD / Plan OVO — open full page to download
-          window.open('/deliverable/' + type, '_blank');
-          resetBtn();
-        } else if (format === 'docx') {
-          // Generate Word from current content
-          const mainContent = document.getElementById('center-content');
-          const data = deliverables[type];
-          let dTitle = type;
-          const types = ${JSON.stringify(DELIVERABLE_TYPES)};
-          const dt = types.find(t => t.type === type);
-          if (dt) dTitle = dt.label;
-          const typeLabel = type === 'bmc_analysis' ? 'BMC_Analyse' : type === 'sic_analysis' ? 'SIC_Analyse' : type === 'business_plan' ? 'BusinessPlan' : type;
-          
-          const htmlContent = '<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">'
-            + '<head><meta charset="utf-8"><title>' + dTitle + '</title>'
-            + '<style>body{font-family:Calibri,sans-serif;font-size:11pt;color:#333}h1{font-size:18pt;color:#1e3a5f}h2{font-size:14pt;color:#2563eb;border-bottom:1pt solid #e5e7eb;padding-bottom:6pt}h3{font-size:12pt;color:#334155}table{border-collapse:collapse;width:100%}td,th{border:1pt solid #e5e7eb;padding:6pt 8pt;font-size:10pt}</style>'
-            + '</head><body>'
-            + '<h1>' + dTitle + '</h1>'
-            + '<p><strong>Entrepreneur:</strong> ' + USER_NAME + ' | <strong>Date:</strong> ' + new Date().toLocaleDateString('fr-FR') + '</p><hr/>'
-            + (mainContent ? mainContent.innerHTML : '')
-            + '<hr/><p style="font-size:9pt;color:#999">Document généré par ESONO</p>'
-            + '</body></html>';
-          const blob = new Blob(['\\ufeff', htmlContent], { type: 'application/msword' });
-          const url = URL.createObjectURL(blob);
+        if (format === 'xlsx' && type === 'framework') { downloadFrameworkExcelDirect(); return; }
+        if (format === 'xlsx') { window.open('/deliverable/' + type, '_blank'); return; }
+        
+        if (format === 'html' && type === 'diagnostic' && DIAGNOSTIC_HTML_TEMPLATE) {
+          const blob = new Blob([DIAGNOSTIC_HTML_TEMPLATE], { type: 'text/html;charset=utf-8' });
           const a = document.createElement('a');
-          a.href = url;
-          a.download = typeLabel + '_' + USER_NAME.replace(/\\s+/g, '_') + '_' + new Date().toISOString().slice(0,10) + '.doc';
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
-          URL.revokeObjectURL(url);
-          resetBtn();
-        } else if (format === 'pdf' || format === 'html') {
-          // Open print-friendly page
+          a.href = URL.createObjectURL(blob);
+          a.download = 'Diagnostic_Expert_' + USER_NAME.replace(/\\s+/g, '_') + '.html';
+          document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(a.href);
+          return;
+        }
+        
+        if (format === 'pdf' || format === 'html') {
           const mainContent = document.getElementById('center-content');
           const types = ${JSON.stringify(DELIVERABLE_TYPES)};
           const dt = types.find(t => t.type === type);
           const dTitle = dt ? dt.label : type;
-          const styles = document.querySelectorAll('style');
-          let styleHtml = '';
-          styles.forEach(s => { styleHtml += s.outerHTML; });
-          
           const printWin = window.open('', '_blank');
           printWin.document.write('<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><title>' + dTitle + '</title>'
-            + '<script src="https://cdn.tailwindcss.com"><\\/script>'
             + '<link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.5.0/css/all.min.css" rel="stylesheet">'
-            + styleHtml
             + '<style>body{font-family:Inter,sans-serif;background:white;padding:20px}@media print{.no-print{display:none!important}}</style>'
             + '</head><body>'
-            + '<div style="text-align:center;margin-bottom:24px;padding-bottom:16px;border-bottom:2px solid #e5e7eb">'
-            + '<h1 style="font-size:24px;font-weight:800;color:#1f2937">' + dTitle + '</h1>'
-            + '<p style="font-size:13px;color:#6b7280">' + USER_NAME + ' — ' + new Date().toLocaleDateString('fr-FR') + '</p></div>'
-            + '<button onclick="window.print()" class="no-print" style="position:fixed;top:16px;right:16px;padding:10px 20px;background:#4338ca;color:white;border:none;border-radius:10px;font-weight:600;cursor:pointer;z-index:999;font-size:13px"><i class="fas fa-print"></i> Imprimer / PDF</button>'
+            + '<h1 style="text-align:center;color:#1e3a5f">' + dTitle + '</h1>'
+            + '<p style="text-align:center;color:#6b7280">' + USER_NAME + ' — ' + new Date().toLocaleDateString('fr-FR') + '</p><hr/>'
+            + '<button onclick="window.print()" class="no-print" style="position:fixed;top:16px;right:16px;padding:10px 20px;background:#4338ca;color:white;border:none;border-radius:10px;font-weight:600;cursor:pointer;z-index:999"><i class="fas fa-print"></i> Imprimer / PDF</button>'
             + (mainContent ? mainContent.innerHTML : '')
-            + '<div style="text-align:center;margin-top:24px;padding-top:12px;border-top:1px solid #e5e7eb;font-size:10px;color:#9ca3af">'
-            + '<p>Document généré par ESONO</p></div></body></html>');
+            + '</body></html>');
           printWin.document.close();
-          resetBtn();
-        } else {
-          // Fallback: open deliverable full page
-          window.open('/deliverable/' + type, '_blank');
-          resetBtn();
+          return;
         }
-      } catch (e) {
-        alert('Erreur: ' + e.message);
-        if (btn) { btn.innerHTML = originalHtml; btn.disabled = false; }
-      }
+        
+        if (format === 'docx') {
+          const mainContent = document.getElementById('center-content');
+          const types = ${JSON.stringify(DELIVERABLE_TYPES)};
+          const dt = types.find(t => t.type === type);
+          const dTitle = dt ? dt.label : type;
+          const htmlContent = '<html><head><meta charset="utf-8"><title>' + dTitle + '</title></head><body>' + (mainContent ? mainContent.innerHTML : '') + '</body></html>';
+          const blob = new Blob(['\\ufeff', htmlContent], { type: 'application/msword' });
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = dTitle.replace(/\\s+/g, '_') + '_' + USER_NAME.replace(/\\s+/g, '_') + '.doc';
+          document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(a.href);
+          return;
+        }
+        
+        window.open('/deliverable/' + type, '_blank');
+      } catch (e) { alert('Erreur: ' + e.message); }
+    }
+
+    // ── Event delegation for download buttons ──
+    document.addEventListener('click', function(e) {
+      var btn = e.target.closest('[data-download]');
+      if (btn) { e.preventDefault(); downloadDeliverable(btn.getAttribute('data-download')); }
+    });
+
+    // ── Drag & drop on sidebar ──
+    var sidebar = document.getElementById('sidebar');
+    if (sidebar) {
+      sidebar.addEventListener('dragover', function(e) { e.preventDefault(); sidebar.style.borderColor = '#2563eb'; });
+      sidebar.addEventListener('dragleave', function() { sidebar.style.borderColor = ''; });
+      sidebar.addEventListener('drop', function(e) {
+        e.preventDefault(); sidebar.style.borderColor = '';
+        if (e.dataTransfer.files.length) {
+          var input = document.getElementById('file-multi-upload');
+          input.files = e.dataTransfer.files;
+          input.dispatchEvent(new Event('change'));
+        }
+      });
     }
   </script>
 </body>
@@ -4929,18 +4490,8 @@ function escapeHtml(str: string): string {
 }
 
 function renderUploadCard(category: string, title: string, icon: string, subtitle: string, accept: string, existing: any): string {
-  const isDone = !!existing
-  return `<div class="ev2-upload-card ${isDone ? 'ev2-upload-card--done' : ''}" onclick="document.getElementById('file-${category}').click()">
-    ${isDone ? `<button class="ev2-upload-card__rm" onclick="event.stopPropagation();rmUpload('${existing.id}')" title="Retirer"><i class="fas fa-times"></i></button>` : ''}
-    <div class="ev2-upload-card__icon"><i class="fas ${icon}"></i></div>
-    <div class="ev2-upload-card__title">${title}</div>
-    <div class="ev2-upload-card__sub">${subtitle}</div>
-    ${isDone
-      ? `<div class="ev2-upload-card__status ev2-upload-card__status--ok"><i class="fas fa-check-circle"></i> ${existing.filename}</div>`
-      : `<div class="ev2-upload-card__drop">Glisser ou cliquer</div><div class="ev2-upload-card__status ev2-upload-card__status--wait"><i class="far fa-clock"></i> En attente</div>`
-    }
-    <input type="file" id="file-${category}" accept="${accept}" onchange="handleUpload(this,'${category}')">
-  </div>`
+  // Kept for backward compatibility but no longer used in new layout
+  return ''
 }
 
 function renderDiagnosticView(deliverable: any, scoresDim: any): string {
