@@ -3640,15 +3640,29 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
     .ev2-tpl-btn__text { flex: 1; }
     .ev2-tpl-btn__dl { font-size: 11px; color: #9ca3af; }
     
-    /* Add sources CTA */
-    .ev2-sidebar__add { padding: 14px 18px; border-bottom: 1px solid #e5e7eb; }
-    .ev2-add-btn { width: 100%; padding: 12px; background: #2563eb; color: white; border: none; border-radius: 10px; font-size: 13px; font-weight: 600; font-family: inherit; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; transition: all 0.2s; }
-    .ev2-add-btn:hover { background: #1d4ed8; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(37,99,235,0.3); }
-    .ev2-add-btn i { font-size: 14px; }
-    
-    /* Sources list */
-    .ev2-sidebar__sources { flex: 1; overflow-y: auto; padding: 12px 18px; }
+    /* Upload cards (3 CTAs) */
+    .ev2-sidebar__uploads { flex: 1; overflow-y: auto; padding: 12px 18px; }
     .ev2-sidebar__sources-title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 2px; color: #9ca3af; margin-bottom: 10px; }
+    .ev2-upload-card { display: flex; align-items: center; gap: 10px; padding: 12px 14px; background: #ffffff; border: 2px dashed #d1d5db; border-radius: 12px; margin-bottom: 8px; cursor: pointer; transition: all 0.2s; position: relative; }
+    .ev2-upload-card:hover { border-color: #93c5fd; background: #f8faff; box-shadow: 0 2px 8px rgba(37,99,235,0.08); }
+    .ev2-upload-card--done { border-style: solid; border-color: #86efac; background: #f0fdf4; }
+    .ev2-upload-card--done:hover { border-color: #4ade80; background: #ecfdf5; }
+    .ev2-upload-card__icon { width: 40px; height: 40px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 16px; flex-shrink: 0; }
+    .ev2-upload-card__icon--bmc { background: #dbeafe; color: #2563eb; }
+    .ev2-upload-card__icon--sic { background: #d1fae5; color: #059669; }
+    .ev2-upload-card__icon--inputs { background: #fef3c7; color: #d97706; }
+    .ev2-upload-card__info { flex: 1; min-width: 0; }
+    .ev2-upload-card__title { font-size: 12px; font-weight: 700; color: #1f2937; margin-bottom: 2px; }
+    .ev2-upload-card__hint { font-size: 11px; color: #9ca3af; display: flex; align-items: center; gap: 5px; }
+    .ev2-upload-card__file { font-size: 11px; color: #059669; font-weight: 600; display: flex; align-items: center; gap: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .ev2-upload-card__rm { position: absolute; top: 8px; right: 8px; background: none; border: none; color: #d1d5db; cursor: pointer; font-size: 11px; width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; transition: all 0.2s; opacity: 0; }
+    .ev2-upload-card:hover .ev2-upload-card__rm { opacity: 1; }
+    .ev2-upload-card__rm:hover { background: #fee2e2; color: #dc2626; }
+    
+    /* Supplementary docs button */
+    .ev2-sidebar__supp { margin-top: 4px; margin-bottom: 8px; }
+    .ev2-supp-btn { width: 100%; padding: 8px; background: transparent; color: #6b7280; border: 1px dashed #d1d5db; border-radius: 8px; font-size: 11px; font-weight: 500; font-family: inherit; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px; transition: all 0.2s; }
+    .ev2-supp-btn:hover { border-color: #9ca3af; color: #374151; background: #f9fafb; }
     .ev2-source-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: #ffffff; border: 1px solid #e5e7eb; border-radius: 10px; margin-bottom: 8px; transition: all 0.2s; position: relative; }
     .ev2-source-item:hover { border-color: #d1d5db; box-shadow: 0 1px 4px rgba(0,0,0,0.04); }
     .ev2-source-item__icon { width: 36px; height: 36px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 15px; flex-shrink: 0; }
@@ -3830,35 +3844,66 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
         </a>
       </div>
 
-      <!-- Add sources CTA -->
-      <div class="ev2-sidebar__add">
-        <button class="ev2-add-btn" onclick="document.getElementById('file-multi-upload').click()">
-          <i class="fas fa-plus"></i> Ajouter des sources
-        </button>
-        <input type="file" id="file-multi-upload" multiple accept=".doc,.docx,.xls,.xlsx,.pdf,.csv" onchange="handleMultiUpload(this)" style="display:none">
-      </div>
-
-      <!-- Sources list -->
-      <div class="ev2-sidebar__sources" id="sources-list">
-        <div class="ev2-sidebar__sources-title">Documents (${allUploads.length})</div>
-        ${allUploads.length > 0 ? allUploads.map((u: any) => {
-          const catIcon = u.category === 'bmc' ? 'fa-map' : u.category === 'sic' ? 'fa-seedling' : u.category === 'inputs' ? 'fa-chart-line' : 'fa-file'
-          const catClass = u.category === 'bmc' ? 'bmc' : u.category === 'sic' ? 'sic' : u.category === 'inputs' ? 'inputs' : 'supp'
-          const catLabel = u.category === 'bmc' ? 'BMC' : u.category === 'sic' ? 'SIC' : u.category === 'inputs' ? 'Financier' : 'Supplémentaire'
-          return `<div class="ev2-source-item" id="source-${u.id}">
-            <div class="ev2-source-item__icon ev2-source-item__icon--${catClass}"><i class="fas ${catIcon}"></i></div>
-            <div class="ev2-source-item__info">
-              <div class="ev2-source-item__name">${escapeHtml(u.filename || 'Document')}</div>
-              <div class="ev2-source-item__meta"><span>${catLabel}</span></div>
-            </div>
-            <button class="ev2-source-item__rm" onclick="rmUpload('${u.id}')" title="Supprimer"><i class="fas fa-trash"></i></button>
-          </div>`
-        }).join('') : `
-          <div class="ev2-source-empty">
-            <div class="ev2-source-empty__icon"><i class="fas fa-folder-open"></i></div>
-            <div class="ev2-source-empty__text">Aucun document ajouté</div>
+      <!-- Upload cards (3 separate CTAs: BMC, SIC, Financier) -->
+      <div class="ev2-sidebar__uploads" id="sources-list">
+        <div class="ev2-sidebar__sources-title">Documents d'inputs (${uploadCount}/3)</div>
+        
+        <!-- BMC Upload Card -->
+        <div class="ev2-upload-card ${uploadsByCategory.bmc ? 'ev2-upload-card--done' : ''}" onclick="document.getElementById('file-bmc').click()">
+          <div class="ev2-upload-card__icon ev2-upload-card__icon--bmc"><i class="fas fa-map"></i></div>
+          <div class="ev2-upload-card__info">
+            <div class="ev2-upload-card__title">Business Model Canvas</div>
+            ${uploadsByCategory.bmc 
+              ? `<div class="ev2-upload-card__file"><i class="fas fa-check-circle" style="color:#059669"></i> ${escapeHtml((uploadsByCategory.bmc as any).filename || 'BMC')}</div>
+                 <button class="ev2-upload-card__rm" onclick="event.stopPropagation();rmUpload('${(uploadsByCategory.bmc as any).id}')" title="Supprimer"><i class="fas fa-trash"></i></button>`
+              : `<div class="ev2-upload-card__hint"><i class="fas fa-cloud-arrow-up"></i> .doc, .docx, .pdf</div>`}
           </div>
-        `}
+          <input type="file" id="file-bmc" accept=".doc,.docx,.pdf" onchange="handleUpload(this,'bmc')" style="display:none">
+        </div>
+
+        <!-- SIC Upload Card -->
+        <div class="ev2-upload-card ${uploadsByCategory.sic ? 'ev2-upload-card--done' : ''}" onclick="document.getElementById('file-sic').click()">
+          <div class="ev2-upload-card__icon ev2-upload-card__icon--sic"><i class="fas fa-seedling"></i></div>
+          <div class="ev2-upload-card__info">
+            <div class="ev2-upload-card__title">Stratégie d'Impact (SIC)</div>
+            ${uploadsByCategory.sic 
+              ? `<div class="ev2-upload-card__file"><i class="fas fa-check-circle" style="color:#059669"></i> ${escapeHtml((uploadsByCategory.sic as any).filename || 'SIC')}</div>
+                 <button class="ev2-upload-card__rm" onclick="event.stopPropagation();rmUpload('${(uploadsByCategory.sic as any).id}')" title="Supprimer"><i class="fas fa-trash"></i></button>`
+              : `<div class="ev2-upload-card__hint"><i class="fas fa-cloud-arrow-up"></i> .doc, .docx, .xls, .xlsx, .pdf</div>`}
+          </div>
+          <input type="file" id="file-sic" accept=".doc,.docx,.xls,.xlsx,.pdf" onchange="handleUpload(this,'sic')" style="display:none">
+        </div>
+
+        <!-- Inputs Financiers Upload Card -->
+        <div class="ev2-upload-card ${uploadsByCategory.inputs ? 'ev2-upload-card--done' : ''}" onclick="document.getElementById('file-inputs').click()">
+          <div class="ev2-upload-card__icon ev2-upload-card__icon--inputs"><i class="fas fa-chart-line"></i></div>
+          <div class="ev2-upload-card__info">
+            <div class="ev2-upload-card__title">Inputs Financiers</div>
+            ${uploadsByCategory.inputs 
+              ? `<div class="ev2-upload-card__file"><i class="fas fa-check-circle" style="color:#059669"></i> ${escapeHtml((uploadsByCategory.inputs as any).filename || 'Financier')}</div>
+                 <button class="ev2-upload-card__rm" onclick="event.stopPropagation();rmUpload('${(uploadsByCategory.inputs as any).id}')" title="Supprimer"><i class="fas fa-trash"></i></button>`
+              : `<div class="ev2-upload-card__hint"><i class="fas fa-cloud-arrow-up"></i> .xls, .xlsx, .csv, .pdf <span style="color:#d97706;font-weight:600">(Excel recommandé)</span></div>`}
+          </div>
+          <input type="file" id="file-inputs" accept=".xls,.xlsx,.csv,.pdf" onchange="handleUpload(this,'inputs')" style="display:none">
+        </div>
+
+        <!-- Documents supplémentaires (optional) -->
+        <div class="ev2-sidebar__supp">
+          <button class="ev2-supp-btn" onclick="document.getElementById('file-supp').click()">
+            <i class="fas fa-plus" style="font-size:10px"></i> Documents supplémentaires
+          </button>
+          <input type="file" id="file-supp" multiple accept=".doc,.docx,.xls,.xlsx,.pdf,.csv,.txt" onchange="handleSuppUpload(this)" style="display:none">
+        </div>
+        ${supplementaryFiles.length > 0 ? supplementaryFiles.map((sf: any) => `
+          <div class="ev2-source-item" style="margin:0 0 6px" id="source-${sf.id}">
+            <div class="ev2-source-item__icon ev2-source-item__icon--supp"><i class="fas fa-file"></i></div>
+            <div class="ev2-source-item__info">
+              <div class="ev2-source-item__name">${escapeHtml(sf.filename || 'Document')}</div>
+              <div class="ev2-source-item__meta"><span>Supplémentaire</span></div>
+            </div>
+            <button class="ev2-source-item__rm" onclick="rmUpload('${sf.id}')" title="Supprimer" style="opacity:1"><i class="fas fa-trash"></i></button>
+          </div>
+        `).join('') : ''}
       </div>
 
       <!-- Generate CTA (bottom-fixed) -->
@@ -3935,22 +3980,31 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
       document.getElementById('sidebar-overlay').classList.toggle('ev2-sidebar-overlay--open');
     }
 
-    // ── Multi-file upload (auto-detect category) ──
-    async function handleMultiUpload(input) {
+    // ── Single-file upload with explicit category ──
+    async function handleUpload(input, category) {
       if (!input.files || input.files.length === 0) return;
-      const genBtn = document.getElementById('btn-gen');
-      if (genBtn) { genBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Upload en cours...'; genBtn.disabled = true; }
+      const file = input.files[0];
+      const card = input.closest('.ev2-upload-card');
+      if (card) { card.style.opacity = '0.6'; card.style.pointerEvents = 'none'; }
       
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('category', category);
+      try {
+        const res = await fetch('/api/upload', { method: 'POST', body: fd, credentials: 'include' });
+        const data = await res.json();
+        if (!res.ok) { alert(data.error || 'Erreur upload'); if (card) { card.style.opacity = ''; card.style.pointerEvents = ''; } return; }
+        location.reload();
+      } catch (e) { alert('Erreur: ' + e.message); if (card) { card.style.opacity = ''; card.style.pointerEvents = ''; } }
+    }
+
+    // ── Supplementary files upload ──
+    async function handleSuppUpload(input) {
+      if (!input.files || input.files.length === 0) return;
       for (const file of input.files) {
         const fd = new FormData();
         fd.append('file', file);
-        // Auto-detect category from filename
-        const name = file.name.toLowerCase();
-        let cat = 'supplementary';
-        if (name.includes('bmc') || name.includes('canvas') || name.includes('business model')) cat = 'bmc';
-        else if (name.includes('sic') || name.includes('impact') || name.includes('social')) cat = 'sic';
-        else if (name.includes('financ') || name.includes('input') || name.includes('budget') || name.includes('prevision') || name.includes('projection') || file.name.match(/\\.(xls|xlsx|csv)$/i)) cat = 'inputs';
-        fd.append('category', cat);
+        fd.append('category', 'supplementary');
         try { await fetch('/api/upload', { method: 'POST', body: fd, credentials: 'include' }); } catch {}
       }
       location.reload();
