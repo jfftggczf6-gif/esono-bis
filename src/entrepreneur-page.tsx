@@ -3628,18 +3628,6 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
     .ev2-sidebar__title { font-size: 15px; font-weight: 700; color: #1f2937; display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
     .ev2-sidebar__subtitle { font-size: 12px; color: #6b7280; }
     
-    /* Template download buttons */
-    .ev2-sidebar__templates { padding: 12px 18px; display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid #e5e7eb; }
-    .ev2-tpl-btn { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 10px; border: 1px solid; font-size: 12px; font-weight: 600; text-decoration: none; transition: all 0.2s; cursor: pointer; }
-    .ev2-tpl-btn:hover { text-decoration: none; transform: translateY(-1px); box-shadow: 0 3px 8px rgba(0,0,0,0.08); }
-    .ev2-tpl-btn--bmc { background: #eff6ff; border-color: #93c5fd; color: #1e40af; }
-    .ev2-tpl-btn--bmc:hover { background: #dbeafe; color: #1e40af; }
-    .ev2-tpl-btn--fin { background: #f0fdf4; border-color: #86efac; color: #166534; }
-    .ev2-tpl-btn--fin:hover { background: #dcfce7; color: #166534; }
-    .ev2-tpl-btn__icon { font-size: 16px; flex-shrink: 0; }
-    .ev2-tpl-btn__text { flex: 1; }
-    .ev2-tpl-btn__dl { font-size: 11px; color: #9ca3af; }
-    
     /* Upload cards (3 CTAs) */
     .ev2-sidebar__uploads { flex: 1; overflow-y: auto; padding: 12px 18px; }
     .ev2-sidebar__sources-title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 2px; color: #9ca3af; margin-bottom: 10px; }
@@ -3828,20 +3816,6 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
       <div class="ev2-sidebar__header">
         <div class="ev2-sidebar__title"><i class="fas fa-folder-open"></i> Sources</div>
         <div class="ev2-sidebar__subtitle">Ajoutez vos documents d'inputs</div>
-      </div>
-
-      <!-- Template downloads -->
-      <div class="ev2-sidebar__templates">
-        <a href="/templates/questionnaire-bmc-sic.docx" class="ev2-tpl-btn ev2-tpl-btn--bmc" download>
-          <span class="ev2-tpl-btn__icon">📋</span>
-          <span class="ev2-tpl-btn__text">Questionnaire BMC/SIC</span>
-          <span class="ev2-tpl-btn__dl"><i class="fas fa-download"></i></span>
-        </a>
-        <a href="/templates/google-sheet-financier.xlsx" class="ev2-tpl-btn ev2-tpl-btn--fin" download>
-          <span class="ev2-tpl-btn__icon">📊</span>
-          <span class="ev2-tpl-btn__text">Google Sheet Financier</span>
-          <span class="ev2-tpl-btn__dl"><i class="fas fa-download"></i></span>
-        </a>
       </div>
 
       <!-- Upload cards (3 separate CTAs: BMC, SIC, Financier) -->
