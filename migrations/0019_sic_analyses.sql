@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS sic_analyses (
   analysis_json TEXT,         -- Résultat de l'analyse Claude AI (scores, recommandations, etc.)
   html_content TEXT,          -- HTML du livrable généré
   score REAL,                 -- Score global SIC
-  status TEXT DEFAULT 'uploaded' CHECK(status IN ('uploaded', 'extracting', 'analyzing', 'generated', 'error')),
+  status TEXT DEFAULT 'uploaded' CHECK(status IN ('uploaded', 'extracted', 'extracting', 'analyzing', 'generated', 'error')),
   source_upload_id TEXT,      -- Référence vers uploads.id
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now')),

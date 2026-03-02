@@ -36,6 +36,7 @@ import {
 import { analyzePme, analyzePmeWithAI, generatePmeExcelXml, generatePmePreviewHtml, type PmeInputData } from './framework-pme-engine'
 import { buildPmeInputWithAI, type EnrichedPmeInput } from './pme-ai-extractor'
 import { crossAnalyzeBmcFinancials } from './pme-cross-analyzer'
+import { callClaudeForSicExtraction, extractSicSectionsRegex, type SicExtractionResult } from './sic-extraction'
 
 type Bindings = {
   DB: D1Database
@@ -5263,33 +5264,70 @@ app.get('/module/sic/page', async (c) => {
 
     const db = c.env.DB
 
-    // 1. Check if SIC file was uploaded (via entrepreneur-page sidebar)
+    // 1. Check if SIC file was uploaded
     const sicUpload = await db.prepare(`
       SELECT id, filename, extracted_text, uploaded_at
       FROM uploads WHERE user_id = ? AND category = 'sic'
       ORDER BY uploaded_at DESC LIMIT 1
     `).bind(payload.userId).first()
 
-    // 2. Check latest sic_analyses entry
+    // 2. Check latest sic_analyses entry (with extraction_json from Claude)
     const sicAnalysis = await db.prepare(`
       SELECT id, status, score, extraction_json, analysis_json, created_at
       FROM sic_analyses WHERE user_id = ?
       ORDER BY created_at DESC LIMIT 1
     `).bind(payload.userId).first()
 
-    // 3. Count sections detected
-    let sectionsDetected = 0
+    // 3. Parse extraction data for rich display
     let filename = ''
-    if (sicUpload) {
-      filename = (sicUpload.filename as string) || ''
-      const text = (sicUpload.extracted_text as string) || ''
-      const matches = text.match(/^\d{1,2}\s*[-–.)\s]+\s*[A-ZÀÉÈÊËÏÎÔÙÛÜÇ]/gm)
-      sectionsDetected = matches ? Math.min(matches.length, 15) : (text.length > 50 ? 1 : 0)
+    let sectionsPresentes = 0
+    let sectionsAbsentes = 0
+    let sectionsAbsentesListe: string[] = []
+    let extractionSource = 'none'
+    let secteur: string | null = null
+    let zone: string | null = null
+    let oddMentionnes: number[] = []
+    let completude = 0
+    let synthese = { present: false, phrase_impact: '', maturite: '' }
+    let sectionDetails: Array<{ num: number; label: string; present: boolean; summary: string }> = []
+
+    if (sicAnalysis?.extraction_json) {
+      try {
+        const ext = JSON.parse(sicAnalysis.extraction_json as string)
+        sectionsPresentes = ext.metadata?.sections_presentes ?? 0
+        sectionsAbsentes = ext.metadata?.sections_absentes ?? (9 - sectionsPresentes)
+        sectionsAbsentesListe = ext.metadata?.sections_absentes_liste ?? []
+        extractionSource = ext._source || 'regex'
+        secteur = ext.metadata?.secteur || null
+        zone = ext.metadata?.zone_geographique || null
+        oddMentionnes = ext.metadata?.odd_mentionnes || []
+        completude = ext.metadata?.completude_pct ?? Math.round((sectionsPresentes / 9) * 100)
+        synthese = ext.extraction?.synthese || synthese
+
+        if (ext.extraction?.sections) {
+          sectionDetails = ext.extraction.sections.map((s: any) => ({
+            num: s.num,
+            label: s.label,
+            present: s.present,
+            summary: s.summary || ''
+          }))
+        }
+      } catch { /* ignore parse errors */ }
     }
 
-    const hasUpload = !!sicUpload
+    if (!sectionDetails.length && sicUpload) {
+      filename = (sicUpload.filename as string) || ''
+    } else if (sicAnalysis) {
+      try {
+        const ext = JSON.parse(sicAnalysis.extraction_json as string)
+        filename = ext._filename || ''
+      } catch { filename = '' }
+    }
+
+    const hasUpload = !!sicUpload || sectionsPresentes > 0
     const status = sicAnalysis ? (sicAnalysis.status as string) : (hasUpload ? 'uploaded' : 'empty')
     const score = sicAnalysis?.score ? Number(sicAnalysis.score) : null
+    const hasExtraction = sectionsPresentes > 0
 
     // 4. Check for generated SIC HTML deliverable
     const sicHtml = await db.prepare(`
@@ -5299,6 +5337,20 @@ app.get('/module/sic/page', async (c) => {
     `).bind(payload.userId).first()
     const hasDeliverable = !!sicHtml
 
+    // Build sections HTML for the extraction summary
+    const sectionsHtml = sectionDetails.map(s => `
+      <div class="flex items-start gap-2 py-2 ${s.present ? '' : 'opacity-50'}">
+        <div class="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5 ${s.present ? 'bg-emerald-100 text-emerald-600' : 'bg-red-100 text-red-400'}">
+          <i class="fas ${s.present ? 'fa-check' : 'fa-times'} text-xs"></i>
+        </div>
+        <div class="min-w-0 flex-1">
+          <p class="text-sm font-medium ${s.present ? 'text-slate-800' : 'text-slate-400'}">${s.num}. ${s.label}</p>
+          ${s.present && s.summary ? `<p class="text-xs text-slate-500 mt-0.5 line-clamp-2">${s.summary.slice(0, 150)}${s.summary.length > 150 ? '...' : ''}</p>` : ''}
+          ${!s.present ? '<p class="text-xs text-red-400">Section manquante</p>' : ''}
+        </div>
+      </div>
+    `).join('')
+
     return c.html(`<!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -5307,6 +5359,12 @@ app.get('/module/sic/page', async (c) => {
   <title>Social Impact Canvas</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
+  <style>
+    .line-clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .dropzone-active { border-color: #059669 !important; background: #ecfdf5 !important; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+    .fade-in { animation: fadeIn 0.3s ease-out; }
+  </style>
 </head>
 <body class="bg-slate-50 min-h-screen">
 
@@ -5314,7 +5372,7 @@ app.get('/module/sic/page', async (c) => {
   <nav class="bg-white shadow-sm border-b border-slate-200">
     <div class="max-w-5xl mx-auto px-4 py-4 flex items-center justify-between">
       <a href="/entrepreneur" class="text-emerald-600 hover:text-emerald-700 flex items-center gap-2 font-medium text-sm">
-        <i class="fas fa-arrow-left"></i> Retour
+        <i class="fas fa-arrow-left"></i> Retour au tableau de bord
       </a>
       <span class="text-xs text-slate-400 flex items-center gap-2">
         <i class="fas fa-seedling text-emerald-500"></i>
@@ -5338,111 +5396,193 @@ app.get('/module/sic/page', async (c) => {
       </div>
     </header>
 
-    <!-- STATUS CARDS -->
-    <div class="grid md:grid-cols-3 gap-4">
-
-      <!-- Card 1: Upload Status -->
-      <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-3">
-        <div class="flex items-center gap-2 text-sm font-semibold text-slate-700">
-          <i class="fas fa-file-word ${hasUpload ? 'text-emerald-500' : 'text-slate-300'}"></i>
-          Fichier SIC
+    <!-- UPLOAD ZONE (drag & drop) -->
+    <div id="upload-zone" class="bg-white rounded-2xl border-2 border-dashed border-slate-300 shadow-sm p-6 text-center transition-all cursor-pointer hover:border-emerald-400"
+         ondragover="event.preventDefault(); this.classList.add('dropzone-active')"
+         ondragleave="this.classList.remove('dropzone-active')"
+         ondrop="handleDrop(event)"
+         onclick="document.getElementById('file-input').click()">
+      <input type="file" id="file-input" accept=".doc,.docx" class="hidden" onchange="handleFileSelect(this)">
+      ${hasExtraction ? `
+        <div class="flex items-center justify-center gap-3 mb-2">
+          <div class="w-10 h-10 rounded-full bg-emerald-100 flex items-center justify-center">
+            <i class="fas fa-circle-check text-emerald-600 text-lg"></i>
+          </div>
+          <div class="text-left">
+            <p class="text-sm font-bold text-emerald-800">${filename || 'Fichier SIC'}</p>
+            <p class="text-xs text-emerald-600">
+              <i class="fas fa-robot mr-1"></i>
+              ${sectionsPresentes}/9 sections extraites
+              ${extractionSource === 'claude' ? '(Claude AI)' : '(extraction automatique)'}
+              — Complétude : ${completude}%
+            </p>
+          </div>
         </div>
-        ${hasUpload ? `
-          <div class="flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-50 border border-emerald-200">
-            <i class="fas fa-circle-check text-emerald-500"></i>
-            <div class="min-w-0 flex-1">
-              <p class="text-sm font-medium text-emerald-800 truncate">${filename}</p>
-              <p class="text-xs text-emerald-600">${sectionsDetected > 0 ? sectionsDetected + '/15 sections détectées' : 'Fichier reçu'}</p>
-            </div>
+        <p class="text-xs text-slate-400 mt-2">Glissez un nouveau fichier .docx ici pour le remplacer</p>
+      ` : hasUpload ? `
+        <div class="flex items-center justify-center gap-3 mb-2">
+          <i class="fas fa-file-word text-emerald-500 text-2xl"></i>
+          <div class="text-left">
+            <p class="text-sm font-medium text-slate-700">${filename || 'Fichier reçu'}</p>
+            <p class="text-xs text-slate-500">En attente d'extraction...</p>
           </div>
-        ` : `
-          <div class="px-3 py-2 rounded-lg bg-slate-50 border border-dashed border-slate-300 text-center">
-            <p class="text-sm text-slate-500">Aucun fichier uploadé</p>
-            <p class="text-xs text-slate-400 mt-1">Uploadez via la <a href="/entrepreneur" class="text-emerald-600 underline">page principale</a></p>
+        </div>
+      ` : `
+        <i class="fas fa-cloud-arrow-up text-4xl text-slate-300 mb-3"></i>
+        <p class="text-sm font-medium text-slate-600">Glissez votre fichier SIC ici</p>
+        <p class="text-xs text-slate-400 mt-1">ou cliquez pour sélectionner un .docx</p>
+      `}
+    </div>
+    <div id="upload-progress" class="hidden bg-white rounded-xl border border-emerald-200 p-4 fade-in">
+      <div class="flex items-center gap-3">
+        <i class="fas fa-spinner fa-spin text-emerald-600"></i>
+        <div class="flex-1">
+          <p class="text-sm font-medium text-slate-700" id="upload-status-text">Upload et extraction en cours...</p>
+          <div class="w-full bg-slate-200 rounded-full h-1.5 mt-2">
+            <div id="upload-bar" class="bg-emerald-500 h-1.5 rounded-full transition-all" style="width:10%"></div>
           </div>
-        `}
+        </div>
+      </div>
+    </div>
+
+    ${hasExtraction ? `
+    <!-- EXTRACTION SUMMARY -->
+    <div class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden fade-in">
+      <div class="px-5 py-3 bg-gradient-to-r from-emerald-50 to-teal-50 border-b border-emerald-100 flex items-center justify-between">
+        <span class="text-sm font-semibold text-emerald-800">
+          <i class="fas fa-clipboard-check mr-1"></i>
+          Extraction : ${sectionsPresentes}/9 sections
+          ${sectionsPresentes === 9 ? '— Complet ✓' : ''}
+        </span>
+        <span class="text-xs text-emerald-600">
+          ${extractionSource === 'claude' ? '<i class="fas fa-robot mr-1"></i>Claude AI' : '<i class="fas fa-gear mr-1"></i>Auto'}
+          ${secteur ? ' · ' + secteur : ''}
+          ${zone ? ' · ' + zone : ''}
+        </span>
       </div>
 
-      <!-- Card 2: Analysis Status -->
-      <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-3">
-        <div class="flex items-center gap-2 text-sm font-semibold text-slate-700">
-          <i class="fas fa-brain ${status === 'generated' ? 'text-emerald-500' : 'text-slate-300'}"></i>
-          Analyse IA
+      <div class="p-5 grid md:grid-cols-2 gap-x-6">
+        <!-- Left: Sections list -->
+        <div class="divide-y divide-slate-100">
+          ${sectionsHtml}
         </div>
-        ${status === 'generated' ? `
-          <div class="px-3 py-2 rounded-lg bg-emerald-50 border border-emerald-200">
-            <p class="text-sm font-medium text-emerald-800"><i class="fas fa-circle-check text-emerald-500 mr-1"></i> Analyse terminée</p>
-            ${score !== null ? `<p class="text-xs text-emerald-600 mt-1">Score : ${score}/10</p>` : ''}
+
+        <!-- Right: Metadata -->
+        <div class="space-y-4 mt-4 md:mt-0">
+          ${synthese.present ? `
+          <div class="bg-emerald-50 rounded-lg p-3 border border-emerald-100">
+            <p class="text-xs font-semibold text-emerald-700 mb-1"><i class="fas fa-quote-left mr-1"></i> Synthèse d'impact</p>
+            <p class="text-sm text-emerald-900 italic">${synthese.phrase_impact.slice(0, 200)}</p>
+            ${synthese.maturite ? `<p class="text-xs text-emerald-600 mt-1">Maturité : <strong>${synthese.maturite}</strong></p>` : ''}
           </div>
-        ` : status === 'analyzing' ? `
-          <div class="px-3 py-2 rounded-lg bg-amber-50 border border-amber-200">
-            <p class="text-sm font-medium text-amber-800"><i class="fas fa-spinner fa-spin text-amber-500 mr-1"></i> Analyse en cours...</p>
+          ` : ''}
+
+          ${oddMentionnes.length > 0 ? `
+          <div class="bg-blue-50 rounded-lg p-3 border border-blue-100">
+            <p class="text-xs font-semibold text-blue-700 mb-2"><i class="fas fa-bullseye mr-1"></i> ODD identifiés</p>
+            <div class="flex flex-wrap gap-1">
+              ${oddMentionnes.map((n: number) => `<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">ODD ${n}</span>`).join('')}
+            </div>
           </div>
-        ` : `
-          <div class="px-3 py-2 rounded-lg bg-slate-50 border border-dashed border-slate-300 text-center">
-            <p class="text-sm text-slate-500">${hasUpload ? 'Prêt à analyser' : 'En attente du fichier'}</p>
+          ` : ''}
+
+          ${sectionsAbsentesListe.length > 0 ? `
+          <div class="bg-amber-50 rounded-lg p-3 border border-amber-100">
+            <p class="text-xs font-semibold text-amber-700 mb-1"><i class="fas fa-triangle-exclamation mr-1"></i> Sections manquantes</p>
+            <ul class="text-xs text-amber-800 space-y-1">
+              ${sectionsAbsentesListe.map((s: string) => `<li>· ${s}</li>`).join('')}
+            </ul>
           </div>
-        `}
+          ` : ''}
+
+          <!-- Completude bar -->
+          <div>
+            <div class="flex justify-between text-xs text-slate-500 mb-1">
+              <span>Complétude</span>
+              <span class="font-semibold ${completude === 100 ? 'text-emerald-600' : completude >= 70 ? 'text-amber-600' : 'text-red-500'}">${completude}%</span>
+            </div>
+            <div class="w-full bg-slate-200 rounded-full h-2">
+              <div class="h-2 rounded-full transition-all ${completude === 100 ? 'bg-emerald-500' : completude >= 70 ? 'bg-amber-400' : 'bg-red-400'}" style="width:${completude}%"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    ` : ''}
+
+    <!-- STATUS CARDS (compact) -->
+    <div class="grid md:grid-cols-3 gap-4">
+      <!-- Card 1: Upload -->
+      <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-4">
+        <div class="flex items-center gap-2">
+          <div class="w-8 h-8 rounded-lg ${hasUpload ? 'bg-emerald-100' : 'bg-slate-100'} flex items-center justify-center">
+            <i class="fas fa-file-word ${hasUpload ? 'text-emerald-600' : 'text-slate-400'} text-sm"></i>
+          </div>
+          <div>
+            <p class="text-xs font-semibold ${hasUpload ? 'text-emerald-700' : 'text-slate-500'}">
+              ${hasUpload ? 'Fichier reçu ✓' : 'Aucun fichier'}
+            </p>
+            <p class="text-[10px] text-slate-400">${hasExtraction ? sectionsPresentes + '/9 sections' : 'Upload .docx'}</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 2: Analysis -->
+      <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-4">
+        <div class="flex items-center gap-2">
+          <div class="w-8 h-8 rounded-lg ${status === 'generated' ? 'bg-emerald-100' : status === 'extracted' ? 'bg-blue-100' : 'bg-slate-100'} flex items-center justify-center">
+            <i class="fas fa-brain ${status === 'generated' ? 'text-emerald-600' : status === 'extracted' ? 'text-blue-600' : 'text-slate-400'} text-sm"></i>
+          </div>
+          <div>
+            <p class="text-xs font-semibold ${status === 'generated' ? 'text-emerald-700' : status === 'extracted' ? 'text-blue-700' : 'text-slate-500'}">
+              ${status === 'generated' ? 'Analyse complète ✓' : status === 'extracted' ? 'Extraction OK' : status === 'analyzing' ? 'En cours...' : 'En attente'}
+            </p>
+            ${score !== null ? `<p class="text-[10px] text-emerald-600">Score : ${score}/10</p>` : ''}
+          </div>
+        </div>
       </div>
 
       <!-- Card 3: Deliverable -->
-      <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-3">
-        <div class="flex items-center gap-2 text-sm font-semibold text-slate-700">
-          <i class="fas fa-file-lines ${hasDeliverable ? 'text-emerald-500' : 'text-slate-300'}"></i>
-          Livrable
+      <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-4">
+        <div class="flex items-center gap-2">
+          <div class="w-8 h-8 rounded-lg ${hasDeliverable ? 'bg-emerald-100' : 'bg-slate-100'} flex items-center justify-center">
+            <i class="fas fa-file-lines ${hasDeliverable ? 'text-emerald-600' : 'text-slate-400'} text-sm"></i>
+          </div>
+          <div>
+            <p class="text-xs font-semibold ${hasDeliverable ? 'text-emerald-700' : 'text-slate-500'}">
+              ${hasDeliverable ? 'Livrable prêt ✓' : 'Non généré'}
+            </p>
+            ${hasDeliverable ? `<a href="/api/sic/deliverable?format=full" target="_blank" class="text-[10px] text-emerald-600 underline">Voir</a>` : ''}
+          </div>
         </div>
-        ${hasDeliverable ? `
-          <div class="px-3 py-2 rounded-lg bg-emerald-50 border border-emerald-200">
-            <p class="text-sm font-medium text-emerald-800"><i class="fas fa-circle-check text-emerald-500 mr-1"></i> Livrable disponible</p>
-            <a href="/api/sic/deliverable?format=full" target="_blank" class="inline-flex items-center gap-1 mt-2 text-xs text-emerald-700 underline hover:text-emerald-800">
-              <i class="fas fa-external-link-alt"></i> Voir le livrable
-            </a>
-          </div>
-        ` : `
-          <div class="px-3 py-2 rounded-lg bg-slate-50 border border-dashed border-slate-300 text-center">
-            <p class="text-sm text-slate-500">Non encore généré</p>
-          </div>
-        `}
       </div>
     </div>
 
-    <!-- TEMPLATE DOWNLOAD -->
-    <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 flex items-center justify-between">
-      <div class="flex items-center gap-3">
-        <div class="w-10 h-10 rounded-lg bg-emerald-100 flex items-center justify-center">
-          <i class="fas fa-download text-emerald-600"></i>
-        </div>
-        <div>
-          <p class="text-sm font-semibold text-slate-800">Template SIC vierge</p>
-          <p class="text-xs text-slate-500">Téléchargez le modèle, remplissez-le, puis uploadez-le via la page principale</p>
-        </div>
-      </div>
-      <a href="/templates/template-sic.docx" download class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold transition">
-        <i class="fas fa-file-word"></i> Télécharger
+    <!-- TEMPLATE + GENERATE -->
+    <div class="flex flex-col sm:flex-row gap-3 items-center justify-center">
+      <a href="/templates/template-sic.docx" download class="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-sm font-medium shadow-sm transition">
+        <i class="fas fa-download text-emerald-600"></i> Télécharger le template SIC
       </a>
-    </div>
 
-    <!-- GENERATE BUTTON -->
-    <div class="flex justify-center">
       <button
         id="btn-generate"
         onclick="launchGeneration()"
-        ${!hasUpload ? 'disabled' : ''}
-        class="inline-flex items-center gap-3 px-8 py-3 rounded-xl text-white text-base font-bold shadow-lg transition
-          ${hasUpload ? 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 cursor-pointer' : 'bg-slate-300 cursor-not-allowed'}"
+        ${!hasExtraction ? 'disabled' : ''}
+        class="inline-flex items-center gap-3 px-8 py-2.5 rounded-xl text-white text-sm font-bold shadow-lg transition
+          ${hasExtraction ? 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 cursor-pointer' : 'bg-slate-300 cursor-not-allowed'}"
       >
         <i class="fas fa-wand-magic-sparkles"></i>
         Générer l'analyse SIC
       </button>
     </div>
-    ${!hasUpload ? '<p class="text-center text-xs text-slate-400 -mt-2">Uploadez d\'abord un fichier SIC via la <a href="/entrepreneur" class="text-emerald-600 underline">page principale</a></p>' : ''}
+    ${!hasExtraction ? '<p class="text-center text-xs text-slate-400">Uploadez un fichier SIC pour activer l\'analyse</p>' : ''}
 
     <!-- GENERATED DELIVERABLE PREVIEW -->
     ${hasDeliverable ? `
     <div class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
       <div class="px-5 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
         <span class="text-sm font-semibold text-slate-700"><i class="fas fa-eye mr-1"></i> Aperçu du livrable SIC</span>
-        <a href="/api/sic/deliverable?format=full" target="_blank" class="text-xs text-emerald-600 hover:underline">Ouvrir en plein écran <i class="fas fa-external-link-alt"></i></a>
+        <a href="/api/sic/deliverable?format=full" target="_blank" class="text-xs text-emerald-600 hover:underline">Plein écran <i class="fas fa-external-link-alt"></i></a>
       </div>
       <iframe src="/api/sic/deliverable?format=full" style="width:100%;height:700px;border:none;" title="Livrable SIC"></iframe>
     </div>
@@ -5451,6 +5591,87 @@ app.get('/module/sic/page', async (c) => {
   </main>
 
   <script>
+    function getToken() {
+      return localStorage.getItem('auth_token') || document.cookie.split('auth_token=')[1]?.split(';')[0] || '';
+    }
+
+    // ── Drag & Drop / File Select ──
+    function handleDrop(e) {
+      e.preventDefault();
+      e.currentTarget.classList.remove('dropzone-active');
+      const files = e.dataTransfer?.files;
+      if (files && files.length > 0) uploadFile(files[0]);
+    }
+
+    function handleFileSelect(input) {
+      if (input.files && input.files.length > 0) uploadFile(input.files[0]);
+    }
+
+    async function uploadFile(file) {
+      if (!file.name.match(/\\.docx?$/i)) {
+        alert('Veuillez sélectionner un fichier .docx');
+        return;
+      }
+      if (file.size > 10 * 1024 * 1024) {
+        alert('Fichier trop volumineux (max 10 Mo)');
+        return;
+      }
+
+      // Show progress
+      document.getElementById('upload-zone').classList.add('hidden');
+      const prog = document.getElementById('upload-progress');
+      prog.classList.remove('hidden');
+      const bar = document.getElementById('upload-bar');
+      const statusText = document.getElementById('upload-status-text');
+
+      bar.style.width = '20%';
+      statusText.textContent = 'Upload du fichier...';
+
+      const formData = new FormData();
+      formData.append('file', file);
+
+      try {
+        bar.style.width = '40%';
+        statusText.textContent = 'Extraction et analyse par Claude AI...';
+
+        const token = getToken();
+        const res = await fetch('/api/sic/upload', {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + token },
+          body: formData
+        });
+
+        bar.style.width = '80%';
+        const data = await res.json();
+
+        if (data.success) {
+          bar.style.width = '100%';
+          statusText.innerHTML = '<i class="fas fa-circle-check text-emerald-600 mr-1"></i> ' + data.message;
+
+          // Reload after brief pause to show the extraction summary
+          setTimeout(() => location.reload(), 1200);
+        } else {
+          statusText.innerHTML = '<i class="fas fa-triangle-exclamation text-red-500 mr-1"></i> ' + (data.error || 'Erreur');
+          bar.style.width = '100%';
+          bar.classList.remove('bg-emerald-500');
+          bar.classList.add('bg-red-400');
+          setTimeout(() => {
+            prog.classList.add('hidden');
+            document.getElementById('upload-zone').classList.remove('hidden');
+          }, 3000);
+        }
+      } catch (err) {
+        statusText.innerHTML = '<i class="fas fa-triangle-exclamation text-red-500 mr-1"></i> Erreur réseau';
+        bar.classList.remove('bg-emerald-500');
+        bar.classList.add('bg-red-400');
+        setTimeout(() => {
+          prog.classList.add('hidden');
+          document.getElementById('upload-zone').classList.remove('hidden');
+        }, 3000);
+      }
+    }
+
+    // ── Generate Analysis ──
     async function launchGeneration() {
       const btn = document.getElementById('btn-generate');
       if (!btn || btn.disabled) return;
@@ -5458,8 +5679,7 @@ app.get('/module/sic/page', async (c) => {
       btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Analyse en cours...';
 
       try {
-        // Use the main generate-all endpoint (includes SIC)
-        const token = localStorage.getItem('auth_token') || '';
+        const token = getToken();
         const res = await fetch('/api/ai/generate-all', {
           method: 'POST',
           headers: { 'Authorization': 'Bearer ' + token }
@@ -5497,7 +5717,7 @@ app.get('/module/sic/page', async (c) => {
 // Structure parallèle au BMC : upload → generate → download → latest
 // ═══════════════════════════════════════════════════════════════
 
-// POST /api/sic/upload — Reçoit un fichier .docx SIC et l'enregistre
+// POST /api/sic/upload — Reçoit un fichier .docx SIC, extrait le texte, et lance l'extraction Claude
 app.post('/api/sic/upload', async (c) => {
   try {
     const token = getAuthToken(c)
@@ -5515,64 +5735,105 @@ app.post('/api/sic/upload', async (c) => {
       return c.json({ error: 'Format non supporté. Envoyez un fichier .docx' }, 400)
     }
 
-    // Max 10MB
     if (file.size > 10 * 1024 * 1024) {
       return c.json({ error: 'Fichier trop volumineux (max 10 Mo)' }, 400)
     }
 
-    // Extract text from DOCX
+    // ── ÉTAPE A : Extraire le texte brut du DOCX ──
     const arrayBuffer = await file.arrayBuffer()
     const uint8 = new Uint8Array(arrayBuffer)
     let extractedText = ''
-    let sectionsDetected = 0
     try {
       extractedText = parseDocx(uint8)
-      // Count SIC sections detected (look for numbered headings like "1-", "2-", etc.)
-      const sectionMatches = extractedText.match(/^\d{1,2}\s*[-–.)\s]+\s*[A-ZÀÉÈÊËÏÎÔÙÛÜÇ]/gm)
-      sectionsDetected = sectionMatches ? Math.min(sectionMatches.length, 15) : 0
     } catch (e) {
       console.warn('[SIC Upload] DOCX parsing failed:', e)
+      return c.json({ error: 'Impossible de lire le fichier Word. Vérifiez le format.' }, 400)
     }
 
-    // Generate ID
-    const id = crypto.randomUUID()
-    const pmeId = String(payload.userId) // For now, pmeId = userId
+    if (extractedText.length < 50) {
+      return c.json({ error: 'Le fichier semble vide ou illisible.' }, 400)
+    }
 
-    // Store in sic_analyses
+    console.log(`[SIC Upload] DOCX text extracted: ${extractedText.length} chars from "${file.name}"`)
+
+    // ── ÉTAPE B : Appel Claude API pour extraction structurée ──
+    const apiKey = c.env.ANTHROPIC_API_KEY || ''
+    let extractionResult: any = null
+    let extractionSource: 'claude' | 'regex' = 'regex'
+
+    if (apiKey && apiKey.length > 10) {
+      try {
+        console.log('[SIC Upload] Calling Claude API for structured extraction...')
+        const claudeResult = await callClaudeForSicExtraction(apiKey, extractedText, file.name)
+        if (claudeResult && claudeResult.extraction) {
+          extractionResult = claudeResult
+          extractionSource = 'claude'
+          console.log(`[SIC Upload] Claude extraction OK: ${claudeResult.metadata?.sections_presentes || '?'}/9 sections`)
+        }
+      } catch (err: any) {
+        console.warn('[SIC Upload] Claude extraction failed, falling back to regex:', err.message)
+      }
+    } else {
+      console.log('[SIC Upload] No API key, using regex fallback')
+    }
+
+    // Fallback: regex-based extraction if Claude failed
+    if (!extractionResult) {
+      extractionResult = extractSicSectionsRegex(extractedText)
+      console.log(`[SIC Upload] Regex extraction: ${extractionResult.metadata?.sections_presentes || '?'}/9 sections`)
+    }
+
+    // ── ÉTAPE C : Sauvegarder dans sic_analyses + uploads ──
+    const id = crypto.randomUUID()
+    const pmeId = String(payload.userId)
+    const sectionsPresentes = extractionResult.metadata?.sections_presentes ?? 0
+    const sectionsAbsentes = extractionResult.metadata?.sections_absentes ?? (9 - sectionsPresentes)
+    const sectionsAbsentesListe = extractionResult.metadata?.sections_absentes_liste ?? []
+
+    // Delete previous SIC analyses for this user (keep latest only)
+    await c.env.DB.prepare(`DELETE FROM sic_analyses WHERE user_id = ?`).bind(payload.userId).run()
+
     await c.env.DB.prepare(`
       INSERT INTO sic_analyses (id, pme_id, user_id, version, extraction_json, status, created_at, updated_at)
-      VALUES (?, ?, ?, 1, ?, 'uploaded', datetime('now'), datetime('now'))
+      VALUES (?, ?, ?, 1, ?, 'extracted', datetime('now'), datetime('now'))
     `).bind(
-      id,
-      pmeId,
-      payload.userId,
-      JSON.stringify({ filename: file.name, text: extractedText, sectionsDetected })
+      id, pmeId, payload.userId,
+      JSON.stringify({ ...extractionResult, _source: extractionSource, _filename: file.name, _textLength: extractedText.length })
     ).run()
 
-    // Also store in uploads table for integration with entrepreneur-page
+    // Also store in uploads table for entrepreneur-page integration
+    // Delete previous SIC upload for this user
+    await c.env.DB.prepare(`DELETE FROM uploads WHERE user_id = ? AND category = 'sic'`).bind(payload.userId).run()
+
     const uploadId = crypto.randomUUID()
     await c.env.DB.prepare(`
-      INSERT OR REPLACE INTO uploads (id, user_id, category, filename, r2_key, file_type, file_size, extracted_text, uploaded_at)
+      INSERT INTO uploads (id, user_id, category, filename, r2_key, file_type, file_size, extracted_text, uploaded_at)
       VALUES (?, ?, 'sic', ?, ?, ?, ?, ?, datetime('now'))
     `).bind(
-      uploadId,
-      payload.userId,
-      file.name,
+      uploadId, payload.userId, file.name,
       `sic/${id}/${file.name}`,
       file.type || 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      file.size,
-      extractedText
+      file.size, extractedText
     ).run()
 
-    console.log(`[SIC Upload] File "${file.name}" received, ${extractedText.length} chars extracted, ${sectionsDetected} sections detected`)
+    console.log(`[SIC Upload] Saved: id=${id}, ${sectionsPresentes}/9 sections, source=${extractionSource}`)
 
+    // ── ÉTAPE D : Réponse au frontend ──
     return c.json({
       success: true,
       id,
       uploadId,
-      message: 'Fichier SIC reçu',
+      message: sectionsPresentes === 9
+        ? 'Fichier SIC reçu — 9/9 sections extraites'
+        : `Fichier SIC reçu — ${sectionsPresentes}/9 sections extraites`,
       filename: file.name,
-      sectionsDetected,
+      extractionSource,
+      sections_presentes: sectionsPresentes,
+      sections_absentes: sectionsAbsentes,
+      sections_absentes_liste: sectionsAbsentesListe,
+      secteur: extractionResult.metadata?.secteur || null,
+      zone_geographique: extractionResult.metadata?.zone_geographique || null,
+      odd_mentionnes: extractionResult.metadata?.odd_mentionnes || [],
       textLength: extractedText.length
     })
   } catch (error: any) {
