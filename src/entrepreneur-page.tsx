@@ -103,6 +103,60 @@ function formatKBForPrompt(items: any[], type: string): string {
   return items.map(i => JSON.stringify(i)).join('\n')
 }
 
+// ─── BMC Document Parser: split full text into 9 sections ────
+// Maps document section headings to BMC_SECTIONS keys (1-9)
+function parseBmcDocumentToAnswers(text: string): Map<number, string> {
+  const answers = new Map<number, string>()
+  
+  // Mapping: section heading keywords → BMC key number
+  const sectionMap: { pattern: RegExp, key: number }[] = [
+    { pattern: /segment/i, key: 1 },
+    { pattern: /proposition\s+de\s+valeur/i, key: 2 },
+    { pattern: /cana(?:ux|l)/i, key: 3 },
+    { pattern: /relation/i, key: 4 },
+    { pattern: /source.*revenu|flux.*revenu|revenu/i, key: 5 },
+    { pattern: /ressource/i, key: 6 },
+    { pattern: /activit/i, key: 7 },
+    { pattern: /partenaire/i, key: 8 },
+    { pattern: /structure.*co[uû]t|co[uû]t/i, key: 9 },
+  ]
+  
+  // Split by numbered sections: "1-", "2-", ..., "9-" or "1.", "2.", etc.
+  const sectionRegex = /(?:^|\n)\s*(\d{1,2})\s*[-–.)\s]+\s*([A-ZÀÉÈÊËÏÎÔÙÛÜÇ][A-ZÀÉÈÊËÏÎÔÙÛÜÇ\s'']+)/g
+  const sections: { num: number, title: string, start: number }[] = []
+  let match: RegExpExecArray | null
+  while ((match = sectionRegex.exec(text)) !== null) {
+    sections.push({ num: parseInt(match[1]), title: match[2].trim(), start: match.index })
+  }
+  
+  // Extract content for each section
+  for (let i = 0; i < sections.length; i++) {
+    const sec = sections[i]
+    const nextStart = i + 1 < sections.length ? sections[i + 1].start : text.length
+    const content = text.substring(sec.start, nextStart).trim()
+    
+    // Find which BMC key this section maps to (by title keywords, not number)
+    let bmcKey: number | null = null
+    for (const sm of sectionMap) {
+      if (sm.pattern.test(sec.title)) {
+        bmcKey = sm.key
+        break
+      }
+    }
+    
+    if (bmcKey !== null && content.length > 10) {
+      answers.set(bmcKey, content)
+    }
+  }
+  
+  // If parsing failed (no sections found), fallback to full text in key 1
+  if (answers.size === 0 && text.length > 50) {
+    answers.set(1, text)
+  }
+  
+  return answers
+}
+
 // ─── Rich Fallback Generator ──────────────────────────────────
 function rnd(min: number, max: number): number { return Math.floor(Math.random() * (max - min + 1)) + min }
 function jitter(base: number, spread = 12): number { return Math.max(0, Math.min(100, base + rnd(-spread, spread))) }
@@ -982,7 +1036,8 @@ entrepreneurRoutes.post('/api/ai/generate-all', async (c) => {
             }
           }
           if (bmcAnswers.size === 0 && documentTexts.bmc) {
-            bmcAnswers.set(1, documentTexts.bmc)
+            bmcAnswers = parseBmcDocumentToAnswers(documentTexts.bmc)
+            console.log(`[Generate-All] BMC parsed from document: ${bmcAnswers.size} sections found (keys: ${Array.from(bmcAnswers.keys()).join(',')})`)
           }
 
           if (bmcAnswers.size > 0) {
