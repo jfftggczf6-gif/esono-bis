@@ -37,6 +37,7 @@ import { analyzePme, analyzePmeWithAI, generatePmeExcelXml, generatePmePreviewHt
 import { buildPmeInputWithAI, type EnrichedPmeInput } from './pme-ai-extractor'
 import { crossAnalyzeBmcFinancials } from './pme-cross-analyzer'
 import { callClaudeForSicExtraction, extractSicSectionsRegex, type SicExtractionResult } from './sic-extraction'
+import { analyzeSicWithClaude, analyzeSicFallback, type SicAnalystResult } from './sic-analyst'
 
 type Bindings = {
   DB: D1Database
@@ -5328,8 +5329,17 @@ app.get('/module/sic/page', async (c) => {
     const status = sicAnalysis ? (sicAnalysis.status as string) : (hasUpload ? 'uploaded' : 'empty')
     const score = sicAnalysis?.score ? Number(sicAnalysis.score) : null
     const hasExtraction = sectionsPresentes > 0
+    const hasAnalysis = (status === 'generated' || status === 'analyzed') && !!sicAnalysis?.analysis_json
 
-    // 4. Check for generated SIC HTML deliverable
+    // 4. Parse analysis data if available
+    let analysisData: any = null
+    if (hasAnalysis) {
+      try {
+        analysisData = JSON.parse(sicAnalysis!.analysis_json as string)
+      } catch { /* ignore */ }
+    }
+
+    // 5. Check for generated SIC HTML deliverable
     const sicHtml = await db.prepare(`
       SELECT content FROM entrepreneur_deliverables
       WHERE user_id = ? AND type = 'sic_html'
@@ -5350,6 +5360,111 @@ app.get('/module/sic/page', async (c) => {
         </div>
       </div>
     `).join('')
+
+    // ═══ Build analysis results HTML BEFORE the template ═══
+    let analysisHtml = ''
+    if (analysisData && analysisData.score_global) {
+      const scoreColor = analysisData.score_global >= 71 ? 'emerald' : analysisData.score_global >= 51 ? 'amber' : 'red'
+
+      // Dimensions bars
+      const dimOrder = ['probleme_vision', 'beneficiaires', 'mesure_impact', 'alignement_odd', 'gestion_risques']
+      const dimWeights: Record<string, string> = { probleme_vision: '25%', beneficiaires: '20%', mesure_impact: '20%', alignement_odd: '20%', gestion_risques: '15%' }
+      const dimsHtml = dimOrder.map(k => {
+        const d = analysisData.dimensions?.[k]
+        if (!d) return ''
+        const dc = d.score >= 70 ? '#059669' : d.score >= 50 ? '#d97706' : '#dc2626'
+        return '<div class="space-y-1">' +
+          '<div class="flex justify-between items-center text-xs">' +
+            '<span class="font-medium text-slate-700">' + d.label + ' <span class="text-slate-400">(' + dimWeights[k] + ')</span></span>' +
+            '<span class="font-bold" style="color:' + dc + '">' + d.score + '/100</span>' +
+          '</div>' +
+          '<div class="w-full bg-slate-200 rounded-full h-2">' +
+            '<div class="h-2 rounded-full transition-all" style="width:' + d.score + '%;background:' + dc + '"></div>' +
+          '</div>' +
+          (d.commentaire ? '<p class="text-[11px] text-slate-500 leading-tight">' + String(d.commentaire).slice(0, 200) + '</p>' : '') +
+        '</div>'
+      }).join('')
+
+      // ODD badges
+      const odds = analysisData.canvas_blocs?.odd_cibles?.odds || []
+      const oddBadgesHtml = odds.map((o: any) =>
+        '<div class="flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium text-white" style="background:' + (o.couleur || '#666') + '">' +
+          '<span>ODD ' + o.numero + '</span>' +
+          '<span class="opacity-80">&middot;</span>' +
+          '<span class="opacity-90 truncate max-w-[120px]">' + (o.nom || '') + '</span>' +
+          (o.alignement === 'fort' ? ' <i class="fas fa-star text-yellow-200 text-[10px]"></i>' : '') +
+        '</div>'
+      ).join('')
+
+      // Theory of change
+      const tdc = analysisData.theorie_du_changement || {}
+      const tdcSteps = [
+        { icon: 'fa-exclamation-triangle', label: 'Problème', text: tdc.probleme },
+        { icon: 'fa-gears', label: 'Activités', text: tdc.activites },
+        { icon: 'fa-box', label: 'Outputs', text: tdc.outputs },
+        { icon: 'fa-chart-line', label: 'Outcomes', text: tdc.outcomes },
+        { icon: 'fa-globe', label: 'Impact', text: tdc.impact },
+      ].filter(s => s.text)
+      const tdcHtml = tdcSteps.map((s, i) =>
+        '<div class="flex items-start gap-2">' +
+          '<div class="w-7 h-7 rounded-full bg-emerald-100 flex items-center justify-center flex-shrink-0 mt-0.5">' +
+            '<i class="fas ' + s.icon + ' text-emerald-600 text-[10px]"></i>' +
+          '</div>' +
+          '<div><p class="text-[10px] font-bold text-emerald-700 uppercase">' + s.label + '</p>' +
+            '<p class="text-xs text-slate-600">' + s.text + '</p></div>' +
+        '</div>' +
+        (i < tdcSteps.length - 1 ? '<div class="w-px h-3 bg-emerald-200 ml-3.5"></div>' : '')
+      ).join('')
+
+      // Recommendations
+      const recos = analysisData.recommandations || []
+      const recosHtml = recos.map((r: any) =>
+        '<div class="flex gap-3 p-3 rounded-lg bg-amber-50 border border-amber-100">' +
+          '<div class="w-6 h-6 rounded-full bg-amber-200 flex items-center justify-center flex-shrink-0 text-xs font-bold text-amber-800">' + r.priorite + '</div>' +
+          '<div>' +
+            '<p class="text-sm font-semibold text-slate-800">' + r.titre + '</p>' +
+            '<p class="text-xs text-slate-600 mt-0.5">' + r.detail + '</p>' +
+            '<p class="text-[10px] text-amber-700 font-medium mt-1"><i class="fas fa-arrow-up mr-1"></i>' + r.impact_score + '</p>' +
+          '</div>' +
+        '</div>'
+      ).join('')
+
+      // Croisement BMC
+      const crBmc = analysisData.croisement_bmc || {}
+      let crBmcHtml = ''
+      if (crBmc.disponible) {
+        const cohHtml = (crBmc.coherences || []).map((cc: string) => '<li class="text-xs text-slate-600 flex gap-1"><span class="text-emerald-500">&#10003;</span> ' + cc + '</li>').join('')
+        const incHtml = (crBmc.incoherences || []).map((cc: string) => '<li class="text-xs text-slate-600 flex gap-1"><span class="text-red-400">&#10007;</span> ' + cc + '</li>').join('')
+        crBmcHtml = '<div class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">' +
+          '<div class="px-5 py-3 bg-gradient-to-r from-indigo-50 to-purple-50 border-b border-indigo-100">' +
+            '<span class="text-sm font-semibold text-indigo-800"><i class="fas fa-link mr-1"></i> Croisement BMC &harr; SIC</span>' +
+          '</div><div class="p-5 grid md:grid-cols-2 gap-4">' +
+          (cohHtml ? '<div><p class="text-xs font-semibold text-emerald-700 mb-2"><i class="fas fa-check-circle mr-1"></i> Cohérences</p><ul class="space-y-1">' + cohHtml + '</ul></div>' : '') +
+          (incHtml ? '<div><p class="text-xs font-semibold text-red-600 mb-2"><i class="fas fa-exclamation-circle mr-1"></i> Incohérences</p><ul class="space-y-1">' + incHtml + '</ul></div>' : '') +
+          '</div></div>'
+      }
+
+      const scBg = scoreColor === 'emerald' ? '#ecfdf5' : scoreColor === 'amber' ? '#fffbeb' : '#fef2f2'
+      const scBorder = scoreColor === 'emerald' ? '#a7f3d0' : scoreColor === 'amber' ? '#fde68a' : '#fecaca'
+      const scText = scoreColor === 'emerald' ? '#065f46' : scoreColor === 'amber' ? '#92400e' : '#991b1b'
+      const scBadgeBg = scoreColor === 'emerald' ? '#d1fae5' : scoreColor === 'amber' ? '#fef3c7' : '#fee2e2'
+
+      analysisHtml = '<div class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden fade-in">' +
+        '<div class="px-5 py-4 border-b flex items-center justify-between" style="background:' + scBg + ';border-color:' + scBorder + '">' +
+          '<div><span class="text-lg font-bold" style="color:' + scText + '">' + analysisData.score_global + '/100</span>' +
+            '<span class="text-sm ml-2" style="color:' + scText + '">' + (analysisData.label || '') + '</span></div>' +
+          '<span class="text-xs px-3 py-1 rounded-full font-semibold" style="background:' + scBadgeBg + ';color:' + scText + '">' +
+            (analysisData._source === 'claude' ? '<i class="fas fa-robot mr-1"></i>Claude AI' : '<i class="fas fa-gear mr-1"></i>Auto') +
+          '</span>' +
+        '</div>' +
+        '<div class="p-5 space-y-6">' +
+          (analysisData.synthese_impact ? '<div class="bg-slate-50 rounded-lg p-4 border border-slate-100"><p class="text-sm text-slate-700 leading-relaxed">' + analysisData.synthese_impact + '</p></div>' : '') +
+          '<div class="space-y-3"><h3 class="text-sm font-bold text-slate-800"><i class="fas fa-chart-bar mr-1"></i> Scoring par dimension</h3>' + dimsHtml + '</div>' +
+          (odds.length > 0 ? '<div><h3 class="text-sm font-bold text-slate-800 mb-2"><i class="fas fa-bullseye mr-1"></i> ODD ciblés (' + odds.length + ')</h3><div class="flex flex-wrap gap-2">' + oddBadgesHtml + '</div></div>' : '') +
+          (tdcHtml ? '<div><h3 class="text-sm font-bold text-slate-800 mb-3"><i class="fas fa-route mr-1"></i> Théorie du changement</h3><div class="space-y-0">' + tdcHtml + '</div></div>' : '') +
+          (recos.length > 0 ? '<div><h3 class="text-sm font-bold text-slate-800 mb-2"><i class="fas fa-lightbulb mr-1"></i> Top ' + recos.length + ' recommandations</h3><div class="space-y-2">' + recosHtml + '</div></div>' : '') +
+        '</div></div>' + crBmcHtml
+    }
 
     return c.html(`<!DOCTYPE html>
 <html lang="fr">
@@ -5558,6 +5673,9 @@ app.get('/module/sic/page', async (c) => {
       </div>
     </div>
 
+    <!-- ANALYSIS RESULTS -->
+    ${analysisHtml}
+
     <!-- TEMPLATE + GENERATE -->
     <div class="flex flex-col sm:flex-row gap-3 items-center justify-center">
       <a href="/templates/template-sic.docx" download class="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-sm font-medium shadow-sm transition">
@@ -5676,20 +5794,26 @@ app.get('/module/sic/page', async (c) => {
       const btn = document.getElementById('btn-generate');
       if (!btn || btn.disabled) return;
       btn.disabled = true;
-      btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Analyse en cours...';
+      btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Analyse IA en cours...';
 
       try {
         const token = getToken();
-        const res = await fetch('/api/ai/generate-all', {
+        const res = await fetch('/api/sic/generate', {
           method: 'POST',
-          headers: { 'Authorization': 'Bearer ' + token }
+          headers: {
+            'Authorization': 'Bearer ' + token,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ pmeId: '' })
         });
         const data = await res.json();
         if (data.success) {
-          btn.innerHTML = '<i class="fas fa-circle-check"></i> Analyse terminée !';
+          const score = data.analysis?.score_global || '?';
+          const label = data.analysis?.label || '';
+          btn.innerHTML = '<i class="fas fa-circle-check"></i> ' + score + '/100 — ' + label;
           btn.classList.remove('from-emerald-600', 'to-teal-600');
           btn.classList.add('bg-emerald-600');
-          setTimeout(() => location.reload(), 1500);
+          setTimeout(() => location.reload(), 2000);
         } else {
           btn.innerHTML = '<i class="fas fa-triangle-exclamation"></i> ' + (data.error || 'Erreur');
           btn.disabled = false;
@@ -5842,7 +5966,7 @@ app.post('/api/sic/upload', async (c) => {
   }
 })
 
-// POST /api/sic/generate — Lance l'analyse SIC (stub — pas d'agent IA pour le moment)
+// POST /api/sic/generate — Lance l'analyse SIC via l'agent Claude (SIC Analyst)
 app.post('/api/sic/generate', async (c) => {
   try {
     const token = getAuthToken(c)
@@ -5850,10 +5974,10 @@ app.post('/api/sic/generate', async (c) => {
     const payload = await verifyToken(token)
     if (!payload) return c.json({ error: 'Token invalide' }, 401)
 
-    const body = await c.req.json()
-    const pmeId = body?.pmeId?.trim() || String(payload.userId)
+    const body = await c.req.json().catch(() => ({}))
+    const pmeId = (body as any)?.pmeId?.trim() || String(payload.userId)
 
-    // Get the latest SIC analysis for this PME
+    // 1. Lire extraction_json depuis sic_analyses
     const sicAnalysis = await c.env.DB.prepare(`
       SELECT id, extraction_json, status FROM sic_analyses
       WHERE pme_id = ? AND user_id = ?
@@ -5864,8 +5988,35 @@ app.post('/api/sic/generate', async (c) => {
       return c.json({ error: 'Aucun fichier SIC uploadé. Uploadez d\'abord un .docx' }, 400)
     }
 
+    if (!sicAnalysis.extraction_json) {
+      return c.json({ error: 'Extraction non disponible. Ré-uploadez le fichier SIC.' }, 400)
+    }
+
     if (sicAnalysis.status === 'analyzing') {
       return c.json({ error: 'Analyse déjà en cours' }, 409)
+    }
+
+    let extractionData: any
+    try {
+      extractionData = JSON.parse(sicAnalysis.extraction_json as string)
+    } catch {
+      return c.json({ error: 'Extraction corrompue. Ré-uploadez le fichier SIC.' }, 400)
+    }
+
+    // 2. Optionnel : lire le BMC analysé
+    let bmcAnalysis: any = null
+    try {
+      const bmcRow = await c.env.DB.prepare(`
+        SELECT content FROM entrepreneur_deliverables
+        WHERE user_id = ? AND type = 'bmc_analysis'
+        ORDER BY created_at DESC LIMIT 1
+      `).bind(payload.userId).first()
+      if (bmcRow?.content) {
+        bmcAnalysis = JSON.parse(bmcRow.content as string)
+        console.log(`[SIC Generate] BMC analysis found for cross-reference`)
+      }
+    } catch {
+      console.log(`[SIC Generate] No BMC analysis available for cross-reference`)
     }
 
     // Update status to 'analyzing'
@@ -5873,25 +6024,68 @@ app.post('/api/sic/generate', async (c) => {
       UPDATE sic_analyses SET status = 'analyzing', updated_at = datetime('now') WHERE id = ?
     `).bind(sicAnalysis.id).run()
 
-    // STUB: For now, just mark as generated with no actual AI analysis
-    // This will be replaced with Claude AI analysis in a future iteration
+    console.log(`[SIC Generate] Starting analysis for pme_id=${pmeId}, analysis_id=${sicAnalysis.id}`)
+
+    // 3. Appel Claude via l'agent SIC Analyst
+    const apiKey = c.env.ANTHROPIC_API_KEY || ''
+    let analysisResult: SicAnalystResult
+    let source: 'claude' | 'fallback' = 'fallback'
+
+    if (apiKey && apiKey.length > 10) {
+      try {
+        analysisResult = await analyzeSicWithClaude(apiKey, extractionData, bmcAnalysis)
+        source = 'claude'
+        console.log(`[SIC Generate] Claude analysis OK: score=${analysisResult.score_global}, palier=${analysisResult.palier}`)
+      } catch (err: any) {
+        console.warn(`[SIC Generate] Claude failed, using fallback:`, err.message)
+        analysisResult = analyzeSicFallback(extractionData)
+      }
+    } else {
+      console.log(`[SIC Generate] No API key, using fallback scoring`)
+      analysisResult = analyzeSicFallback(extractionData)
+    }
+
+    // 4. Sauvegarder analysis_json dans D1
+    const analysisJson = JSON.stringify({
+      ...analysisResult,
+      _source: source,
+      _generated_at: new Date().toISOString(),
+      _pme_id: pmeId
+    })
+
     await c.env.DB.prepare(`
-      UPDATE sic_analyses SET status = 'generated', analysis_json = ?, updated_at = datetime('now') WHERE id = ?
+      UPDATE sic_analyses
+      SET analysis_json = ?, score = ?, status = 'generated', updated_at = datetime('now')
+      WHERE id = ?
     `).bind(
-      JSON.stringify({ stub: true, message: 'Analyse IA non encore implémentée. Structure prête.' }),
+      analysisJson,
+      analysisResult.score_global,
       sicAnalysis.id
     ).run()
 
-    console.log(`[SIC Generate] Analysis launched for pme_id=${pmeId}, analysis_id=${sicAnalysis.id}`)
+    console.log(`[SIC Generate] Saved: score=${analysisResult.score_global}/100, palier=${analysisResult.palier}, source=${source}`)
 
+    // 5. Retourner le JSON complet au frontend
     return c.json({
       success: true,
-      message: 'Analyse lancée',
+      message: `Analyse SIC terminée — Score : ${analysisResult.score_global}/100 (${analysisResult.label})`,
       analysisId: sicAnalysis.id,
-      status: 'generated'
+      source,
+      analysis: analysisResult
     })
   } catch (error: any) {
     console.error('[SIC Generate] Error:', error)
+    // Reset status if it was set to analyzing
+    try {
+      const body2 = await c.req.json().catch(() => ({}))
+      const pmeId2 = (body2 as any)?.pmeId?.trim() || ''
+      if (pmeId2) {
+        await c.env.DB.prepare(`
+          UPDATE sic_analyses SET status = 'error', updated_at = datetime('now')
+          WHERE pme_id = ? AND status = 'analyzing'
+        `).bind(pmeId2).run()
+      }
+    } catch { /* ignore cleanup errors */ }
     return c.json({ error: error.message || 'Erreur serveur' }, 500)
   }
 })
