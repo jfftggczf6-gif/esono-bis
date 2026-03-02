@@ -3,6 +3,7 @@ import { renderer } from './renderer'
 import { cors } from 'hono/cors'
 import { hashPassword, verifyPassword, generateToken, verifyToken, getAuthToken } from './auth'
 import { getCookie, setCookie } from 'hono/cookie'
+import { parseDocx } from './docx-parser'
 import { getUserWithProgress } from './dashboard'
 import { getCookieOptions } from './cookies'
 import { moduleRoutes, renderEsanoLayout } from './module-routes'
@@ -1888,8 +1889,11 @@ app.get('/dashboard', async (c) => {
 })
 
 // Module entry point - always redirect to deliverable view
+// Exception: /module/sic has its own dedicated page (defined below)
 app.get('/module/:code', (c) => {
-  return c.redirect(`/module/${c.req.param('code')}/download`)
+  const code = c.req.param('code')
+  if (code === 'sic') return c.redirect('/module/sic/page')
+  return c.redirect(`/module/${code}/download`)
 })
 
 // Page module automatique - Overview
@@ -5243,6 +5247,481 @@ app.post('/api/module/:moduleCode/regenerate', async (c) => {
     })
   } catch (error: any) {
     console.error('Regenerate analysis error:', error)
+    return c.json({ error: error.message || 'Erreur serveur' }, 500)
+  }
+})
+
+// ═══════════════════════════════════════════════════════════════
+// PAGE /module/sic/page — Social Impact Canvas (vue module dédiée)
+// ═══════════════════════════════════════════════════════════════
+app.get('/module/sic/page', async (c) => {
+  try {
+    const token = getAuthToken(c) || getCookie(c, 'auth_token')
+    if (!token) return c.redirect('/login')
+    const payload = await verifyToken(token)
+    if (!payload) return c.redirect('/login')
+
+    const db = c.env.DB
+
+    // 1. Check if SIC file was uploaded (via entrepreneur-page sidebar)
+    const sicUpload = await db.prepare(`
+      SELECT id, filename, extracted_text, uploaded_at
+      FROM uploads WHERE user_id = ? AND category = 'sic'
+      ORDER BY uploaded_at DESC LIMIT 1
+    `).bind(payload.userId).first()
+
+    // 2. Check latest sic_analyses entry
+    const sicAnalysis = await db.prepare(`
+      SELECT id, status, score, extraction_json, analysis_json, created_at
+      FROM sic_analyses WHERE user_id = ?
+      ORDER BY created_at DESC LIMIT 1
+    `).bind(payload.userId).first()
+
+    // 3. Count sections detected
+    let sectionsDetected = 0
+    let filename = ''
+    if (sicUpload) {
+      filename = (sicUpload.filename as string) || ''
+      const text = (sicUpload.extracted_text as string) || ''
+      const matches = text.match(/^\d{1,2}\s*[-–.)\s]+\s*[A-ZÀÉÈÊËÏÎÔÙÛÜÇ]/gm)
+      sectionsDetected = matches ? Math.min(matches.length, 15) : (text.length > 50 ? 1 : 0)
+    }
+
+    const hasUpload = !!sicUpload
+    const status = sicAnalysis ? (sicAnalysis.status as string) : (hasUpload ? 'uploaded' : 'empty')
+    const score = sicAnalysis?.score ? Number(sicAnalysis.score) : null
+
+    // 4. Check for generated SIC HTML deliverable
+    const sicHtml = await db.prepare(`
+      SELECT content FROM entrepreneur_deliverables
+      WHERE user_id = ? AND type = 'sic_html'
+      ORDER BY created_at DESC LIMIT 1
+    `).bind(payload.userId).first()
+    const hasDeliverable = !!sicHtml
+
+    return c.html(`<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Social Impact Canvas</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
+</head>
+<body class="bg-slate-50 min-h-screen">
+
+  <!-- NAV -->
+  <nav class="bg-white shadow-sm border-b border-slate-200">
+    <div class="max-w-5xl mx-auto px-4 py-4 flex items-center justify-between">
+      <a href="/entrepreneur" class="text-emerald-600 hover:text-emerald-700 flex items-center gap-2 font-medium text-sm">
+        <i class="fas fa-arrow-left"></i> Retour
+      </a>
+      <span class="text-xs text-slate-400 flex items-center gap-2">
+        <i class="fas fa-seedling text-emerald-500"></i>
+        Phase 1 · Identité — Module SIC
+      </span>
+    </div>
+  </nav>
+
+  <main class="max-w-5xl mx-auto px-4 py-8 space-y-6">
+
+    <!-- HEADER -->
+    <header>
+      <div class="flex items-center gap-3 mb-2">
+        <div class="w-12 h-12 rounded-xl bg-emerald-100 flex items-center justify-center">
+          <i class="fas fa-hand-holding-heart text-emerald-600 text-xl"></i>
+        </div>
+        <div>
+          <h1 class="text-2xl font-bold text-slate-900">Social Impact Canvas</h1>
+          <p class="text-sm text-slate-500">Analysez la dimension impact social de votre projet</p>
+        </div>
+      </div>
+    </header>
+
+    <!-- STATUS CARDS -->
+    <div class="grid md:grid-cols-3 gap-4">
+
+      <!-- Card 1: Upload Status -->
+      <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-3">
+        <div class="flex items-center gap-2 text-sm font-semibold text-slate-700">
+          <i class="fas fa-file-word ${hasUpload ? 'text-emerald-500' : 'text-slate-300'}"></i>
+          Fichier SIC
+        </div>
+        ${hasUpload ? `
+          <div class="flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-50 border border-emerald-200">
+            <i class="fas fa-circle-check text-emerald-500"></i>
+            <div class="min-w-0 flex-1">
+              <p class="text-sm font-medium text-emerald-800 truncate">${filename}</p>
+              <p class="text-xs text-emerald-600">${sectionsDetected > 0 ? sectionsDetected + '/15 sections détectées' : 'Fichier reçu'}</p>
+            </div>
+          </div>
+        ` : `
+          <div class="px-3 py-2 rounded-lg bg-slate-50 border border-dashed border-slate-300 text-center">
+            <p class="text-sm text-slate-500">Aucun fichier uploadé</p>
+            <p class="text-xs text-slate-400 mt-1">Uploadez via la <a href="/entrepreneur" class="text-emerald-600 underline">page principale</a></p>
+          </div>
+        `}
+      </div>
+
+      <!-- Card 2: Analysis Status -->
+      <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-3">
+        <div class="flex items-center gap-2 text-sm font-semibold text-slate-700">
+          <i class="fas fa-brain ${status === 'generated' ? 'text-emerald-500' : 'text-slate-300'}"></i>
+          Analyse IA
+        </div>
+        ${status === 'generated' ? `
+          <div class="px-3 py-2 rounded-lg bg-emerald-50 border border-emerald-200">
+            <p class="text-sm font-medium text-emerald-800"><i class="fas fa-circle-check text-emerald-500 mr-1"></i> Analyse terminée</p>
+            ${score !== null ? `<p class="text-xs text-emerald-600 mt-1">Score : ${score}/10</p>` : ''}
+          </div>
+        ` : status === 'analyzing' ? `
+          <div class="px-3 py-2 rounded-lg bg-amber-50 border border-amber-200">
+            <p class="text-sm font-medium text-amber-800"><i class="fas fa-spinner fa-spin text-amber-500 mr-1"></i> Analyse en cours...</p>
+          </div>
+        ` : `
+          <div class="px-3 py-2 rounded-lg bg-slate-50 border border-dashed border-slate-300 text-center">
+            <p class="text-sm text-slate-500">${hasUpload ? 'Prêt à analyser' : 'En attente du fichier'}</p>
+          </div>
+        `}
+      </div>
+
+      <!-- Card 3: Deliverable -->
+      <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-3">
+        <div class="flex items-center gap-2 text-sm font-semibold text-slate-700">
+          <i class="fas fa-file-lines ${hasDeliverable ? 'text-emerald-500' : 'text-slate-300'}"></i>
+          Livrable
+        </div>
+        ${hasDeliverable ? `
+          <div class="px-3 py-2 rounded-lg bg-emerald-50 border border-emerald-200">
+            <p class="text-sm font-medium text-emerald-800"><i class="fas fa-circle-check text-emerald-500 mr-1"></i> Livrable disponible</p>
+            <a href="/api/sic/deliverable?format=full" target="_blank" class="inline-flex items-center gap-1 mt-2 text-xs text-emerald-700 underline hover:text-emerald-800">
+              <i class="fas fa-external-link-alt"></i> Voir le livrable
+            </a>
+          </div>
+        ` : `
+          <div class="px-3 py-2 rounded-lg bg-slate-50 border border-dashed border-slate-300 text-center">
+            <p class="text-sm text-slate-500">Non encore généré</p>
+          </div>
+        `}
+      </div>
+    </div>
+
+    <!-- TEMPLATE DOWNLOAD -->
+    <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 rounded-lg bg-emerald-100 flex items-center justify-center">
+          <i class="fas fa-download text-emerald-600"></i>
+        </div>
+        <div>
+          <p class="text-sm font-semibold text-slate-800">Template SIC vierge</p>
+          <p class="text-xs text-slate-500">Téléchargez le modèle, remplissez-le, puis uploadez-le via la page principale</p>
+        </div>
+      </div>
+      <a href="/templates/template-sic.docx" download class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold transition">
+        <i class="fas fa-file-word"></i> Télécharger
+      </a>
+    </div>
+
+    <!-- GENERATE BUTTON -->
+    <div class="flex justify-center">
+      <button
+        id="btn-generate"
+        onclick="launchGeneration()"
+        ${!hasUpload ? 'disabled' : ''}
+        class="inline-flex items-center gap-3 px-8 py-3 rounded-xl text-white text-base font-bold shadow-lg transition
+          ${hasUpload ? 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 cursor-pointer' : 'bg-slate-300 cursor-not-allowed'}"
+      >
+        <i class="fas fa-wand-magic-sparkles"></i>
+        Générer l'analyse SIC
+      </button>
+    </div>
+    ${!hasUpload ? '<p class="text-center text-xs text-slate-400 -mt-2">Uploadez d\'abord un fichier SIC via la <a href="/entrepreneur" class="text-emerald-600 underline">page principale</a></p>' : ''}
+
+    <!-- GENERATED DELIVERABLE PREVIEW -->
+    ${hasDeliverable ? `
+    <div class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+      <div class="px-5 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+        <span class="text-sm font-semibold text-slate-700"><i class="fas fa-eye mr-1"></i> Aperçu du livrable SIC</span>
+        <a href="/api/sic/deliverable?format=full" target="_blank" class="text-xs text-emerald-600 hover:underline">Ouvrir en plein écran <i class="fas fa-external-link-alt"></i></a>
+      </div>
+      <iframe src="/api/sic/deliverable?format=full" style="width:100%;height:700px;border:none;" title="Livrable SIC"></iframe>
+    </div>
+    ` : ''}
+
+  </main>
+
+  <script>
+    async function launchGeneration() {
+      const btn = document.getElementById('btn-generate');
+      if (!btn || btn.disabled) return;
+      btn.disabled = true;
+      btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Analyse en cours...';
+
+      try {
+        // Use the main generate-all endpoint (includes SIC)
+        const token = localStorage.getItem('auth_token') || '';
+        const res = await fetch('/api/ai/generate-all', {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + token }
+        });
+        const data = await res.json();
+        if (data.success) {
+          btn.innerHTML = '<i class="fas fa-circle-check"></i> Analyse terminée !';
+          btn.classList.remove('from-emerald-600', 'to-teal-600');
+          btn.classList.add('bg-emerald-600');
+          setTimeout(() => location.reload(), 1500);
+        } else {
+          btn.innerHTML = '<i class="fas fa-triangle-exclamation"></i> ' + (data.error || 'Erreur');
+          btn.disabled = false;
+          setTimeout(() => {
+            btn.innerHTML = '<i class="fas fa-wand-magic-sparkles"></i> Générer l\\'analyse SIC';
+          }, 3000);
+        }
+      } catch (err) {
+        btn.innerHTML = '<i class="fas fa-triangle-exclamation"></i> Erreur réseau';
+        btn.disabled = false;
+      }
+    }
+  </script>
+
+</body>
+</html>`)
+  } catch (error: any) {
+    console.error('[SIC Page] Error:', error)
+    return c.redirect('/entrepreneur')
+  }
+})
+
+// ═══════════════════════════════════════════════════════════════
+// SIC MODULE — Routes API dédiées Social Impact Canvas
+// Structure parallèle au BMC : upload → generate → download → latest
+// ═══════════════════════════════════════════════════════════════
+
+// POST /api/sic/upload — Reçoit un fichier .docx SIC et l'enregistre
+app.post('/api/sic/upload', async (c) => {
+  try {
+    const token = getAuthToken(c)
+    if (!token) return c.json({ error: 'Non authentifié' }, 401)
+    const payload = await verifyToken(token)
+    if (!payload) return c.json({ error: 'Token invalide' }, 401)
+
+    const formData = await c.req.formData()
+    const file = formData.get('file') as File | null
+    if (!file) return c.json({ error: 'Aucun fichier fourni' }, 400)
+
+    // Validate file type
+    const ext = file.name.split('.').pop()?.toLowerCase()
+    if (!ext || !['doc', 'docx'].includes(ext)) {
+      return c.json({ error: 'Format non supporté. Envoyez un fichier .docx' }, 400)
+    }
+
+    // Max 10MB
+    if (file.size > 10 * 1024 * 1024) {
+      return c.json({ error: 'Fichier trop volumineux (max 10 Mo)' }, 400)
+    }
+
+    // Extract text from DOCX
+    const arrayBuffer = await file.arrayBuffer()
+    const uint8 = new Uint8Array(arrayBuffer)
+    let extractedText = ''
+    let sectionsDetected = 0
+    try {
+      extractedText = parseDocx(uint8)
+      // Count SIC sections detected (look for numbered headings like "1-", "2-", etc.)
+      const sectionMatches = extractedText.match(/^\d{1,2}\s*[-–.)\s]+\s*[A-ZÀÉÈÊËÏÎÔÙÛÜÇ]/gm)
+      sectionsDetected = sectionMatches ? Math.min(sectionMatches.length, 15) : 0
+    } catch (e) {
+      console.warn('[SIC Upload] DOCX parsing failed:', e)
+    }
+
+    // Generate ID
+    const id = crypto.randomUUID()
+    const pmeId = String(payload.userId) // For now, pmeId = userId
+
+    // Store in sic_analyses
+    await c.env.DB.prepare(`
+      INSERT INTO sic_analyses (id, pme_id, user_id, version, extraction_json, status, created_at, updated_at)
+      VALUES (?, ?, ?, 1, ?, 'uploaded', datetime('now'), datetime('now'))
+    `).bind(
+      id,
+      pmeId,
+      payload.userId,
+      JSON.stringify({ filename: file.name, text: extractedText, sectionsDetected })
+    ).run()
+
+    // Also store in uploads table for integration with entrepreneur-page
+    const uploadId = crypto.randomUUID()
+    await c.env.DB.prepare(`
+      INSERT OR REPLACE INTO uploads (id, user_id, category, filename, r2_key, file_type, file_size, extracted_text, uploaded_at)
+      VALUES (?, ?, 'sic', ?, ?, ?, ?, ?, datetime('now'))
+    `).bind(
+      uploadId,
+      payload.userId,
+      file.name,
+      `sic/${id}/${file.name}`,
+      file.type || 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      file.size,
+      extractedText
+    ).run()
+
+    console.log(`[SIC Upload] File "${file.name}" received, ${extractedText.length} chars extracted, ${sectionsDetected} sections detected`)
+
+    return c.json({
+      success: true,
+      id,
+      uploadId,
+      message: 'Fichier SIC reçu',
+      filename: file.name,
+      sectionsDetected,
+      textLength: extractedText.length
+    })
+  } catch (error: any) {
+    console.error('[SIC Upload] Error:', error)
+    return c.json({ error: error.message || 'Erreur serveur' }, 500)
+  }
+})
+
+// POST /api/sic/generate — Lance l'analyse SIC (stub — pas d'agent IA pour le moment)
+app.post('/api/sic/generate', async (c) => {
+  try {
+    const token = getAuthToken(c)
+    if (!token) return c.json({ error: 'Non authentifié' }, 401)
+    const payload = await verifyToken(token)
+    if (!payload) return c.json({ error: 'Token invalide' }, 401)
+
+    const body = await c.req.json()
+    const pmeId = body?.pmeId?.trim() || String(payload.userId)
+
+    // Get the latest SIC analysis for this PME
+    const sicAnalysis = await c.env.DB.prepare(`
+      SELECT id, extraction_json, status FROM sic_analyses
+      WHERE pme_id = ? AND user_id = ?
+      ORDER BY created_at DESC LIMIT 1
+    `).bind(pmeId, payload.userId).first()
+
+    if (!sicAnalysis) {
+      return c.json({ error: 'Aucun fichier SIC uploadé. Uploadez d\'abord un .docx' }, 400)
+    }
+
+    if (sicAnalysis.status === 'analyzing') {
+      return c.json({ error: 'Analyse déjà en cours' }, 409)
+    }
+
+    // Update status to 'analyzing'
+    await c.env.DB.prepare(`
+      UPDATE sic_analyses SET status = 'analyzing', updated_at = datetime('now') WHERE id = ?
+    `).bind(sicAnalysis.id).run()
+
+    // STUB: For now, just mark as generated with no actual AI analysis
+    // This will be replaced with Claude AI analysis in a future iteration
+    await c.env.DB.prepare(`
+      UPDATE sic_analyses SET status = 'generated', analysis_json = ?, updated_at = datetime('now') WHERE id = ?
+    `).bind(
+      JSON.stringify({ stub: true, message: 'Analyse IA non encore implémentée. Structure prête.' }),
+      sicAnalysis.id
+    ).run()
+
+    console.log(`[SIC Generate] Analysis launched for pme_id=${pmeId}, analysis_id=${sicAnalysis.id}`)
+
+    return c.json({
+      success: true,
+      message: 'Analyse lancée',
+      analysisId: sicAnalysis.id,
+      status: 'generated'
+    })
+  } catch (error: any) {
+    console.error('[SIC Generate] Error:', error)
+    return c.json({ error: error.message || 'Erreur serveur' }, 500)
+  }
+})
+
+// GET /api/sic/download/:id — Retourne le fichier Word ou PDF (stub pour le moment)
+app.get('/api/sic/download/:id', async (c) => {
+  try {
+    const token = getAuthToken(c)
+    if (!token) return c.json({ error: 'Non authentifié' }, 401)
+    const payload = await verifyToken(token)
+    if (!payload) return c.json({ error: 'Token invalide' }, 401)
+
+    const id = c.req.param('id')
+    const format = c.req.query('format') || 'docx'
+
+    const sicAnalysis = await c.env.DB.prepare(`
+      SELECT id, analysis_json, html_content, status, extraction_json FROM sic_analyses
+      WHERE id = ? AND user_id = ?
+    `).bind(id, payload.userId).first()
+
+    if (!sicAnalysis) {
+      return c.json({ error: 'Analyse SIC non trouvée' }, 404)
+    }
+
+    if (sicAnalysis.status !== 'generated') {
+      return c.json({ error: 'Analyse pas encore terminée' }, 400)
+    }
+
+    // STUB: Return the HTML content if available, otherwise a placeholder
+    if (sicAnalysis.html_content) {
+      return c.html(sicAnalysis.html_content as string)
+    }
+
+    return c.json({
+      success: true,
+      id: sicAnalysis.id,
+      status: sicAnalysis.status,
+      message: 'Download Word/PDF non encore implémenté. Le livrable sera disponible après intégration du moteur SIC.',
+      format
+    })
+  } catch (error: any) {
+    console.error('[SIC Download] Error:', error)
+    return c.json({ error: error.message || 'Erreur serveur' }, 500)
+  }
+})
+
+// GET /api/sic/latest/:pmeId — Retourne le dernier JSON d'analyse SIC pour cette PME
+app.get('/api/sic/latest/:pmeId', async (c) => {
+  try {
+    const token = getAuthToken(c)
+    if (!token) return c.json({ error: 'Non authentifié' }, 401)
+    const payload = await verifyToken(token)
+    if (!payload) return c.json({ error: 'Token invalide' }, 401)
+
+    const pmeId = c.req.param('pmeId')
+
+    const sicAnalysis = await c.env.DB.prepare(`
+      SELECT id, pme_id, version, extraction_json, analysis_json, score, status, created_at, updated_at
+      FROM sic_analyses
+      WHERE pme_id = ? AND user_id = ?
+      ORDER BY created_at DESC LIMIT 1
+    `).bind(pmeId, payload.userId).first()
+
+    if (!sicAnalysis) {
+      return c.json({ error: 'Aucune analyse SIC trouvée pour cette PME' }, 404)
+    }
+
+    // Parse JSON fields
+    let extraction = null
+    let analysis = null
+    try {
+      if (sicAnalysis.extraction_json) extraction = JSON.parse(sicAnalysis.extraction_json as string)
+    } catch { /* ignore */ }
+    try {
+      if (sicAnalysis.analysis_json) analysis = JSON.parse(sicAnalysis.analysis_json as string)
+    } catch { /* ignore */ }
+
+    return c.json({
+      success: true,
+      id: sicAnalysis.id,
+      pmeId: sicAnalysis.pme_id,
+      version: sicAnalysis.version,
+      score: sicAnalysis.score,
+      status: sicAnalysis.status,
+      extraction,
+      analysis,
+      createdAt: sicAnalysis.created_at,
+      updatedAt: sicAnalysis.updated_at
+    })
+  } catch (error: any) {
+    console.error('[SIC Latest] Error:', error)
     return c.json({ error: error.message || 'Erreur serveur' }, 500)
   }
 })

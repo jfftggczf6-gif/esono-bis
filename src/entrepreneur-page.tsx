@@ -49,7 +49,7 @@ const DELIVERABLE_TYPES = [
   { type: 'diagnostic', label: 'Diagnostic Expert', icon: 'fa-stethoscope', format: 'HTML / PDF', deps: ['bmc'] as const },
   { type: 'framework', label: 'Framework Analyse', icon: 'fa-table-cells', format: 'Excel / HTML', deps: ['bmc', 'inputs'] as const },
   { type: 'bmc_analysis', label: 'BMC Analysé', icon: 'fa-map', format: 'Word / PDF', deps: ['bmc'] as const },
-  { type: 'sic_analysis', label: 'SIC Analysé', icon: 'fa-seedling', format: 'Word / PDF', deps: ['sic'] as const },
+  { type: 'sic_analysis', label: 'Social Impact Canvas', icon: 'fa-hand-holding-heart', format: 'Word / PDF', deps: ['sic'] as const },
   { type: 'plan_ovo', label: 'Plan Financier OVO', icon: 'fa-chart-line', format: 'XLSM', deps: ['inputs'] as const },
   { type: 'business_plan', label: 'Business Plan', icon: 'fa-file-contract', format: 'Word', deps: ['bmc', 'sic', 'inputs'] as const },
   { type: 'odd', label: 'ODD (Due Diligence)', icon: 'fa-shield-halved', format: 'Excel', deps: ['bmc', 'sic'] as const },
@@ -1760,7 +1760,7 @@ entrepreneurRoutes.post('/api/chat/message', async (c) => {
         } else if (lowerMsg.includes('dépendance') || lowerMsg.includes('manque') || lowerMsg.includes('quoi uploader')) {
           const missing = []
           if (!uploadedCats.has('bmc')) missing.push('BMC (Business Model Canvas)')
-          if (!uploadedCats.has('sic')) missing.push('SIC (Stratégie d\'Impact & Croissance)')
+          if (!uploadedCats.has('sic')) missing.push('SIC (Social Impact Canvas)')
           if (!uploadedCats.has('inputs')) missing.push('Inputs Financiers')
           responseText = missing.length > 0
             ? `Il vous manque : **${missing.join(', ')}**.\n\nAvec les 3 documents obligatoires, l'IA pourra générer les 7 livrables complets.`
@@ -3894,7 +3894,7 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
         <div class="ev2-upload-card ${uploadsByCategory.sic ? 'ev2-upload-card--done' : ''}" onclick="document.getElementById('file-sic').click()">
           <div class="ev2-upload-card__icon ev2-upload-card__icon--sic"><i class="fas fa-seedling"></i></div>
           <div class="ev2-upload-card__info">
-            <div class="ev2-upload-card__title">Stratégie d'Impact (SIC)</div>
+            <div class="ev2-upload-card__title">Social Impact Canvas</div>
             ${uploadsByCategory.sic 
               ? `<div class="ev2-upload-card__file"><i class="fas fa-check-circle" style="color:#059669"></i> ${escapeHtml((uploadsByCategory.sic as any).filename || 'SIC')}</div>
                  <button class="ev2-upload-card__rm" onclick="event.stopPropagation();rmUpload('${(uploadsByCategory.sic as any).id}')" title="Supprimer"><i class="fas fa-trash"></i></button>`
