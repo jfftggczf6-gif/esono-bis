@@ -2169,12 +2169,43 @@ entrepreneurRoutes.get('/deliverable/:type', async (c) => {
     if (deliverable?.content) {
       try { content = JSON.parse(deliverable.content) } catch { content = {} }
     }
-    const dScore = deliverable?.score ?? 0
+    // ═══ Fetch Plan OVO ID (for real Excel download) ═══
+    let planOvoId: string | null = null
+    let planOvoStatus: string | null = null
+    let planOvoScore: number | null = null
+    let planOvoCreatedAt: string | null = null
+    if (dtype === 'plan_ovo') {
+      const pmeId = `pme_${payload.userId}`
+      const latestPlan = await c.env.DB.prepare(`
+        SELECT id, status, score, created_at, analysis_json FROM plan_ovo_analyses
+        WHERE user_id = ? AND pme_id = ? AND status = 'filled'
+        ORDER BY created_at DESC LIMIT 1
+      `).bind(payload.userId, pmeId).first() as any
+      if (latestPlan) {
+        planOvoId = latestPlan.id
+        planOvoStatus = latestPlan.status
+        planOvoScore = latestPlan.score ?? null
+        planOvoCreatedAt = latestPlan.created_at ?? null
+        console.log('[Plan OVO Deliverable] Found filled plan:', planOvoId)
+        // Enrich content from the real plan analysis if available
+        if (latestPlan.analysis_json) {
+          try {
+            const analysis = JSON.parse(latestPlan.analysis_json)
+            if (analysis.projections) content.projections = analysis.projections
+            if (analysis.key_metrics) content.key_metrics = analysis.key_metrics
+            if (analysis.hypotheses) content.assumptions = analysis.hypotheses
+            if (analysis.metadata) content.metadata = analysis.metadata
+          } catch { /* ignore parse error */ }
+        }
+      }
+    }
+
+    const isAvailable = !!deliverable || !!planOvoId
+    const dScore = deliverable?.score ?? planOvoScore ?? 0
     const scoreColor = getScoreColor(dScore)
     const scoreLabel = getScoreLabel(dScore)
-    const isAvailable = !!deliverable
-    const createdAt = deliverable?.created_at
-      ? new Date(deliverable.created_at).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+    const createdAt = (deliverable?.created_at || planOvoCreatedAt)
+      ? new Date(deliverable?.created_at || planOvoCreatedAt!).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
       : null
 
     // ═══ DEDICATED DELIVERABLE PAGES ═══
@@ -3121,6 +3152,7 @@ entrepreneurRoutes.get('/deliverable/:type', async (c) => {
     const DLIV_META = ${JSON.stringify(meta)};
     const USER_NAME = ${JSON.stringify(user?.name || 'Entrepreneur')};
     const DLIV_DATE = ${JSON.stringify(new Date().toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' }))};
+    const PLAN_OVO_ID = ${JSON.stringify(planOvoId)};
 
     function downloadDeliverable(format) {
       // Find the button that was clicked — try specific IDs first, then generic
@@ -3147,6 +3179,9 @@ entrepreneurRoutes.get('/deliverable/:type', async (c) => {
           if (DLIV_TYPE === 'framework') {
             downloadFrameworkExcelFromServer();
             return; // async — handles its own button reset
+          } else if (DLIV_TYPE === 'plan_ovo' && PLAN_OVO_ID) {
+            downloadPlanOVOFromServer();
+            return; // async — handles its own button reset
           } else {
             generateExcel();
             resetBtn();
@@ -3164,6 +3199,9 @@ entrepreneurRoutes.get('/deliverable/:type', async (c) => {
           // Legacy fallback (no format specified)
           if (DLIV_TYPE === 'framework') {
             downloadFrameworkExcelFromServer();
+            return;
+          } else if (DLIV_TYPE === 'plan_ovo' && PLAN_OVO_ID) {
+            downloadPlanOVOFromServer();
             return;
           } else if (['odd','plan_ovo'].includes(DLIV_TYPE)) {
             generateExcel();
@@ -3202,6 +3240,39 @@ entrepreneurRoutes.get('/deliverable/:type', async (c) => {
       } catch(e) {
         alert('Erreur téléchargement Excel: ' + e.message);
         if(btn){ btn.innerHTML = '<i class="fas fa-exclamation-triangle"></i> Erreur'; btn.disabled = false; }
+      }
+    }
+
+    // ═══ PLAN OVO EXCEL — Server-side filled OVO template ═══
+    async function downloadPlanOVOFromServer() {
+      const btn = document.getElementById('btn-download');
+      const originalHtml = btn ? btn.innerHTML : '';
+      if (btn) { btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Téléchargement...'; btn.disabled = true; }
+      try {
+        const token = document.cookie.split(';').map(c => c.trim()).find(c => c.startsWith('token='));
+        const tokenVal = token ? token.split('=')[1] : '';
+        const resp = await fetch('/api/plan-ovo/download/' + PLAN_OVO_ID, {
+          headers: tokenVal ? { 'Authorization': 'Bearer ' + tokenVal } : {}
+        });
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({ error: 'Erreur ' + resp.status }));
+          throw new Error(err.error || err.message || 'Erreur ' + resp.status);
+        }
+        const blob = await resp.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        const cd = resp.headers.get('Content-Disposition');
+        const fnMatch = cd && cd.match(/filename="?([^"]+)"?/);
+        a.download = fnMatch ? fnMatch[1] : 'Plan_OVO_' + USER_NAME.replace(/\\s+/g, '_') + '_' + new Date().toISOString().slice(0,10) + '.xlsx';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        if (btn) { btn.innerHTML = '<i class="fas fa-check"></i> Téléchargé !'; setTimeout(() => { btn.innerHTML = originalHtml; btn.disabled = false; }, 3000); }
+      } catch(e) {
+        alert('Erreur téléchargement Plan OVO: ' + e.message);
+        if (btn) { btn.innerHTML = originalHtml; btn.disabled = false; }
       }
     }
 
