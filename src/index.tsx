@@ -7111,6 +7111,7 @@ app.get('/api/plan-ovo/latest/:pmeId', async (c) => {
 })
 
 // GET /api/plan-ovo/download/:id?format=xlsx — Returns filled Excel file
+// Extracts company name from extraction_json, framework or bmc for filename
 app.get('/api/plan-ovo/download/:id', async (c) => {
   try {
     const token = getAuthToken(c)
@@ -7119,10 +7120,13 @@ app.get('/api/plan-ovo/download/:id', async (c) => {
     if (!payload) return c.json({ error: 'Token invalide' }, 401)
 
     const planId = c.req.param('id')
-    const format = c.req.query('format') || 'xlsx'
+    const db = c.env.DB
 
-    const plan = await c.env.DB.prepare(`
-      SELECT id, pme_id, filled_excel_base64, status
+    // ═══════════════════════════════════════════════════
+    // Step 1: Fetch plan with extraction_json for company name
+    // ═══════════════════════════════════════════════════
+    const plan = await db.prepare(`
+      SELECT id, pme_id, user_id, filled_excel_base64, extraction_json, status
       FROM plan_ovo_analyses
       WHERE id = ? AND user_id = ?
     `).bind(planId, payload.userId).first()
@@ -7134,40 +7138,135 @@ app.get('/api/plan-ovo/download/:id', async (c) => {
     if (!plan.filled_excel_base64) {
       return c.json({
         error: 'Excel non disponible',
-        message: 'Le fichier Excel n\'a pas encore été généré. Le remplissage IA sera disponible prochainement.',
-        status: plan.status
+        message: 'Le fichier Excel n\'a pas encore été généré. Lancez d\'abord POST /api/plan-ovo/fill.',
+        status: plan.status,
+        planId: plan.id
       }, 422)
     }
 
-    // Decode base64 → gunzip → Excel bytes
-    const binaryStr = atob(plan.filled_excel_base64 as string)
+    console.log(`[Plan OVO Download] Preparing download for plan ${planId}`)
+
+    // ═══════════════════════════════════════════════════
+    // Step 2: Extract company name for filename
+    // Priority: extraction_json.hypotheses.company_name
+    //        → framework deliverable → bmc deliverable → pme_id fallback
+    // ═══════════════════════════════════════════════════
+    let companyName = ''
+
+    // Try extraction_json first (most reliable — already processed)
+    if (plan.extraction_json) {
+      try {
+        const extraction = JSON.parse(plan.extraction_json as string)
+        companyName = extraction?.hypotheses?.company_name || ''
+      } catch { /* ignore parse errors */ }
+    }
+
+    // Fallback: query framework or bmc deliverables for company name
+    if (!companyName) {
+      try {
+        const deliverable = await db.prepare(`
+          SELECT content FROM entrepreneur_deliverables
+          WHERE user_id = ? AND type IN ('framework', 'bmc_analysis')
+          ORDER BY CASE type WHEN 'framework' THEN 1 WHEN 'bmc_analysis' THEN 2 END,
+                   created_at DESC
+          LIMIT 1
+        `).bind(payload.userId).first()
+
+        if (deliverable?.content) {
+          const content = deliverable.content as string
+          // Try to parse as JSON first
+          try {
+            const parsed = JSON.parse(content)
+            companyName = parsed?.company_name || parsed?.entreprise?.nom || parsed?.nom_entreprise || ''
+          } catch {
+            // Try regex extraction from text content
+            const nameMatch = content.match(/(?:entreprise|société|company|raison sociale)\s*[:\-–]\s*([A-ZÀ-Ü][A-ZÀ-Ü\s\-&.']+)/i)
+            if (nameMatch) companyName = nameMatch[1].trim()
+          }
+        }
+      } catch { /* ignore — fallback to pme_id */ }
+    }
+
+    // Final fallback: sanitize pme_id
+    if (!companyName) {
+      companyName = (plan.pme_id as string || 'PME').replace(/^pme_/, 'PME_')
+    }
+
+    console.log(`[Plan OVO Download] Company name resolved: "${companyName}"`)
+
+    // ═══════════════════════════════════════════════════
+    // Step 3: Decode base64 → gunzip → raw Excel bytes
+    // ═══════════════════════════════════════════════════
+    const b64Data = plan.filled_excel_base64 as string
+    console.log(`[Plan OVO Download] Base64 length: ${b64Data.length}`)
+
+    // Decode base64 to binary
+    const binaryStr = atob(b64Data)
     const compressed = new Uint8Array(binaryStr.length)
     for (let i = 0; i < binaryStr.length; i++) {
       compressed[i] = binaryStr.charCodeAt(i)
     }
+    console.log(`[Plan OVO Download] Compressed size: ${compressed.length} bytes`)
 
-    // Decompress gzip
-    let bytes: Uint8Array
+    // Decompress gzip → original XLSM bytes
+    let excelBytes: Uint8Array
     try {
-      bytes = gunzipDecompressSync(compressed)
-    } catch {
-      // Fallback: maybe stored without compression (older entries)
-      bytes = compressed
+      excelBytes = gunzipDecompressSync(compressed)
+      console.log(`[Plan OVO Download] Decompressed: ${compressed.length} → ${excelBytes.length} bytes`)
+    } catch (gzipErr) {
+      // Fallback: data might be stored without gzip (older entries or migration)
+      console.warn(`[Plan OVO Download] Gzip decompression failed, using raw bytes:`, (gzipErr as Error).message)
+      excelBytes = compressed
     }
 
+    // ═══════════════════════════════════════════════════
+    // Step 4: Build filename and return response
+    // Format: Plan_OVO_{COMPANY_NAME}_{YYYYMMDD}.xlsx
+    // ═══════════════════════════════════════════════════
     const today = new Date().toISOString().slice(0, 10).replace(/-/g, '')
-    const filename = `Plan_OVO_${(plan.pme_id as string).replace(/[^a-zA-Z0-9_-]/g, '_')}_${today}.xlsm`
 
-    return new Response(bytes, {
+    // Sanitize company name for filename:
+    // - Replace accented chars with ASCII equivalents
+    // - Replace non-alphanumeric (except _ and -) with _
+    // - Collapse multiple underscores
+    // - Trim underscores from edges
+    const sanitizedName = companyName
+      .toUpperCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')  // Remove diacritics
+      .replace(/['']/g, '')                                // Remove apostrophes
+      .replace(/[^A-Z0-9]/g, '_')                          // Non-alphanum → _
+      .replace(/_+/g, '_')                                 // Collapse __
+      .replace(/^_|_$/g, '')                               // Trim _
+      .slice(0, 50)                                        // Max 50 chars
+
+    const filename = `Plan_OVO_${sanitizedName}_${today}.xlsx`
+    console.log(`[Plan OVO Download] Serving file: ${filename} (${excelBytes.length} bytes)`)
+
+    // Determine Content-Type based on actual file content
+    // The template is .xlsm (macro-enabled), use the correct MIME type
+    // Browsers & Excel handle both .xlsx and .xlsm via this MIME
+    const contentType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+
+    return new Response(excelBytes, {
+      status: 200,
       headers: {
-        'Content-Type': 'application/vnd.ms-excel.sheet.macroenabled.12',
-        'Content-Disposition': `attachment; filename="${filename}"`,
-        'Cache-Control': 'no-store'
+        'Content-Type': contentType,
+        'Content-Disposition': `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+        'Content-Length': String(excelBytes.length),
+        'Cache-Control': 'no-store, no-cache, must-revalidate',
+        'Pragma': 'no-cache',
+        'X-Plan-Id': planId,
+        'X-Company-Name': sanitizedName,
+        'X-Content-Size': String(excelBytes.length)
       }
     })
   } catch (error: any) {
     console.error('[Plan OVO Download] Error:', error)
-    return c.json({ error: error.message || 'Erreur serveur' }, 500)
+    return c.json({
+      error: 'Erreur lors du téléchargement',
+      message: error.message || 'Erreur serveur',
+      details: 'Vérifiez que le plan existe et que le remplissage Excel a été effectué.'
+    }, 500)
   }
 })
 
