@@ -28,14 +28,16 @@ const YEAR_KEYS = [
 
 // FinanceData: map year key → column letters
 // CURRENT_YEAR splits into H1(Q) and H2(R)
+// Column S = ANNEE EN COURS TOTAL (FORMULA = avg of Q,R) — do NOT write to S
+// Columns: O=YEAR-2, P=YEAR-1, Q=CY_H1, R=CY_H2, [S=formula], T=YEAR2, U=YEAR3, V=YEAR4, W=YEAR5
 const FINANCE_FULL_YEAR_COLS: Record<string, string[]> = {
   'YEAR_MINUS_2': ['O'],
   'YEAR_MINUS_1': ['P'],
   'CURRENT_YEAR': ['Q', 'R'],
-  'YEAR2': ['S'],
-  'YEAR3': ['T'],
-  'YEAR4': ['U'],
-  'YEAR5': ['V']
+  'YEAR2': ['T'],
+  'YEAR3': ['U'],
+  'YEAR4': ['V'],
+  'YEAR5': ['W']
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -211,6 +213,8 @@ function fillInputsData(writes: CellWrite[], data: OVOExtractionResult): void {
       w(writes, 'InputsData', `I${row}`, p.actif ? 1 : 0, 'n')
       if (p.description) w(writes, 'InputsData', `J${row}`, p.description, 's')
     } else {
+      // Inactive product: write '-' as name and 0 as filter
+      w(writes, 'InputsData', `H${row}`, '-', 's')
       w(writes, 'InputsData', `I${row}`, 0, 'n')
     }
   }
@@ -224,16 +228,17 @@ function fillInputsData(writes: CellWrite[], data: OVOExtractionResult): void {
       w(writes, 'InputsData', `I${row}`, s.actif ? 1 : 0, 'n')
       if (s.description) w(writes, 'InputsData', `J${row}`, s.description, 's')
     } else {
+      w(writes, 'InputsData', `H${row}`, '-', 's')
       w(writes, 'InputsData', `I${row}`, 0, 'n')
     }
   }
 
-  // Gammes / Ranges
+  // Gammes / Ranges (rows 70-72, write ONLY to H and J — K is a FORMULA)
   if (data.gammes) {
     const rg = data.gammes
-    if (rg.range1) { w(writes, 'InputsData', 'H70', rg.range1.nom || 'LOW END', 's'); w(writes, 'InputsData', 'J70', rg.range1.description || '', 's') }
-    if (rg.range2) { w(writes, 'InputsData', 'H71', rg.range2.nom || 'MEDIUM END', 's'); w(writes, 'InputsData', 'J71', rg.range2.description || '', 's') }
-    if (rg.range3) { w(writes, 'InputsData', 'H72', rg.range3.nom || 'HIGH END', 's'); w(writes, 'InputsData', 'J72', rg.range3.description || '', 's') }
+    if (rg.range1) { w(writes, 'InputsData', 'H70', rg.range1.nom || 'LOW END', 's'); w(writes, 'InputsData', 'J70', rg.range1.description || 'Entry level', 's') }
+    if (rg.range2) { w(writes, 'InputsData', 'H71', rg.range2.nom || 'MEDIUM END', 's'); w(writes, 'InputsData', 'J71', rg.range2.description || 'Advanced level', 's') }
+    if (rg.range3) { w(writes, 'InputsData', 'H72', rg.range3.nom || 'HIGH END', 's'); w(writes, 'InputsData', 'J72', rg.range3.description || 'Professional level', 's') }
   }
 
   // Distribution Channels
@@ -242,27 +247,47 @@ function fillInputsData(writes: CellWrite[], data: OVOExtractionResult): void {
     if (data.canaux.channel2) { w(writes, 'InputsData', 'H76', data.canaux.channel2.nom || 'B2C', 's'); w(writes, 'InputsData', 'J76', data.canaux.channel2.description || '', 's') }
   }
 
-  // Product-Range-Channel matrix (rows 79-98)
+  // Product-Range-Channel matrix (rows 79-98 for products, 101-110 for services)
+  // Cols: F=range1, G=range2, H=range3, I=channel1, J=channel2
   for (let i = 0; i < Math.min(products.length, 20); i++) {
     const row = 79 + i
     const p = products[i]
-    const g = p.gamme || 1
+    const g = Number(p.gamme) || 1
     w(writes, 'InputsData', `F${row}`, g === 1 ? 1 : 0, 'n')
     w(writes, 'InputsData', `G${row}`, g === 2 ? 1 : 0, 'n')
     w(writes, 'InputsData', `H${row}`, g === 3 ? 1 : 0, 'n')
-    const ch = p.canal || 1
+    const ch = Number(p.canal) || 1
+    w(writes, 'InputsData', `I${row}`, ch === 1 ? 1 : 0, 'n')
+    w(writes, 'InputsData', `J${row}`, ch === 2 ? 1 : 0, 'n')
+  }
+  // Services matrix (rows 101-110)
+  for (let i = 0; i < Math.min(services.length, 10); i++) {
+    const row = 101 + i
+    const s = services[i]
+    const g = Number(s.gamme) || 1
+    w(writes, 'InputsData', `F${row}`, g === 1 ? 1 : 0, 'n')
+    w(writes, 'InputsData', `G${row}`, g === 2 ? 1 : 0, 'n')
+    w(writes, 'InputsData', `H${row}`, g === 3 ? 1 : 0, 'n')
+    const ch = Number(s.canal) || 1
     w(writes, 'InputsData', `I${row}`, ch === 1 ? 1 : 0, 'n')
     w(writes, 'InputsData', `J${row}`, ch === 2 ? 1 : 0, 'n')
   }
 
-  // Staff Categories (rows 113-122)
+  // Staff Categories (rows 113-122) — H=category name, I=department, J=social charge rate
   if (data.personnel) {
     for (let i = 0; i < Math.min(data.personnel.length, 10); i++) {
       const row = 113 + i
       const s = data.personnel[i]
-      w(writes, 'InputsData', `H${row}`, s.categorie || `CAT${i + 1}`, 's')
-      w(writes, 'InputsData', `I${row}`, s.departement || '', 's')
-      w(writes, 'InputsData', `J${row}`, s.charges_sociales_pct ?? 0.1645, 'n')
+      w(writes, 'InputsData', `H${row}`, (s.categorie || `CAT${i + 1}`).toUpperCase(), 's')
+      w(writes, 'InputsData', `I${row}`, (s.departement || '').toUpperCase(), 's')
+      w(writes, 'InputsData', `J${row}`, s.charges_sociales_pct ?? h.social_charges_rate ?? 0.1645, 'n')
+    }
+    // Clear remaining categories (rows after last used)
+    for (let i = data.personnel.length; i < 10; i++) {
+      const row = 113 + i
+      w(writes, 'InputsData', `H${row}`, '-', 's')
+      w(writes, 'InputsData', `I${row}`, '', 's')
+      w(writes, 'InputsData', `J${row}`, 0, 'n')
     }
   }
 
@@ -306,35 +331,89 @@ function fillInputsData(writes: CellWrite[], data: OVOExtractionResult): void {
 // ═══════════════════════════════════════════════════════════════
 // RevenueData Filler
 // ═══════════════════════════════════════════════════════════════
-// Each product = 42-row block starting at row 9 + (idx * 42)
-// VOLUME section = first 8 rows (YEAR-2 to YEAR6)
-// L = volume range1, M = volume range2, N = volume range3, P = mix%
+// Each product/service = 42-row block starting at row 9 + (idx * 42)
+// Products: idx 0-19 → rows 9, 51, 93, ... 807
+// Services: idx 0-9  → rows 849, 891, 933, ... 1227
+//
+// Within each 42-row block, the VOLUME section is the first 8 rows:
+//   Row+0 = YEAR_MINUS_2, Row+1 = YEAR_MINUS_1, Row+2 = CURRENT_YEAR H1,
+//   Row+3 = CURRENT_YEAR H2 (use same value), Row+4..7 = YEAR2..YEAR5+
+//
+// VOLUME section columns (INPUT cells):
+//   L = volume range1, M = volume range2, N = volume range3
+//   O = avg unit selling price (FORMULA) — do NOT write
+//   P = mix volume range1 %, Q = mix range2 %, R = mix range3 %
+//   S = COGS unit range1, T = COGS unit range2, U = COGS unit range3
+//   V = avg COGS unit (FORMULA) — do NOT write
+//
+// 8 year-rows in RevenueData: YEAR-2, YEAR-1, CURRENT_YEAR, YEAR2, YEAR3, YEAR4, YEAR5, YEAR6
+// No H1/H2 split in RevenueData (unlike FinanceData)
+// YEAR6 uses YEAR5 data as we only have 7 year keys
+
+const REVENUE_YEAR_MAP = [
+  'YEAR_MINUS_2',   // row+0 (F=YEAR-2)
+  'YEAR_MINUS_1',   // row+1 (F=YEAR-1)
+  'CURRENT_YEAR',   // row+2 (F=CURRENT YEAR) — single row, no H1/H2
+  'YEAR2',          // row+3 (F=YEAR2)
+  'YEAR3',          // row+4 (F=YEAR3)
+  'YEAR4',          // row+5 (F=YEAR4)
+  'YEAR5',          // row+6 (F=YEAR5)
+  'YEAR5'           // row+7 (F=YEAR6) — repeat YEAR5 for the extra year
+] as const
 
 function fillRevenueData(writes: CellWrite[], data: OVOExtractionResult): void {
   if (!data.produits || data.produits.length === 0) return
 
   const products = data.produits.filter(p => p.type === 'product')
   const services = data.produits.filter(p => p.type === 'service')
-  const allItems = [...products.slice(0, 20), ...services.slice(0, 10)]
 
-  for (let idx = 0; idx < allItems.length; idx++) {
-    const item = allItems[idx]
-    const volumeStart = 9 + idx * 42
+  // Products occupy blocks 0-19 (rows 9, 51, 93, ...)
+  for (let pi = 0; pi < Math.min(products.length, 20); pi++) {
+    const item = products[pi]
+    const blockStart = 9 + pi * 42
+    fillRevenueBlock(writes, item, blockStart)
+  }
 
-    for (let yi = 0; yi < 7; yi++) {
-      const yearKey = YEAR_KEYS[yi]
-      const row = volumeStart + yi
+  // Services occupy blocks 20-29 (rows 849, 891, 933, ...)
+  for (let si = 0; si < Math.min(services.length, 10); si++) {
+    const item = services[si]
+    const blockStart = 849 + si * 42
+    fillRevenueBlock(writes, item, blockStart)
+  }
+}
 
-      // Volume in L (range 1 = main)
-      const vol = item.volume?.[yearKey] ?? 0
-      w(writes, 'RevenueData', `L${row}`, vol, 'n')
-      w(writes, 'RevenueData', `M${row}`, 0, 'n')
-      w(writes, 'RevenueData', `N${row}`, 0, 'n')
-      // Mix = 100% range 1
-      w(writes, 'RevenueData', `P${row}`, 1, 'n')
-      w(writes, 'RevenueData', `Q${row}`, 0, 'n')
-      w(writes, 'RevenueData', `R${row}`, 0, 'n')
-    }
+function fillRevenueBlock(
+  writes: CellWrite[],
+  item: OVOExtractionResult['produits'][0],
+  blockStart: number
+): void {
+  for (let ri = 0; ri < 8; ri++) {
+    const row = blockStart + ri
+    const yearKey = REVENUE_YEAR_MAP[ri]
+
+    // Volume (L=range1, M=range2, N=range3)
+    const vol = item.volume?.[yearKey] ?? 0
+    w(writes, 'RevenueData', `L${row}`, vol, 'n')
+    w(writes, 'RevenueData', `M${row}`, 0, 'n')  // range 2
+    w(writes, 'RevenueData', `N${row}`, 0, 'n')  // range 3
+
+    // Mix % (100% range 1)
+    w(writes, 'RevenueData', `P${row}`, 1, 'n')
+    w(writes, 'RevenueData', `Q${row}`, 0, 'n')
+    w(writes, 'RevenueData', `R${row}`, 0, 'n')
+
+    // COGS unit price (S=range1, T=range2, U=range3)
+    const cogs = item.cout_unitaire?.[yearKey] ?? 0
+    w(writes, 'RevenueData', `S${row}`, cogs, 'n')
+    w(writes, 'RevenueData', `T${row}`, 0, 'n')  // range 2
+    w(writes, 'RevenueData', `U${row}`, 0, 'n')  // range 3
+
+    // Channel mix (W=range1 ch1, X=range2 ch1, Y=range3 ch1, Z=range1 ch2)
+    // Default: 100% channel 1 for range 1
+    w(writes, 'RevenueData', `W${row}`, 1, 'n')
+    w(writes, 'RevenueData', `X${row}`, 0, 'n')
+    w(writes, 'RevenueData', `Y${row}`, 0, 'n')
+    w(writes, 'RevenueData', `Z${row}`, 0, 'n')
   }
 }
 
@@ -398,61 +477,67 @@ function fillOpExSection(
 }
 
 /**
- * Staff Salaries: 10 categories × 7 rows each
- * Cat block starts at 213 + catIdx * 7
- * Row+0: NUMBER OF EMPLOYEES (input O-V)
- * Row+1: GROSS SALARY PER PERSON (input O-V) — annual = monthly*12
- * Row+2: OTHER ALLOWANCES (input O-V)
- * Row+3: EMPLOYER SOCIAL SECURITY — FORMULA, skip
- * Row+4: COST PER PERSON — FORMULA, skip
- * Row+5: TOTAL — FORMULA, skip
+ * Staff Salaries: 10 categories, each block = 7 rows (with 1 blank row gap)
+ * Category blocks start at rows: 213, 220, 227, 234, 241, 248, 255, 262, 269, 276
+ * Within each block:
+ *   Row+0: NUMBER OF EMPLOYEES (input O-V)
+ *   Row+1: GROSS SALARY PER PERSON AND PER PERIOD (input O-V) — use annual salary
+ *   Row+2: OTHER ALLOWANCES (input O-V) — write 5% of salary as allowances
+ *   Row+3: EMPLOYER SOCIAL SECURITY CONTRIBUTIONS — FORMULA, skip
+ *   Row+4: COST PER PERSON PER PERIOD — FORMULA, skip
+ *   Row+5: TOTAL — FORMULA, skip
+ *   Row+6: (blank gap before next category)
  */
+const STAFF_BLOCK_STARTS = [213, 220, 227, 234, 241, 248, 255, 262, 269, 276]
+
 function fillStaffSalaries(writes: CellWrite[], data: OVOExtractionResult): void {
   if (!data.personnel || data.personnel.length === 0) return
   for (let i = 0; i < Math.min(data.personnel.length, 10); i++) {
     const s = data.personnel[i]
-    const base = 213 + i * 7
+    const base = STAFF_BLOCK_STARTS[i]
 
     for (const [yearKey, cols] of Object.entries(FINANCE_FULL_YEAR_COLS)) {
       const hc = s.effectif?.[yearKey] ?? 0
       const monthly = s.salaire_brut_mensuel?.[yearKey] ?? 0
       const annual = monthly * 12
+      // Allowances = 5% of annual salary (matching witness pattern)
+      const allowances = Math.round(annual * 0.05)
 
       if (cols.length === 2) {
+        // CURRENT_YEAR: split H1(Q)/H2(R)
         // Headcount = same both halves
         w(writes, 'FinanceData', `${cols[0]}${base}`, hc, 'n')
         w(writes, 'FinanceData', `${cols[1]}${base}`, hc, 'n')
-        // Salary split H1/H2
-        const half = Math.round(annual / 2)
-        w(writes, 'FinanceData', `${cols[0]}${base + 1}`, half, 'n')
-        w(writes, 'FinanceData', `${cols[1]}${base + 1}`, annual - half, 'n')
-        // Allowances = 0
-        w(writes, 'FinanceData', `${cols[0]}${base + 2}`, 0, 'n')
-        w(writes, 'FinanceData', `${cols[1]}${base + 2}`, 0, 'n')
+        // Salary split H1/H2 (6 months each)
+        const halfSalary = Math.round(annual / 2)
+        w(writes, 'FinanceData', `${cols[0]}${base + 1}`, halfSalary, 'n')
+        w(writes, 'FinanceData', `${cols[1]}${base + 1}`, annual - halfSalary, 'n')
+        // Allowances split H1/H2
+        const halfAllow = Math.round(allowances / 2)
+        w(writes, 'FinanceData', `${cols[0]}${base + 2}`, halfAllow, 'n')
+        w(writes, 'FinanceData', `${cols[1]}${base + 2}`, allowances - halfAllow, 'n')
       } else {
         w(writes, 'FinanceData', `${cols[0]}${base}`, hc, 'n')
         w(writes, 'FinanceData', `${cols[0]}${base + 1}`, annual, 'n')
-        w(writes, 'FinanceData', `${cols[0]}${base + 2}`, 0, 'n')
+        w(writes, 'FinanceData', `${cols[0]}${base + 2}`, allowances, 'n')
       }
     }
   }
 }
 
-/** Travel & Transportation */
+/** Travel & Transportation — write amounts directly to row 322 */
 function fillTravel(writes: CellWrite[], data: OVOExtractionResult): void {
   const travel = data.compte_resultat?.voyage_transport?.montant_annuel
   if (!travel) return
+  w(writes, 'FinanceData', 'H322', 'VOYAGES ET DEPLACEMENTS', 's')
   for (const [yearKey, cols] of Object.entries(FINANCE_FULL_YEAR_COLS)) {
     const amt = travel[yearKey] ?? 0
     if (cols.length === 2) {
-      w(writes, 'FinanceData', `${cols[0]}322`, 1, 'n')
-      w(writes, 'FinanceData', `${cols[1]}322`, 1, 'n')
       const half = Math.round(amt / 2)
-      w(writes, 'FinanceData', `${cols[0]}323`, half, 'n')
-      w(writes, 'FinanceData', `${cols[1]}323`, amt - half, 'n')
+      w(writes, 'FinanceData', `${cols[0]}322`, half, 'n')
+      w(writes, 'FinanceData', `${cols[1]}322`, amt - half, 'n')
     } else {
-      w(writes, 'FinanceData', `${cols[0]}322`, 1, 'n')
-      w(writes, 'FinanceData', `${cols[0]}323`, amt, 'n')
+      w(writes, 'FinanceData', `${cols[0]}322`, amt, 'n')
     }
   }
 }
