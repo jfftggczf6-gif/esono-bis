@@ -335,18 +335,23 @@ function fillInputsData(writes: CellWrite[], data: OVOExtractionResult): void {
 // Products: idx 0-19 → rows 9, 51, 93, ... 807
 // Services: idx 0-9  → rows 849, 891, 933, ... 1227
 //
-// Within each 42-row block, the VOLUME section is the first 8 rows:
-//   Row+0 = YEAR_MINUS_2, Row+1 = YEAR_MINUS_1, Row+2 = CURRENT_YEAR H1,
-//   Row+3 = CURRENT_YEAR H2 (use same value), Row+4..7 = YEAR2..YEAR5+
+// Within each 42-row block, 5 sections × 8 rows + 2 blank = 42 rows:
+//   VOLUME (rows +0..+7), REVENUE (+8..+15), AVG PRICE (+16..+23),
+//   COGS (+24..+31), AVG COGS (+32..+39), blank (+40,+41)
 //
-// VOLUME section columns (INPUT cells):
-//   L = volume range1, M = volume range2, N = volume range3
-//   O = avg unit selling price (FORMULA) — do NOT write
-//   P = mix volume range1 %, Q = mix range2 %, R = mix range3 %
+// VOLUME section columns (verified from template analysis):
+//   L = Unit selling price range 1 (INPUT — write unit_price)
+//   M,N = Unit selling price range 2,3 (INPUT — 0 for single range)
+//   O = Avg unit selling price (FORMULA: $L*$P+$M*$Q+$N*$R) — do NOT write
+//   P = Mix volume range1 %, Q = mix range2 %, R = mix range3 %
 //   S = COGS unit range1, T = COGS unit range2, U = COGS unit range3
-//   V = avg COGS unit (FORMULA) — do NOT write
+//   V = Avg COGS unit (FORMULA — ref to AI in COGS section) — do NOT write
+//   W,X,Y = Channel 1 mix % by range (INPUT)
+//   Z,AA,AB = Channel 2 mix % by range (FORMULA: 1-channel1) — do NOT write
+//   AE,AF,AG,AH = Quarterly volumes Q1-Q4 (INPUT — main volume data!)
+//   AI = Total annual volume (FORMULA: SUM AE:AH) — do NOT write
 //
-// 8 year-rows in RevenueData: YEAR-2, YEAR-1, CURRENT_YEAR, YEAR2, YEAR3, YEAR4, YEAR5, YEAR6
+// 8 year-rows: YEAR-2, YEAR-1, CURRENT_YEAR, YEAR2, YEAR3, YEAR4, YEAR5, YEAR6
 // No H1/H2 split in RevenueData (unlike FinanceData)
 // YEAR6 uses YEAR5 data as we only have 7 year keys
 
@@ -387,33 +392,80 @@ function fillRevenueBlock(
   item: OVOExtractionResult['produits'][0],
   blockStart: number
 ): void {
+  // RevenueData VOLUME section — 8 rows per product/service block
+  // Correct column mapping (verified from template + witness):
+  //
+  //   L = Unit selling price range 1 (INPUT — write unit_price here)
+  //   M = Unit selling price range 2 (INPUT — 0 if single range)
+  //   N = Unit selling price range 3 (INPUT — 0 if single range)
+  //   O = Avg unit selling price (FORMULA: $L*$P+$M*$Q+$N*$R) — do NOT write
+  //   P = Mix volume % range 1 (INPUT — 1 for 100%)
+  //   Q = Mix volume % range 2 (INPUT — 0)
+  //   R = Mix volume % range 3 (INPUT — 0)
+  //   S = Unit COGS range 1 (INPUT — write unit_cost here)
+  //   T = Unit COGS range 2 (INPUT — 0)
+  //   U = Unit COGS range 3 (INPUT — 0)
+  //   V = Avg unit COGS (FORMULA: ref to AI in COGS section) — do NOT write
+  //   W = Channel 1 mix % for range 1 (INPUT — 1 for 100%)
+  //   X = Channel 1 mix % for range 2 (INPUT — 0)
+  //   Y = Channel 1 mix % for range 3 (INPUT — 0)
+  //   Z = Channel 2 mix % for range 1 (FORMULA: 1-$W) — do NOT write
+  //   AA,AB = Channel 2 mix ranges 2,3 (FORMULA) — do NOT write
+  //
+  //   AE = Quarterly volume Q1 (INPUT)
+  //   AF = Quarterly volume Q2 (INPUT)
+  //   AG = Quarterly volume Q3 (INPUT)
+  //   AH = Quarterly volume Q4 (INPUT)
+  //   AI = Total annual volume (FORMULA: AE+AF+AG+AH) — do NOT write
+
   for (let ri = 0; ri < 8; ri++) {
     const row = blockStart + ri
     const yearKey = REVENUE_YEAR_MAP[ri]
 
-    // Volume (L=range1, M=range2, N=range3)
-    const vol = item.volume?.[yearKey] ?? 0
-    w(writes, 'RevenueData', `L${row}`, vol, 'n')
-    w(writes, 'RevenueData', `M${row}`, 0, 'n')  // range 2
-    w(writes, 'RevenueData', `N${row}`, 0, 'n')  // range 3
+    // Unit selling price → column L (range 1 only)
+    const price = item.prix_unitaire?.[yearKey] ?? 0
+    w(writes, 'RevenueData', `L${row}`, price, 'n')
+    w(writes, 'RevenueData', `M${row}`, 0, 'n')  // range 2 price
+    w(writes, 'RevenueData', `N${row}`, 0, 'n')  // range 3 price
 
     // Mix % (100% range 1)
     w(writes, 'RevenueData', `P${row}`, 1, 'n')
     w(writes, 'RevenueData', `Q${row}`, 0, 'n')
     w(writes, 'RevenueData', `R${row}`, 0, 'n')
 
-    // COGS unit price (S=range1, T=range2, U=range3)
+    // COGS unit price → column S (range 1 only)
     const cogs = item.cout_unitaire?.[yearKey] ?? 0
     w(writes, 'RevenueData', `S${row}`, cogs, 'n')
-    w(writes, 'RevenueData', `T${row}`, 0, 'n')  // range 2
-    w(writes, 'RevenueData', `U${row}`, 0, 'n')  // range 3
+    w(writes, 'RevenueData', `T${row}`, 0, 'n')  // range 2 COGS
+    w(writes, 'RevenueData', `U${row}`, 0, 'n')  // range 3 COGS
 
-    // Channel mix (W=range1 ch1, X=range2 ch1, Y=range3 ch1, Z=range1 ch2)
-    // Default: 100% channel 1 for range 1
+    // Channel mix: 100% channel 1 for range 1
+    // W, X, Y are INPUT cells; Z, AA, AB are FORMULA cells — do NOT write to Z/AA/AB
     w(writes, 'RevenueData', `W${row}`, 1, 'n')
     w(writes, 'RevenueData', `X${row}`, 0, 'n')
     w(writes, 'RevenueData', `Y${row}`, 0, 'n')
-    w(writes, 'RevenueData', `Z${row}`, 0, 'n')
+    // Z = FORMULA (1-$W), AA = FORMULA (1-$X), AB = FORMULA (1-$Y) — skipped
+
+    // Volume distribution across quarters
+    // Template design:
+    //   Rows 0-3 (YEAR-2 to YEAR2): AE-AH are INPUT cells, AI is FORMULA (SUM AE:AH)
+    //   Rows 4-7 (YEAR3 to YEAR6): AI is INPUT cell, AE-AH are FORMULA ($AI/4)
+    const vol = item.volume?.[yearKey] ?? 0
+
+    if (ri <= 3) {
+      // Years -2 to +2: write quarterly volumes to AE-AH
+      // AI = FORMULA SUM(AE:AH) — do NOT write
+      const q = Math.floor(vol / 4)
+      const remainder = vol - q * 4
+      w(writes, 'RevenueData', `AE${row}`, q + (remainder > 0 ? 1 : 0), 'n')  // Q1
+      w(writes, 'RevenueData', `AF${row}`, q + (remainder > 1 ? 1 : 0), 'n')  // Q2
+      w(writes, 'RevenueData', `AG${row}`, q + (remainder > 2 ? 1 : 0), 'n')  // Q3
+      w(writes, 'RevenueData', `AH${row}`, q, 'n')  // Q4
+    } else {
+      // Years 3-6: write annual total to AI
+      // AE-AH = FORMULA ($AI/4) — do NOT write
+      w(writes, 'RevenueData', `AI${row}`, vol, 'n')
+    }
   }
 }
 
