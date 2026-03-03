@@ -41,6 +41,7 @@ import { analyzeSicWithClaude, analyzeSicFallback, type SicAnalystResult } from 
 import { detectCountry, getFiscalParams, buildKBContext, type FiscalParams } from './fiscal-params'
 import { extractOVOData, type DeliverableData as OVODeliverableData, type OVOExtractionResult } from './ovo-extraction-engine'
 import { isValidApiKey } from './claude-api'
+import { fillOVOTemplate, gzipCompressSync, gunzipDecompressSync, type FillingStats } from './ovo-excel-filler'
 
 type Bindings = {
   DB: D1Database
@@ -6879,6 +6880,185 @@ app.post('/api/plan-ovo/generate', async (c) => {
   }
 })
 
+// ═══════════════════════════════════════════════════════════════
+// POST /api/plan-ovo/fill — Fill the OVO Excel template cell-by-cell
+// Reads extraction_json from DB, loads template, fills cells, saves as base64
+// ═══════════════════════════════════════════════════════════════
+app.post('/api/plan-ovo/fill', async (c) => {
+  try {
+    const token = getAuthToken(c)
+    if (!token) return c.json({ error: 'Non authentifié' }, 401)
+    const payload = await verifyToken(token)
+    if (!payload) return c.json({ error: 'Token invalide' }, 401)
+
+    const body = await c.req.json()
+    const planId = body.planId || body.id
+    if (!planId) return c.json({ error: 'planId requis' }, 400)
+
+    const db = c.env.DB
+
+    // ═══════════════════════════════════════════════════
+    // Step 1: Load extraction data from DB
+    // ═══════════════════════════════════════════════════
+    const plan = await db.prepare(`
+      SELECT id, pme_id, version, extraction_json, status, pays
+      FROM plan_ovo_analyses
+      WHERE id = ? AND user_id = ?
+    `).bind(planId, payload.userId).first()
+
+    if (!plan) {
+      return c.json({ error: 'Plan OVO non trouvé' }, 404)
+    }
+
+    if (!plan.extraction_json) {
+      return c.json({ error: 'Extraction non disponible — lancez d\'abord /api/plan-ovo/generate' }, 422)
+    }
+
+    if (plan.status === 'filling') {
+      return c.json({ error: 'Remplissage déjà en cours' }, 409)
+    }
+
+    let extractionData: OVOExtractionResult
+    try {
+      extractionData = JSON.parse(plan.extraction_json as string)
+    } catch {
+      return c.json({ error: 'Données extraction corrompues' }, 500)
+    }
+
+    console.log(`[Plan OVO Fill] Starting fill for plan ${planId} (v${plan.version})`)
+    console.log(`[Plan OVO Fill] Products: ${extractionData.produits?.length || 0}, Staff: ${extractionData.personnel?.length || 0}, Investments: ${extractionData.investissements?.length || 0}`)
+
+    // Mark as filling
+    await db.prepare(`
+      UPDATE plan_ovo_analyses SET status = 'filling', updated_at = datetime('now') WHERE id = ?
+    `).bind(planId).run()
+
+    // ═══════════════════════════════════════════════════
+    // Step 2: Load the Excel template
+    // ═══════════════════════════════════════════════════
+    console.log(`[Plan OVO Fill] Step 2: Loading Excel template...`)
+
+    // Fetch the template from the static assets
+    // In local dev (wrangler pages dev), static assets are served from public/
+    const url = new URL(c.req.url)
+    const templateUrl = `${url.protocol}//${url.host}/templates/plan_ovo_template.xlsm`
+    let templateBytes: Uint8Array
+
+    try {
+      const resp = await fetch(templateUrl)
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+      templateBytes = new Uint8Array(await resp.arrayBuffer())
+      console.log(`[Plan OVO Fill] Template loaded: ${templateBytes.length} bytes`)
+    } catch (fetchErr: any) {
+      console.error(`[Plan OVO Fill] Failed to fetch template:`, fetchErr.message)
+      // Fallback: try to load from c.env.ASSETS if available (Cloudflare Pages)
+      try {
+        const assetResp = await c.env.ASSETS?.fetch(new Request('https://placeholder/templates/plan_ovo_template.xlsm'))
+        if (assetResp && assetResp.ok) {
+          templateBytes = new Uint8Array(await assetResp.arrayBuffer())
+          console.log(`[Plan OVO Fill] Template loaded from ASSETS: ${templateBytes.length} bytes`)
+        } else {
+          throw new Error('ASSETS fetch failed')
+        }
+      } catch {
+        await db.prepare(`
+          UPDATE plan_ovo_analyses SET status = 'generated', error_message = 'Template Excel introuvable', updated_at = datetime('now') WHERE id = ?
+        `).bind(planId).run()
+        return c.json({ error: 'Template Excel introuvable sur le serveur' }, 500)
+      }
+    }
+
+    // ═══════════════════════════════════════════════════
+    // Step 3: Fill the template cell-by-cell
+    // ═══════════════════════════════════════════════════
+    console.log(`[Plan OVO Fill] Step 3: Filling template...`)
+
+    let filledBytes: Uint8Array
+    let stats: FillingStats
+    try {
+      const result = fillOVOTemplate(templateBytes, extractionData)
+      filledBytes = result.filledBytes
+      stats = result.stats
+      console.log(`[Plan OVO Fill] Filling done: ${stats.totalCells} cells written, output ${filledBytes.length} bytes`)
+    } catch (fillErr: any) {
+      console.error(`[Plan OVO Fill] Filling FAILED:`, fillErr.message)
+      await db.prepare(`
+        UPDATE plan_ovo_analyses SET status = 'generated', error_message = ?, updated_at = datetime('now') WHERE id = ?
+      `).bind(`Erreur remplissage: ${fillErr.message?.slice(0, 400)}`, planId).run()
+      return c.json({ error: `Erreur lors du remplissage: ${fillErr.message}` }, 500)
+    }
+
+    // ═══════════════════════════════════════════════════
+    // Step 4: Convert to base64 and save to DB
+    // ═══════════════════════════════════════════════════
+    console.log(`[Plan OVO Fill] Step 4: Compressing and saving filled Excel to DB...`)
+
+    // Compress with gzip then base64 to fit D1 column limit
+    let base64String: string
+    try {
+      // Use fflate gzip for compression (already imported via ovo-excel-filler)
+      const compressed = gzipCompressSync(filledBytes)
+      console.log(`[Plan OVO Fill] Compressed: ${filledBytes.length} → ${compressed.length} bytes (${Math.round(compressed.length / filledBytes.length * 100)}%)`)
+
+      // Convert to base64
+      let binary = ''
+      const CHUNK = 8192
+      for (let i = 0; i < compressed.length; i += CHUNK) {
+        const chunk = compressed.subarray(i, Math.min(i + CHUNK, compressed.length))
+        binary += String.fromCharCode(...chunk)
+      }
+      base64String = btoa(binary)
+      console.log(`[Plan OVO Fill] Base64 size: ${base64String.length} chars`)
+    } catch (b64Err: any) {
+      console.error(`[Plan OVO Fill] Compression/encoding failed:`, b64Err.message)
+      await db.prepare(`
+        UPDATE plan_ovo_analyses SET status = 'generated', error_message = 'Erreur compression/encodage', updated_at = datetime('now') WHERE id = ?
+      `).bind(planId).run()
+      return c.json({ error: `Erreur compression: ${b64Err.message}` }, 500)
+    }
+
+    // Save to DB
+    await db.prepare(`
+      UPDATE plan_ovo_analyses
+      SET filled_excel_base64 = ?,
+          fill_stats = ?,
+          status = 'filled',
+          error_message = NULL,
+          updated_at = datetime('now')
+      WHERE id = ?
+    `).bind(
+      base64String,
+      JSON.stringify(stats),
+      planId
+    ).run()
+
+    console.log(`[Plan OVO Fill] ✓ Plan ${planId} filled successfully — ${stats.totalCells} cells, status=filled`)
+
+    return c.json({
+      success: true,
+      id: planId,
+      status: 'filled',
+      message: 'Template Excel rempli avec succès',
+      stats: {
+        totalCells: stats.totalCells,
+        inputsData: stats.inputsDataCells,
+        revenueData: stats.revenueDataCells,
+        financeData: stats.financeDataCells,
+        products: stats.productsCount,
+        services: stats.servicesCount,
+        staff: stats.staffCategories,
+        investments: stats.investmentsCount,
+        sheetsModified: stats.sheetsModified,
+        sheetsPreserved: stats.sheetsPreserved
+      },
+      downloadUrl: `/api/plan-ovo/download/${planId}`
+    })
+  } catch (error: any) {
+    console.error('[Plan OVO Fill] Error:', error)
+    return c.json({ error: error.message || 'Erreur serveur' }, 500)
+  }
+})
+
 // GET /api/plan-ovo/latest/:pmeId — Returns latest plan OVO for this PME
 app.get('/api/plan-ovo/latest/:pmeId', async (c) => {
   try {
@@ -6959,19 +7139,28 @@ app.get('/api/plan-ovo/download/:id', async (c) => {
       }, 422)
     }
 
-    // Decode base64 and return as Excel file
+    // Decode base64 → gunzip → Excel bytes
     const binaryStr = atob(plan.filled_excel_base64 as string)
-    const bytes = new Uint8Array(binaryStr.length)
+    const compressed = new Uint8Array(binaryStr.length)
     for (let i = 0; i < binaryStr.length; i++) {
-      bytes[i] = binaryStr.charCodeAt(i)
+      compressed[i] = binaryStr.charCodeAt(i)
+    }
+
+    // Decompress gzip
+    let bytes: Uint8Array
+    try {
+      bytes = gunzipDecompressSync(compressed)
+    } catch {
+      // Fallback: maybe stored without compression (older entries)
+      bytes = compressed
     }
 
     const today = new Date().toISOString().slice(0, 10).replace(/-/g, '')
-    const filename = `Plan_OVO_${(plan.pme_id as string).replace(/[^a-zA-Z0-9_-]/g, '_')}_${today}.xlsx`
+    const filename = `Plan_OVO_${(plan.pme_id as string).replace(/[^a-zA-Z0-9_-]/g, '_')}_${today}.xlsm`
 
     return new Response(bytes, {
       headers: {
-        'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'Content-Type': 'application/vnd.ms-excel.sheet.macroenabled.12',
         'Content-Disposition': `attachment; filename="${filename}"`,
         'Cache-Control': 'no-store'
       }
