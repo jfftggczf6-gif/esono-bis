@@ -3092,6 +3092,48 @@ app.get('/module/plan-ovo', async (c) => {
   }
 })
 
+// ═══ Business Plan module page — registered before :code catch-all ═══
+app.get('/module/business-plan', async (c) => {
+  try {
+    const token = getAuthToken(c) || getCookie(c, 'auth_token')
+    if (!token) return c.redirect('/login')
+    const payload = await verifyToken(token)
+    if (!payload) return c.redirect('/login')
+
+    const db = c.env.DB
+    const pmeId = `pme_${payload.userId}`
+
+    const [bpRow, bmcRow, sicRow, fwRow, diagRow, ovoRow, userRow] = await Promise.all([
+      db.prepare(`SELECT id, version, status, business_plan_json, created_at FROM business_plan_analyses WHERE user_id = ? AND pme_id = ? ORDER BY created_at DESC LIMIT 1`).bind(payload.userId, pmeId).first(),
+      db.prepare(`SELECT id FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'bmc_analysis' ORDER BY created_at DESC LIMIT 1`).bind(payload.userId).first(),
+      db.prepare(`SELECT id FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'sic_analysis' ORDER BY created_at DESC LIMIT 1`).bind(payload.userId).first(),
+      db.prepare(`SELECT id FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'framework' ORDER BY created_at DESC LIMIT 1`).bind(payload.userId).first(),
+      db.prepare(`SELECT id FROM diagnostic_analyses WHERE user_id = ? AND pme_id = ? AND status IN ('analyzed','generated','partial') ORDER BY created_at DESC LIMIT 1`).bind(payload.userId, pmeId).first(),
+      db.prepare(`SELECT id FROM plan_ovo_analyses WHERE user_id = ? AND pme_id = ? AND status = 'generated' ORDER BY created_at DESC LIMIT 1`).bind(payload.userId, pmeId).first(),
+      db.prepare('SELECT name FROM users WHERE id = ?').bind(payload.userId).first(),
+    ])
+
+    const hasBmc = !!bmcRow, hasSic = !!sicRow, hasFramework = !!fwRow, hasDiag = !!diagRow, hasOvo = !!ovoRow
+    const canGenerate = hasBmc || hasFramework
+    const hasBp = !!(bpRow && (bpRow.status === 'generated' || bpRow.status === 'analyzed'))
+    const bpVersion = bpRow?.version ? Number(bpRow.version) : 0
+    const bpId = bpRow?.id as string || null
+    const bpStatus = bpRow?.status as string || 'none'
+    const userName = (userRow?.name as string) || 'Entrepreneur'
+    const availableCount = [hasBmc, hasSic, hasFramework, hasDiag, hasOvo].filter(Boolean).length
+    const embedded = c.req.query('embedded') === '1'
+    let bpData: any = null
+    if (bpRow?.business_plan_json) {
+      try { bpData = JSON.parse(bpRow.business_plan_json as string) } catch {}
+    }
+
+    return c.html(renderBusinessPlanModulePage({ hasBmc, hasSic, hasFramework, hasDiag, hasOvo, canGenerate, hasBp, bpVersion, bpId, bpStatus, userName, availableCount, embedded, bpData }))
+  } catch (error: any) {
+    console.error('[Business Plan Module] Error:', error)
+    return c.text('Erreur: ' + error.message, 500)
+  }
+})
+
 // Catch-all for module codes — redirect to deliverable view
 // Exception: /module/sic has its own dedicated page (defined below)
 app.get('/module/:code', (c) => {
@@ -3099,6 +3141,7 @@ app.get('/module/:code', (c) => {
   if (code === 'sic') return c.redirect('/module/sic/page')
   if (code === 'mod5_diagnostic' || code === 'mod_05_diagnostic') return c.redirect('/module/diagnostic')
   if (code === 'mod6_ovo') return c.redirect('/module/plan-ovo')
+  if (code === 'business-plan' || code === 'business_plan') return c.redirect('/module/business-plan')
   return c.redirect(`/module/${code}/download`)
 })
 
@@ -8861,5 +8904,596 @@ app.get('/api/diagnostic/download/:id', async (c) => {
   }
 })
 
+
+// ═══════════════════════════════════════════════════════════════
+// BUSINESS PLAN — API Routes + Render
+// ═══════════════════════════════════════════════════════════════
+
+function renderBusinessPlanModulePage(opts: {
+  hasBmc: boolean; hasSic: boolean; hasFramework: boolean; hasDiag: boolean; hasOvo: boolean;
+  canGenerate: boolean; hasBp: boolean; bpVersion: number; bpId: string | null; bpStatus: string;
+  userName: string; availableCount: number; embedded?: boolean; bpData?: any;
+}): string {
+  const { hasBmc, hasSic, hasFramework, hasDiag, hasOvo, canGenerate, hasBp, bpVersion, bpId, bpStatus, userName, availableCount, embedded, bpData } = opts
+  const esc = (s: any) => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')
+
+  // Build sections HTML if BP data is available
+  const sectionsHtml = (hasBp && bpData?.sections) ? bpData.sections.map((sec: any, i: number) => {
+    const iconMap: Record<string,string> = {'fa-file-lines':'fa-file-lines','fa-building':'fa-building','fa-diagram-project':'fa-diagram-project','fa-hand-holding-heart':'fa-hand-holding-heart','fa-chart-bar':'fa-chart-bar','fa-chart-line':'fa-chart-line','fa-stethoscope':'fa-stethoscope','fa-list-check':'fa-list-check'}
+    const icon = sec.icon && iconMap[sec.icon] ? sec.icon : 'fa-file'
+    const colors = ['#4338ca','#059669','#2563eb','#7c3aed','#d97706','#ea580c','#0d9488','#dc2626']
+    const color = colors[i % colors.length]
+    return `<div class="bp-section" id="bp-sec-${i}">
+      <div class="bp-section__head">
+        <div class="bp-section__num" style="background:${color}">${i + 1}</div>
+        <div class="bp-section__title"><i class="fas ${esc(icon)}" style="color:${color};margin-right:8px"></i>${esc(sec.titre)}</div>
+      </div>
+      <div class="bp-section__body">${esc(sec.contenu).replace(/\n/g, '<br>')}</div>
+    </div>`
+  }).join('') : ''
+
+  // Table des matières
+  const tocHtml = (hasBp && bpData?.sections) ? `<div class="bp-card">
+    <div class="bp-card__title"><i class="fas fa-list-ol" style="color:#6366f1"></i> Table des matières</div>
+    <div style="display:flex;flex-direction:column;gap:6px">
+      ${bpData.sections.map((sec: any, i: number) => `
+        <a href="#bp-sec-${i}" style="display:flex;align-items:center;gap:10px;padding:10px 14px;border-radius:10px;background:rgba(99,102,241,0.08);text-decoration:none;transition:background 0.2s;cursor:pointer" onclick="event.preventDefault();document.getElementById('bp-sec-${i}').scrollIntoView({behavior:'smooth'})">
+          <span style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:8px;background:#4338ca;color:white;font-size:12px;font-weight:700;flex-shrink:0">${i + 1}</span>
+          <span style="font-size:13px;font-weight:600;color:#c7d2fe">${esc(sec.titre)}</span>
+        </a>
+      `).join('')}
+    </div>
+  </div>` : ''
+
+  // Sources summary
+  const sourcesUsed = bpData?.meta?.sources_utilisees || {}
+  const scoresMeta = bpData?.scores || {}
+
+  return `<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <title>ESANO | Business Plan</title>
+  <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{background:#0f172a;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh}
+    .bp-banner{background:linear-gradient(135deg,#1e3a5f 0%,#4338ca 100%);padding:28px 32px;display:flex;align-items:center;gap:16px}
+    .bp-banner__logo{width:48px;height:48px;background:rgba(255,255,255,0.15);border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:800;color:white}
+    .bp-banner__title{font-size:18px;font-weight:800;color:white;letter-spacing:1px}
+    .bp-banner__sub{font-size:13px;color:rgba(255,255,255,0.7);margin-top:2px}
+    .page-container{max-width:900px;margin:0 auto;padding:20px 24px}
+    .back-link{display:inline-flex;align-items:center;gap:6px;color:#64748b;text-decoration:none;font-size:13px;margin:16px 0;transition:color 0.2s}
+    .back-link:hover{color:#94a3b8}
+    .bp-card{background:#1e293b;border:1px solid #334155;border-radius:14px;padding:24px;margin-bottom:20px}
+    .bp-card__title{font-size:15px;font-weight:700;color:#e2e8f0;margin-bottom:14px;display:flex;align-items:center;gap:10px}
+    .bp-section{background:#1e293b;border:1px solid #334155;border-radius:14px;padding:0;margin-bottom:16px;overflow:hidden}
+    .bp-section__head{display:flex;align-items:center;gap:14px;padding:18px 24px;background:rgba(67,56,202,0.06);border-bottom:1px solid #334155}
+    .bp-section__num{width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;color:white;font-size:14px;font-weight:800;flex-shrink:0}
+    .bp-section__title{font-size:15px;font-weight:700;color:#e2e8f0}
+    .bp-section__body{padding:20px 24px;font-size:13.5px;color:#94a3b8;line-height:1.8}
+    .source-row{display:flex;align-items:center;gap:14px;padding:10px 14px;border-radius:10px;margin-bottom:6px;border:1px solid}
+    .gen-btn{display:inline-flex;align-items:center;gap:10px;padding:14px 32px;border-radius:12px;font-size:15px;font-weight:700;border:none;cursor:pointer;color:white;transition:all 0.2s;box-shadow:0 4px 14px rgba(0,0,0,0.3)}
+    .gen-btn:disabled{opacity:0.4;cursor:not-allowed}
+    .gen-btn--primary{background:linear-gradient(135deg,#4338ca,#6366f1)}
+    .gen-btn--primary:not(:disabled):hover{transform:translateY(-1px);box-shadow:0 6px 20px rgba(67,56,202,0.4)}
+    .dl-bar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;padding:16px 20px;background:linear-gradient(135deg,rgba(67,56,202,0.15),rgba(99,102,241,0.1));border:1px solid #4338ca;border-radius:14px;margin-bottom:20px}
+    .dl-btn{display:inline-flex;align-items:center;gap:8px;padding:10px 20px;border-radius:10px;font-size:13px;font-weight:700;border:none;cursor:pointer;color:white;text-decoration:none;transition:all 0.2s}
+    .dl-btn--docx{background:#4338ca}
+    .dl-btn--docx:hover{background:#3730a3}
+    .preview-area{background:#1e293b;border:1px solid #334155;border-radius:14px;padding:40px;text-align:center;min-height:300px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px}
+    .preview-area i{font-size:48px;color:#334155}
+    .preview-area p{font-size:14px;color:#64748b}
+    ${embedded ? '.bp-banner{padding:20px 24px}.back-link,.float-btns,.gen-card{display:none!important}' : ''}
+    @media(max-width:768px){.bp-banner{padding:20px 16px}.page-container{padding:16px}.bp-section__head{padding:14px 16px}.bp-section__body{padding:16px}}
+    @media print{body{background:white;color:black}.bp-banner,.back-link,.gen-btn,.dl-bar{display:none!important}.bp-section{border-color:#ddd}.bp-section__body{color:#333}}
+  </style>
+</head>
+<body>
+  <div class="bp-banner">
+    <div class="bp-banner__logo">\u{1F4C4}</div>
+    <div>
+      <div class="bp-banner__title">BUSINESS PLAN \u2014 DOCUMENT COMPLET</div>
+      <div class="bp-banner__sub">${esc(bpData?.meta?.entreprise || userName)} \u2022 Synth\u00E8se compl\u00E8te pour investisseurs${bpVersion > 0 ? ' \u2022 v' + bpVersion : ''}</div>
+    </div>
+  </div>
+
+  <div class="page-container">
+    ${embedded ? '' : '<a href="/entrepreneur" class="back-link"><i class="fas fa-arrow-left"></i> Retour au tableau de bord</a>'}
+
+    ${hasBp ? `
+    <!-- Download bar -->
+    <div class="dl-bar">
+      <div style="display:flex;align-items:center;gap:12px">
+        <i class="fas fa-check-circle" style="font-size:28px;color:#6ee7b7"></i>
+        <div>
+          <div style="font-size:14px;font-weight:700;color:#e2e8f0">Business Plan g\u00E9n\u00E9r\u00E9 avec succ\u00E8s</div>
+          <div style="font-size:12px;color:#94a3b8">Version ${bpVersion} \u2022 ${availableCount}/5 sources int\u00E9gr\u00E9es \u2022 ${bpData?.sections?.length || 0} sections</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        ${bpId ? `<a href="/api/business-plan/download/${bpId}?format=docx" class="dl-btn dl-btn--docx"><i class="fas fa-file-word"></i> Word (.docx)</a>` : ''}
+        ${!embedded ? `<a href="/module/business-plan" class="dl-btn" style="background:#1e293b;border:1px solid #4338ca"><i class="fas fa-expand"></i> Pleine page</a>` : ''}
+      </div>
+    </div>
+
+    <!-- Table of contents -->
+    ${tocHtml}
+
+    <!-- Sections -->
+    ${sectionsHtml}
+
+    <!-- Regenerate -->
+    ${embedded ? '' : `<div class="gen-card" style="text-align:center;margin-top:24px;padding:20px">
+      <button class="gen-btn gen-btn--primary" onclick="generateBusinessPlan()">
+        <i class="fas fa-refresh"></i> Reg\u00E9n\u00E9rer le Business Plan
+      </button>
+      <div id="generateStatus" style="margin-top:16px;display:none"></div>
+    </div>`}
+    ` : `
+    <!-- Pre-generation view -->
+    <div class="bp-card">
+      <div class="bp-card__title"><i class="fas fa-info-circle" style="color:#6366f1"></i> \u00C0 propos</div>
+      <p style="font-size:14px;color:#94a3b8;line-height:1.7">
+        Le <strong style="color:#e2e8f0">Business Plan</strong> synth\u00E9tise l\u2019ensemble de vos livrables
+        (BMC, SIC, Framework financier, Plan OVO, Diagnostic) en un dossier structur\u00E9 pr\u00EAt \u00E0 pr\u00E9senter aux investisseurs.
+      </p>
+    </div>
+
+    <!-- Sources -->
+    <div class="bp-card">
+      <div class="bp-card__title"><i class="fas fa-database" style="color:#7c3aed"></i> Sources de donn\u00E9es (${availableCount}/5)</div>
+      ${[
+        { has: hasBmc, icon: 'fa-diagram-project', label: 'BMC (Business Model Canvas)', req: true },
+        { has: hasSic, icon: 'fa-hand-holding-heart', label: 'SIC (Social Impact Canvas)', req: false },
+        { has: hasFramework, icon: 'fa-chart-bar', label: 'Framework Analyse PME', req: true },
+        { has: hasDiag, icon: 'fa-stethoscope', label: 'Diagnostic Expert', req: false },
+        { has: hasOvo, icon: 'fa-file-excel', label: 'Plan Financier OVO', req: false },
+      ].map(s => `
+        <div class="source-row" style="background:${s.has ? '#064e3b44' : '#7c2d1222'};border-color:${s.has ? '#065f46' : '#7c2d12'}">
+          <div style="width:32px;height:32px;border-radius:8px;background:${s.has ? '#065f46' : '#7c2d12'};display:flex;align-items:center;justify-content:center;color:${s.has ? '#6ee7b7' : '#fca5a5'};font-size:13px;flex-shrink:0">
+            <i class="fas ${s.has ? 'fa-check' : 'fa-times'}"></i>
+          </div>
+          <div style="flex:1">
+            <div style="font-size:13px;font-weight:600;color:${s.has ? '#6ee7b7' : '#fca5a5'}">${s.label}</div>
+            <div style="font-size:11px;color:#64748b">${s.has ? 'Disponible' : 'Non disponible'}${s.req ? ' \u2022 Recommand\u00E9' : ' \u2022 Optionnel'}</div>
+          </div>
+        </div>`).join('')}
+    </div>
+
+    <!-- Generate button -->
+    <div style="text-align:center;padding:20px">
+      <button id="btnGenerate" class="gen-btn gen-btn--primary" ${!canGenerate ? 'disabled' : ''} onclick="generateBusinessPlan()">
+        <i class="fas fa-file-alt"></i> G\u00E9n\u00E9rer le Business Plan
+      </button>
+      ${!canGenerate ? '<p style="font-size:12px;color:#f87171;margin-top:12px">Au moins le Business Model Canvas ou le Framework d\u2019analyse financi\u00E8re est requis.</p>' : ''}
+      <div id="generateStatus" style="margin-top:16px;display:none"></div>
+    </div>
+
+    <div class="preview-area">
+      <i class="fas fa-file-alt"></i>
+      <p>G\u00E9n\u00E9rez le Business Plan pour voir le document complet</p>
+    </div>
+    `}
+
+    <!-- Footer -->
+    <div style="text-align:center;padding:20px 0;margin-top:20px;border-top:1px solid #1e293b">
+      <div style="font-size:12px;color:#64748b">G\u00E9n\u00E9r\u00E9 par ESANO \u2022 Business Plan${bpData?.meta?.date_generation ? ' \u2022 ' + new Date(bpData.meta.date_generation).toLocaleDateString('fr-FR', {day:'numeric',month:'long',year:'numeric'}) : ''}</div>
+    </div>
+  </div>
+
+  <script>
+    function getCookie(n){return(document.cookie.match('(^|;)\\\\s*'+n+'=([^;]*)')||[])[2]||''}
+    async function generateBusinessPlan() {
+      const btn = document.getElementById('btnGenerate');
+      const status = document.getElementById('generateStatus');
+      if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> G\u00E9n\u00E9ration en cours...'; }
+      if (status) { status.style.display = 'block'; status.innerHTML = '<div style="color:#94a3b8"><i class="fas fa-spinner fa-spin"></i> Compilation de vos livrables...</div>'; }
+      try {
+        const token = getCookie('auth_token') || localStorage.getItem('auth_token');
+        const res = await fetch('/api/business-plan/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+          credentials: 'include',
+          body: JSON.stringify({})
+        });
+        const data = await res.json();
+        if (data.success) {
+          if (status) status.innerHTML = '<div style="color:#6ee7b7">\u2705 ' + (data.message || 'Business Plan g\u00E9n\u00E9r\u00E9') + '</div>';
+          setTimeout(() => location.reload(), 1200);
+        } else {
+          if (status) status.innerHTML = '<div style="color:#f87171">\u274C ' + (data.error || 'Erreur') + '</div>';
+          if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-file-alt"></i> G\u00E9n\u00E9rer le Business Plan'; }
+        }
+      } catch(e) {
+        if (status) status.innerHTML = '<div style="color:#f87171">\u274C Erreur r\u00E9seau</div>';
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-file-alt"></i> G\u00E9n\u00E9rer le Business Plan'; }
+      }
+    }
+  </script>
+</body>
+</html>`
+}
+
+// POST /api/business-plan/generate
+app.post('/api/business-plan/generate', async (c) => {
+  try {
+    const token = getAuthToken(c) || getCookie(c, 'auth_token')
+    if (!token) return c.json({ error: 'Non authentifié' }, 401)
+    const payload = await verifyToken(token)
+    if (!payload) return c.json({ error: 'Token invalide' }, 401)
+
+    const db = c.env.DB
+    const pmeId = `pme_${payload.userId}`
+
+    // ═══ STEP 1: Fetch all deliverables in parallel ═══
+    const [bmcRow, sicRow, fwRow, diagRow, ovoRow, userRow, pmeDataRow] = await Promise.all([
+      db.prepare(`SELECT id, content, score FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'bmc_analysis' ORDER BY created_at DESC LIMIT 1`).bind(payload.userId).first(),
+      db.prepare(`SELECT id, content, score FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'sic_analysis' ORDER BY created_at DESC LIMIT 1`).bind(payload.userId).first(),
+      db.prepare(`SELECT id, content, score FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'framework' ORDER BY created_at DESC LIMIT 1`).bind(payload.userId).first(),
+      db.prepare(`SELECT id, score, analysis_json FROM diagnostic_analyses WHERE user_id = ? AND pme_id = ? AND status IN ('analyzed','generated','partial') ORDER BY created_at DESC LIMIT 1`).bind(payload.userId, pmeId).first(),
+      db.prepare(`SELECT id, analysis_json, score FROM plan_ovo_analyses WHERE user_id = ? AND pme_id = ? AND status = 'generated' ORDER BY created_at DESC LIMIT 1`).bind(payload.userId, pmeId).first(),
+      db.prepare('SELECT name, email, country FROM users WHERE id = ?').bind(payload.userId).first(),
+      db.prepare(`SELECT content FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'framework_pme_data' ORDER BY version DESC LIMIT 1`).bind(payload.userId).first(),
+    ])
+
+    if (!bmcRow && !fwRow) {
+      return c.json({ error: 'Au moins le Business Model Canvas ou le Framework d\'analyse financière est requis pour générer le Business Plan.' }, 400)
+    }
+
+    // ═══ STEP 2: Parse all deliverables ═══
+    const safeParse = (raw: any) => { try { return typeof raw === 'string' ? JSON.parse(raw) : (raw || {}) } catch { return {} } }
+    const bmcData = bmcRow ? safeParse(bmcRow.content) : null
+    const sicData = sicRow ? safeParse(sicRow.content) : null
+    const fwData = fwRow ? safeParse(fwRow.content) : null
+    const diagData = diagRow ? safeParse(diagRow.analysis_json) : null
+    const ovoData = ovoRow ? safeParse(ovoRow.analysis_json) : null
+    const pmeData = pmeDataRow ? safeParse(pmeDataRow.content) : null
+    const userName = (userRow?.name as string) || 'Entrepreneur'
+    const userCountry = (userRow?.country as string) || ''
+
+    // ═══ STEP 3: Extract key info from each deliverable ═══
+    // --- BMC ---
+    const bmcSections = bmcData ? {
+      proposition_valeur: bmcData.proposition_valeur || bmcData.value_proposition || bmcData.propositionValeur || '',
+      segments_clients: bmcData.segments_clients || bmcData.customer_segments || bmcData.segmentsClients || '',
+      canaux: bmcData.canaux || bmcData.channels || '',
+      relations_clients: bmcData.relations_clients || bmcData.customer_relationships || '',
+      sources_revenus: bmcData.sources_revenus || bmcData.revenue_streams || bmcData.sourcesRevenus || '',
+      ressources_cles: bmcData.ressources_cles || bmcData.key_resources || '',
+      activites_cles: bmcData.activites_cles || bmcData.key_activities || '',
+      partenaires_cles: bmcData.partenaires_cles || bmcData.key_partners || '',
+      structure_couts: bmcData.structure_couts || bmcData.cost_structure || bmcData.structureCouts || '',
+    } : null
+
+    // --- SIC ---
+    const sicSections = sicData ? {
+      probleme_social: sicData.probleme_social || sicData.social_problem || '',
+      beneficiaires: sicData.beneficiaires || sicData.beneficiaries || '',
+      solution_impact: sicData.solution_impact || sicData.impact_solution || '',
+      indicateurs_impact: sicData.indicateurs_impact || sicData.impact_indicators || '',
+      odd_cibles: sicData.odd_cibles || sicData.sdg_targets || '',
+      theorie_changement: sicData.theorie_changement || sicData.theory_of_change || '',
+    } : null
+
+    // --- Framework financier ---
+    const fwSections = fwData ? {
+      chiffre_affaires: fwData.chiffre_affaires || fwData.revenue || '',
+      charges: fwData.charges || fwData.expenses || '',
+      resultat_net: fwData.resultat_net || fwData.net_result || '',
+      tresorerie: fwData.tresorerie || fwData.cash_flow || '',
+      bfr: fwData.bfr || fwData.working_capital || '',
+      investissements: fwData.investissements || fwData.investments || '',
+    } : null
+
+    // --- PME Data (structured financials) ---
+    const pmeFinancials = pmeData ? {
+      nom_entreprise: pmeData.nom_entreprise || pmeData.company_name || userName,
+      secteur: pmeData.secteur || pmeData.sector || '',
+      activites: pmeData.activities || pmeData.activites || [],
+      historique: pmeData.historique || {},
+      hypotheses: pmeData.hypotheses || {},
+    } : null
+
+    // --- Diagnostic ---
+    const diagSummary = diagData ? {
+      score_global: diagData.score_global || diagData.scoreGlobal || (diagRow?.score as number) || 0,
+      resume_executif: diagData.resume_executif || diagData.verdict || '',
+      forces: diagData.forces || diagData.strengths || [],
+      recommandations: diagData.recommandations || diagData.recommendations || [],
+      risques: diagData.risques_contextuels || [],
+    } : null
+
+    // --- Plan OVO ---
+    const ovoSummary = ovoData ? {
+      score: ovoData.score_global || (ovoRow?.score as number) || 0,
+      compte_resultat: ovoData.compte_resultat || ovoData.income_statement || null,
+      plan_tresorerie: ovoData.plan_tresorerie || ovoData.cash_flow || null,
+      bilan: ovoData.bilan || ovoData.balance_sheet || null,
+      kpis: ovoData.kpis || ovoData.ratios || null,
+    } : null
+
+    const companyName = pmeFinancials?.nom_entreprise || userName
+    const sector = pmeFinancials?.secteur || ''
+
+    // ═══ STEP 4: Compile Business Plan JSON ═══
+    const businessPlanJson = {
+      meta: {
+        titre: `Business Plan — ${companyName}`,
+        entreprise: companyName,
+        secteur: sector,
+        pays: userCountry,
+        date_generation: new Date().toISOString(),
+        sources_utilisees: {
+          bmc: !!bmcRow,
+          sic: !!sicRow,
+          framework: !!fwRow,
+          diagnostic: !!diagRow,
+          plan_ovo: !!ovoRow,
+          pme_data: !!pmeData,
+        }
+      },
+      sections: [
+        {
+          id: 'resume_executif',
+          titre: 'Résumé Exécutif',
+          icon: 'fa-file-lines',
+          contenu: _buildResumeExecutif(companyName, sector, userCountry, diagSummary, bmcSections, sicSections)
+        },
+        {
+          id: 'presentation_entreprise',
+          titre: 'Présentation de l\'Entreprise',
+          icon: 'fa-building',
+          contenu: _buildPresentationEntreprise(companyName, sector, userCountry, pmeFinancials)
+        },
+        {
+          id: 'modele_economique',
+          titre: 'Modèle Économique (Business Model)',
+          icon: 'fa-diagram-project',
+          contenu: bmcSections ? _buildModeleEconomique(bmcSections) : 'Non disponible — Le BMC n\'a pas encore été généré.'
+        },
+        {
+          id: 'impact_social',
+          titre: 'Impact Social & Environnemental',
+          icon: 'fa-hand-holding-heart',
+          contenu: sicSections ? _buildImpactSocial(sicSections) : 'Non disponible — Le SIC n\'a pas encore été généré.'
+        },
+        {
+          id: 'analyse_financiere',
+          titre: 'Analyse Financière',
+          icon: 'fa-chart-bar',
+          contenu: _buildAnalyseFinanciere(fwSections, pmeFinancials, ovoSummary)
+        },
+        {
+          id: 'projections_financieres',
+          titre: 'Projections Financières & Plan OVO',
+          icon: 'fa-chart-line',
+          contenu: ovoSummary ? _buildProjections(ovoSummary) : 'Non disponible — Le Plan OVO n\'a pas encore été généré.'
+        },
+        {
+          id: 'diagnostic_readiness',
+          titre: 'Diagnostic de Maturité Investisseur',
+          icon: 'fa-stethoscope',
+          contenu: diagSummary ? _buildDiagnostic(diagSummary) : 'Non disponible — Le Diagnostic n\'a pas encore été généré.'
+        },
+        {
+          id: 'plan_action',
+          titre: 'Plan d\'Action & Prochaines Étapes',
+          icon: 'fa-list-check',
+          contenu: _buildPlanAction(diagSummary, bmcSections, sicSections, fwSections)
+        },
+      ],
+      scores: {
+        bmc: bmcRow?.score as number || null,
+        sic: sicRow?.score as number || null,
+        framework: fwRow?.score as number || null,
+        diagnostic: diagSummary?.score_global || null,
+        plan_ovo: ovoSummary?.score || null,
+      },
+    }
+
+    // ═══ STEP 5: Save to DB ═══
+    const lastBp = await db.prepare('SELECT version FROM business_plan_analyses WHERE user_id = ? AND pme_id = ? ORDER BY version DESC LIMIT 1').bind(payload.userId, pmeId).first()
+    const newVersion = (lastBp?.version ? Number(lastBp.version) : 0) + 1
+    const id = crypto.randomUUID()
+
+    await db.prepare(
+      `INSERT INTO business_plan_analyses (id, user_id, pme_id, version, status, business_plan_json, template_docx_path, pays, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'generated', ?, '/templates/business_plan_template.docx', ?, datetime('now'), datetime('now'))`
+    ).bind(id, payload.userId, pmeId, newVersion, JSON.stringify(businessPlanJson), userCountry).run()
+
+    console.log(`[Business Plan] Generated v${newVersion} for user ${payload.userId} (id: ${id}) — sources: BMC=${!!bmcRow} SIC=${!!sicRow} FW=${!!fwRow} DIAG=${!!diagRow} OVO=${!!ovoRow}`)
+
+    return c.json({ success: true, id, version: newVersion, message: 'Business Plan généré avec succès !' })
+  } catch (error: any) {
+    console.error('[Business Plan Generate] Error:', error)
+    return c.json({ error: error.message || 'Erreur serveur' }, 500)
+  }
+})
+
+// ═══ Business Plan section builders ═══
+function _safeStr(v: any): string { return typeof v === 'string' ? v : (Array.isArray(v) ? v.join(', ') : JSON.stringify(v ?? '')) }
+
+function _buildResumeExecutif(company: string, sector: string, country: string, diag: any, bmc: any, sic: any): string {
+  let r = `${company} est une entreprise`
+  if (sector) r += ` du secteur ${sector}`
+  if (country) r += ` basée en ${country}`
+  r += '.\n\n'
+  if (diag?.resume_executif) r += diag.resume_executif + '\n\n'
+  if (bmc?.proposition_valeur) r += `Proposition de valeur : ${_safeStr(bmc.proposition_valeur)}\n\n`
+  if (sic?.probleme_social) r += `Problématique sociale adressée : ${_safeStr(sic.probleme_social)}\n\n`
+  if (diag?.score_global) r += `Score de maturité investisseur : ${diag.score_global}/100\n`
+  return r.trim()
+}
+
+function _buildPresentationEntreprise(company: string, sector: string, country: string, pme: any): string {
+  let r = `Nom : ${company}\n`
+  if (sector) r += `Secteur d'activité : ${sector}\n`
+  if (country) r += `Pays : ${country}\n`
+  if (pme?.activites?.length) {
+    r += `\nActivités principales :\n`
+    pme.activites.forEach((a: any, i: number) => { r += `  ${i+1}. ${a.nom || a.name || _safeStr(a)}\n` })
+  }
+  if (pme?.historique) {
+    const h = pme.historique
+    if (h.caTotal) r += `\nChiffre d'affaires historique : ${Array.isArray(h.caTotal) ? h.caTotal.map((v: any, i: number) => `N${i > 0 ? '+' + i : ''}: ${Number(v).toLocaleString('fr-FR')} FCFA`).join(', ') : _safeStr(h.caTotal)}\n`
+  }
+  return r.trim()
+}
+
+function _buildModeleEconomique(bmc: any): string {
+  const parts: string[] = []
+  if (bmc.proposition_valeur) parts.push(`Proposition de valeur :\n${_safeStr(bmc.proposition_valeur)}`)
+  if (bmc.segments_clients) parts.push(`Segments clients :\n${_safeStr(bmc.segments_clients)}`)
+  if (bmc.canaux) parts.push(`Canaux de distribution :\n${_safeStr(bmc.canaux)}`)
+  if (bmc.relations_clients) parts.push(`Relations clients :\n${_safeStr(bmc.relations_clients)}`)
+  if (bmc.sources_revenus) parts.push(`Sources de revenus :\n${_safeStr(bmc.sources_revenus)}`)
+  if (bmc.ressources_cles) parts.push(`Ressources clés :\n${_safeStr(bmc.ressources_cles)}`)
+  if (bmc.activites_cles) parts.push(`Activités clés :\n${_safeStr(bmc.activites_cles)}`)
+  if (bmc.partenaires_cles) parts.push(`Partenaires clés :\n${_safeStr(bmc.partenaires_cles)}`)
+  if (bmc.structure_couts) parts.push(`Structure de coûts :\n${_safeStr(bmc.structure_couts)}`)
+  return parts.join('\n\n') || 'Données BMC non disponibles.'
+}
+
+function _buildImpactSocial(sic: any): string {
+  const parts: string[] = []
+  if (sic.probleme_social) parts.push(`Problème social adressé :\n${_safeStr(sic.probleme_social)}`)
+  if (sic.beneficiaires) parts.push(`Bénéficiaires :\n${_safeStr(sic.beneficiaires)}`)
+  if (sic.solution_impact) parts.push(`Solution & Impact :\n${_safeStr(sic.solution_impact)}`)
+  if (sic.indicateurs_impact) parts.push(`Indicateurs d'impact :\n${_safeStr(sic.indicateurs_impact)}`)
+  if (sic.odd_cibles) parts.push(`ODD ciblés :\n${_safeStr(sic.odd_cibles)}`)
+  if (sic.theorie_changement) parts.push(`Théorie du changement :\n${_safeStr(sic.theorie_changement)}`)
+  return parts.join('\n\n') || 'Données SIC non disponibles.'
+}
+
+function _buildAnalyseFinanciere(fw: any, pme: any, ovo: any): string {
+  let r = ''
+  if (fw) {
+    if (fw.chiffre_affaires) r += `Chiffre d'affaires :\n${_safeStr(fw.chiffre_affaires)}\n\n`
+    if (fw.charges) r += `Charges :\n${_safeStr(fw.charges)}\n\n`
+    if (fw.resultat_net) r += `Résultat net :\n${_safeStr(fw.resultat_net)}\n\n`
+    if (fw.tresorerie) r += `Trésorerie :\n${_safeStr(fw.tresorerie)}\n\n`
+    if (fw.bfr) r += `Besoin en Fonds de Roulement :\n${_safeStr(fw.bfr)}\n\n`
+    if (fw.investissements) r += `Investissements :\n${_safeStr(fw.investissements)}\n\n`
+  }
+  if (pme?.hypotheses?.investissements?.length) {
+    r += 'Investissements prévus :\n'
+    pme.hypotheses.investissements.forEach((inv: any, i: number) => {
+      r += `  ${i+1}. ${inv.nom || inv.libelle || 'Investissement'} — ${Number(inv.montant || 0).toLocaleString('fr-FR')} FCFA\n`
+    })
+  }
+  return r.trim() || 'Données financières non encore disponibles.'
+}
+
+function _buildProjections(ovo: any): string {
+  let r = ''
+  if (ovo.score) r += `Score Plan OVO : ${ovo.score}/100\n\n`
+  if (ovo.kpis) {
+    r += 'Indicateurs financiers clés :\n'
+    const kpis = typeof ovo.kpis === 'object' ? ovo.kpis : {}
+    Object.entries(kpis).forEach(([k, v]) => { r += `  • ${k.replace(/_/g, ' ')} : ${_safeStr(v)}\n` })
+    r += '\n'
+  }
+  if (ovo.compte_resultat) r += `Compte de résultat prévisionnel :\n${_safeStr(ovo.compte_resultat)}\n\n`
+  if (ovo.plan_tresorerie) r += `Plan de trésorerie :\n${_safeStr(ovo.plan_tresorerie)}\n\n`
+  if (ovo.bilan) r += `Bilan prévisionnel :\n${_safeStr(ovo.bilan)}\n`
+  return r.trim() || 'Projections non encore disponibles.'
+}
+
+function _buildDiagnostic(diag: any): string {
+  let r = `Score global de maturité : ${diag.score_global}/100\n\n`
+  if (diag.resume_executif) r += `${diag.resume_executif}\n\n`
+  if (diag.forces?.length) {
+    r += 'Forces identifiées :\n'
+    diag.forces.forEach((f: any) => { r += `  ✓ ${typeof f === 'string' ? f : f.titre || f.title || _safeStr(f)}\n` })
+    r += '\n'
+  }
+  if (diag.recommandations?.length) {
+    r += 'Recommandations prioritaires :\n'
+    diag.recommandations.slice(0, 5).forEach((rec: any, i: number) => {
+      r += `  ${i+1}. ${typeof rec === 'string' ? rec : rec.titre || rec.title || _safeStr(rec)}\n`
+    })
+    r += '\n'
+  }
+  if (diag.risques?.length) {
+    r += 'Risques contextuels :\n'
+    diag.risques.slice(0, 3).forEach((risk: any) => {
+      r += `  ⚠ ${typeof risk === 'string' ? risk : risk.titre || risk.title || _safeStr(risk)}\n`
+    })
+  }
+  return r.trim()
+}
+
+function _buildPlanAction(diag: any, bmc: any, sic: any, fw: any): string {
+  const actions: string[] = []
+  if (!bmc) actions.push('Compléter et générer le Business Model Canvas (BMC)')
+  if (!sic) actions.push('Compléter et générer le Social Impact Canvas (SIC)')
+  if (!fw) actions.push('Compléter et générer le Framework d\'analyse financière')
+  if (diag?.recommandations?.length) {
+    diag.recommandations.slice(0, 3).forEach((rec: any) => {
+      const title = typeof rec === 'string' ? rec : rec.titre || rec.title || ''
+      if (title) actions.push(title)
+    })
+  }
+  if (actions.length === 0) actions.push('Tous les livrables sont complets — vous êtes prêt pour la levée de fonds !')
+  let r = 'Plan d\'action recommandé :\n\n'
+  actions.forEach((a, i) => { r += `${i+1}. ${a}\n` })
+  r += '\nConseil : Relancez le Business Plan après chaque mise à jour de livrable pour obtenir un document toujours à jour.'
+  return r
+}
+
+// GET /api/business-plan/latest/:pmeId
+app.get('/api/business-plan/latest/:pmeId', async (c) => {
+  try {
+    const token = getAuthToken(c) || getCookie(c, 'auth_token')
+    if (!token) return c.json({ error: 'Non authentifié' }, 401)
+    const payload = await verifyToken(token)
+    if (!payload) return c.json({ error: 'Token invalide' }, 401)
+
+    const pmeId = c.req.param('pmeId')
+    const row = await c.env.DB.prepare(
+      `SELECT id, version, status, business_plan_json, created_at FROM business_plan_analyses WHERE user_id = ? AND pme_id = ? AND status IN ('generated','analyzed') ORDER BY created_at DESC LIMIT 1`
+    ).bind(payload.userId, pmeId).first()
+
+    if (!row) return c.json({ available: false })
+
+    let data = null
+    if (row.business_plan_json) {
+      try { data = JSON.parse(row.business_plan_json as string) } catch {}
+    }
+
+    return c.json({ available: true, id: row.id, version: row.version, status: row.status, data, createdAt: row.created_at })
+  } catch (error: any) {
+    return c.json({ error: error.message }, 500)
+  }
+})
+
+// GET /api/business-plan/download/:id
+app.get('/api/business-plan/download/:id', async (c) => {
+  try {
+    const token = getAuthToken(c) || getCookie(c, 'auth_token')
+    if (!token) return c.json({ error: 'Non authentifié' }, 401)
+    const payload = await verifyToken(token)
+    if (!payload) return c.json({ error: 'Token invalide' }, 401)
+
+    const id = c.req.param('id')
+    const row = await c.env.DB.prepare(
+      `SELECT generated_docx_base64, status FROM business_plan_analyses WHERE id = ? AND user_id = ?`
+    ).bind(id, payload.userId).first()
+
+    if (!row) return c.json({ error: 'Business Plan non trouvé' }, 404)
+    if (!row.generated_docx_base64) return c.json({ error: 'Le fichier Word n\'est pas encore disponible. Génération en cours.' }, 404)
+
+    const buffer = Uint8Array.from(atob(row.generated_docx_base64 as string), ch => ch.charCodeAt(0))
+    return new Response(buffer, {
+      headers: {
+        'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'Content-Disposition': `attachment; filename="Business_Plan_${new Date().toISOString().slice(0,10).replace(/-/g,'')}.docx"`,
+      }
+    })
+  } catch (error: any) {
+    return c.json({ error: error.message }, 500)
+  }
+})
 
 export default app

@@ -4429,6 +4429,20 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
       } else if (type === 'plan_ovo') {
         el.innerHTML = renderOVOHTML(content, score, sColor);
         if (window.__ovoChartInit) setTimeout(window.__ovoChartInit, 300);
+      } else if (type === 'business_plan') {
+        // ── BUSINESS PLAN: embed /module/business-plan in iframe ──
+        el.innerHTML = '';
+        var bpBar = document.createElement('div');
+        bpBar.style.cssText = 'display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;padding:16px 20px;background:linear-gradient(135deg,#f0f4ff,#e8edfb);border:1px solid #6366f1;border-radius:12px;margin-bottom:16px';
+        bpBar.innerHTML = '<div style="display:flex;align-items:center;gap:10px"><i class="fas fa-building" style="font-size:24px;color:#4338ca"></i><div><div style="font-size:14px;font-weight:700;color:#1e3a5f">Business Plan</div><div style="font-size:12px;color:#4b6584">Document complet pour investisseurs</div></div></div>' +
+          '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+          '<a href="/module/business-plan" style="display:inline-flex;align-items:center;gap:6px;padding:10px 16px;border-radius:10px;background:white;color:#4338ca;border:1px solid #a3b8d8;font-size:12px;font-weight:600;text-decoration:none;cursor:pointer" onmouseover="this.style.background=&apos;#f0f4ff&apos;" onmouseout="this.style.background=&apos;white&apos;"><i class="fas fa-expand"></i> Pleine page</a>' +
+          '</div>';
+        el.appendChild(bpBar);
+        var bpIframe = document.createElement('iframe');
+        bpIframe.style.cssText = 'width:100%;height:600px;border:none;border-radius:12px;background:#0f172a';
+        bpIframe.src = '/module/business-plan?embedded=1';
+        el.appendChild(bpIframe);
       } else if (type === 'framework' && FRAMEWORK_HTML_TEMPLATE && FRAMEWORK_HTML_TEMPLATE.length > 100) {
         el.innerHTML = '';
         // ── Download bar above iframe ──
