@@ -38,6 +38,9 @@ import { buildPmeInputWithAI, type EnrichedPmeInput } from './pme-ai-extractor'
 import { crossAnalyzeBmcFinancials } from './pme-cross-analyzer'
 import { callClaudeForSicExtraction, extractSicSectionsRegex, type SicExtractionResult } from './sic-extraction'
 import { analyzeSicWithClaude, analyzeSicFallback, type SicAnalystResult } from './sic-analyst'
+import { detectCountry, getFiscalParams, buildKBContext, type FiscalParams } from './fiscal-params'
+import { extractOVOData, type DeliverableData as OVODeliverableData, type OVOExtractionResult } from './ovo-extraction-engine'
+import { isValidApiKey } from './claude-api'
 
 type Bindings = {
   DB: D1Database
@@ -6610,7 +6613,7 @@ app.get('/api/sic/latest/:pmeId', async (c) => {
 // PLAN FINANCIER OVO — Routes API & Module Page
 // ═══════════════════════════════════════════════════════════════
 
-// POST /api/plan-ovo/generate — Scaffold: reads deliverables, creates pending entry
+// POST /api/plan-ovo/generate — Full implementation with Claude AI extraction
 app.post('/api/plan-ovo/generate', async (c) => {
   try {
     const token = getAuthToken(c)
@@ -6620,52 +6623,107 @@ app.post('/api/plan-ovo/generate', async (c) => {
 
     const body = await c.req.json().catch(() => ({}))
     const pmeId = (body as any).pmeId || `pme_${payload.userId}`
-
     const db = c.env.DB
+    const apiKey = c.env.ANTHROPIC_API_KEY || ''
 
-    // 1. Check that framework is available (REQUIRED)
-    const framework = await db.prepare(`
-      SELECT id, content, score FROM entrepreneur_deliverables
-      WHERE user_id = ? AND type = 'framework'
-      ORDER BY created_at DESC LIMIT 1
-    `).bind(payload.userId).first()
+    // ═══════════════════════════════════════════════════════
+    // STEP A: Read all deliverables in parallel
+    // Framework = REQUIRED, BMC/SIC/Diagnostic = optional
+    // ═══════════════════════════════════════════════════════
+    console.log(`[Plan OVO] Step A: Fetching deliverables for user ${payload.userId}`)
 
-    if (!framework) {
+    const [framework, bmc, sic, diagnostic] = await Promise.all([
+      db.prepare(`
+        SELECT id, content, score FROM entrepreneur_deliverables
+        WHERE user_id = ? AND type = 'framework'
+        ORDER BY created_at DESC LIMIT 1
+      `).bind(payload.userId).first(),
+      db.prepare(`
+        SELECT id, content, score FROM entrepreneur_deliverables
+        WHERE user_id = ? AND type = 'bmc_analysis'
+        ORDER BY created_at DESC LIMIT 1
+      `).bind(payload.userId).first(),
+      db.prepare(`
+        SELECT id, content, score FROM entrepreneur_deliverables
+        WHERE user_id = ? AND type = 'sic_analysis'
+        ORDER BY created_at DESC LIMIT 1
+      `).bind(payload.userId).first(),
+      db.prepare(`
+        SELECT id, content, score FROM entrepreneur_deliverables
+        WHERE user_id = ? AND type = 'diagnostic'
+        ORDER BY created_at DESC LIMIT 1
+      `).bind(payload.userId).first()
+    ])
+
+    // Framework is mandatory
+    if (!framework || !framework.content) {
       return c.json({
         error: 'Framework requis',
         message: 'Le Plan Financier Intermédiaire (Framework) doit être généré avant de créer le Plan OVO. Veuillez d\'abord générer vos livrables depuis le tableau de bord.'
       }, 400)
     }
 
-    // 2. Collect optional deliverables (BMC, SIC, Diagnostic)
-    const bmc = await db.prepare(`
-      SELECT id, content, score FROM entrepreneur_deliverables
-      WHERE user_id = ? AND type = 'bmc_analysis'
-      ORDER BY created_at DESC LIMIT 1
-    `).bind(payload.userId).first()
-
-    const sic = await db.prepare(`
-      SELECT id, content, score FROM entrepreneur_deliverables
-      WHERE user_id = ? AND type = 'sic_analysis'
-      ORDER BY created_at DESC LIMIT 1
-    `).bind(payload.userId).first()
-
-    const diagnostic = await db.prepare(`
-      SELECT id, content, score FROM entrepreneur_deliverables
-      WHERE user_id = ? AND type = 'diagnostic'
-      ORDER BY created_at DESC LIMIT 1
-    `).bind(payload.userId).first()
-
-    // 3. Build extraction_json from available deliverables
-    const extractionData: any = {
-      framework: framework ? { id: framework.id, score: framework.score, available: true } : null,
-      bmc: bmc ? { id: bmc.id, score: bmc.score, available: true } : { available: false },
-      sic: sic ? { id: sic.id, score: sic.score, available: true } : { available: false },
-      diagnostic: diagnostic ? { id: diagnostic.id, score: diagnostic.score, available: true } : { available: false },
-      collected_at: new Date().toISOString()
+    // Build allDeliverables object
+    const allDeliverables = {
+      framework: {
+        id: framework.id as string,
+        type: 'framework',
+        content: framework.content as string,
+        score: framework.score as number | null,
+        available: true
+      } as OVODeliverableData,
+      bmc: bmc ? {
+        id: bmc.id as string,
+        type: 'bmc_analysis',
+        content: bmc.content as string,
+        score: bmc.score as number | null,
+        available: true
+      } as OVODeliverableData : undefined,
+      sic: sic ? {
+        id: sic.id as string,
+        type: 'sic_analysis',
+        content: sic.content as string,
+        score: sic.score as number | null,
+        available: true
+      } as OVODeliverableData : undefined,
+      diagnostic: diagnostic ? {
+        id: diagnostic.id as string,
+        type: 'diagnostic',
+        content: diagnostic.content as string,
+        score: diagnostic.score as number | null,
+        available: true
+      } as OVODeliverableData : undefined
     }
 
-    // 4. Check for existing plan_ovo for this user/pme
+    console.log(`[Plan OVO] Step A done: framework=${!!framework}, bmc=${!!bmc}, sic=${!!sic}, diag=${!!diagnostic}`)
+
+    // ═══════════════════════════════════════════════════════
+    // STEP A-bis: Infer country, get fiscal parameters, build KB context
+    // ═══════════════════════════════════════════════════════
+    console.log(`[Plan OVO] Step A-bis: Detecting country and fiscal params`)
+
+    const contentTexts = [
+      framework.content as string,
+      bmc?.content as string || '',
+      diagnostic?.content as string || ''
+    ].filter(Boolean)
+
+    const countryKey = detectCountry(contentTexts)
+    const fiscal = getFiscalParams(countryKey)
+    const { kbContext, queries: kbQueries } = buildKBContext(fiscal)
+
+    console.log(`[Plan OVO] Country detected: ${fiscal.country} (${countryKey}), KB queries: ${kbQueries.length}`)
+
+    // ═══════════════════════════════════════════════════════
+    // STEP B: Template structure (loaded at build time, not runtime)
+    // The template is at /templates/plan_ovo_template.xlsm
+    // Template structure is defined in ovo-template-structure.ts
+    // ═══════════════════════════════════════════════════════
+    console.log(`[Plan OVO] Step B: Template structure loaded from ovo-template-structure.ts`)
+
+    // ═══════════════════════════════════════════════════════
+    // Create DB entry first (status: generating)
+    // ═══════════════════════════════════════════════════════
     const existing = await db.prepare(`
       SELECT id, version FROM plan_ovo_analyses
       WHERE pme_id = ? AND user_id = ?
@@ -6675,22 +6733,141 @@ app.post('/api/plan-ovo/generate', async (c) => {
     const newVersion = existing ? (Number(existing.version) || 0) + 1 : 1
     const newId = crypto.randomUUID()
 
-    // 5. Insert new plan_ovo_analyses entry (status: pending — IA not yet implemented)
-    await db.prepare(`
-      INSERT INTO plan_ovo_analyses (id, pme_id, user_id, version, extraction_json, status, source, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, 'pending', 'system', datetime('now'), datetime('now'))
-    `).bind(newId, pmeId, payload.userId, newVersion, JSON.stringify(extractionData)).run()
+    // Initial insertion with status 'generating'
+    const initialExtraction = {
+      framework: { id: allDeliverables.framework.id, score: allDeliverables.framework.score, available: true },
+      bmc: allDeliverables.bmc ? { id: allDeliverables.bmc.id, score: allDeliverables.bmc.score, available: true } : { available: false },
+      sic: allDeliverables.sic ? { id: allDeliverables.sic.id, score: allDeliverables.sic.score, available: true } : { available: false },
+      diagnostic: allDeliverables.diagnostic ? { id: allDeliverables.diagnostic.id, score: allDeliverables.diagnostic.score, available: true } : { available: false },
+      country: fiscal.country,
+      collected_at: new Date().toISOString()
+    }
 
-    console.log(`[Plan OVO] Created entry ${newId} v${newVersion} for user ${payload.userId}, framework=${!!framework}, bmc=${!!bmc}, sic=${!!sic}, diag=${!!diagnostic}`)
+    await db.prepare(`
+      INSERT INTO plan_ovo_analyses (id, pme_id, user_id, version, extraction_json, status, source, pays, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, 'generating', 'system', ?, datetime('now'), datetime('now'))
+    `).bind(newId, pmeId, payload.userId, newVersion, JSON.stringify(initialExtraction), fiscal.country).run()
+
+    // ═══════════════════════════════════════════════════════
+    // STEP C: Call Claude for AI extraction
+    // ═══════════════════════════════════════════════════════
+    if (!isValidApiKey(apiKey)) {
+      // No API key — save as pending without extraction
+      console.log(`[Plan OVO] No valid API key, saving as pending`)
+      await db.prepare(`
+        UPDATE plan_ovo_analyses SET status = 'pending', updated_at = datetime('now') WHERE id = ?
+      `).bind(newId).run()
+
+      return c.json({
+        success: true,
+        id: newId,
+        version: newVersion,
+        status: 'pending',
+        message: 'Plan OVO créé (clé API manquante — extraction IA non disponible).',
+        country: fiscal.country,
+        sources: {
+          framework: true,
+          bmc: !!bmc,
+          sic: !!sic,
+          diagnostic: !!diagnostic
+        }
+      })
+    }
+
+    console.log(`[Plan OVO] Step C: Calling Claude for extraction...`)
+
+    let extractionResult: OVOExtractionResult
+    try {
+      extractionResult = await extractOVOData({
+        apiKey,
+        framework: allDeliverables.framework,
+        bmc: allDeliverables.bmc,
+        sic: allDeliverables.sic,
+        diagnostic: allDeliverables.diagnostic,
+        fiscal,
+        kbContext
+      })
+
+      console.log(`[Plan OVO] Step C done: confidence=${extractionResult.metadata?.confidence_score}, products=${extractionResult.produits?.length}, staff=${extractionResult.personnel?.length}`)
+    } catch (aiError: any) {
+      console.error(`[Plan OVO] Step C FAILED:`, aiError.message)
+      // Save error status but still return success (entry created)
+      await db.prepare(`
+        UPDATE plan_ovo_analyses SET status = 'error', error_message = ?, updated_at = datetime('now') WHERE id = ?
+      `).bind(aiError.message?.slice(0, 500) || 'Erreur extraction IA', newId).run()
+
+      return c.json({
+        success: true,
+        id: newId,
+        version: newVersion,
+        status: 'error',
+        message: `Plan OVO créé mais l'extraction IA a échoué: ${aiError.message?.slice(0, 200)}`,
+        country: fiscal.country,
+        sources: {
+          framework: true,
+          bmc: !!bmc,
+          sic: !!sic,
+          diagnostic: !!diagnostic
+        }
+      })
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // STEP D: Save extraction results to DB
+    // ═══════════════════════════════════════════════════════
+    console.log(`[Plan OVO] Step D: Saving extraction to DB`)
+
+    const confidenceScore = extractionResult.metadata?.confidence_score ?? 50
+
+    await db.prepare(`
+      UPDATE plan_ovo_analyses
+      SET extraction_json = ?,
+          analysis_json = ?,
+          score = ?,
+          status = 'generated',
+          pays = ?,
+          kb_context = ?,
+          kb_used = 1,
+          updated_at = datetime('now')
+      WHERE id = ?
+    `).bind(
+      JSON.stringify(extractionResult),
+      JSON.stringify({
+        hypotheses: extractionResult.hypotheses,
+        metadata: extractionResult.metadata,
+        produits_count: extractionResult.produits?.length || 0,
+        personnel_count: extractionResult.personnel?.length || 0,
+        investissements_count: extractionResult.investissements?.length || 0,
+        has_financing: !!(extractionResult.financement?.capital_initial || extractionResult.financement?.pret_ovo?.montant),
+      }),
+      confidenceScore,
+      fiscal.country,
+      kbContext.slice(0, 5000), // Limit KB context storage
+      newId
+    ).run()
+
+    console.log(`[Plan OVO] Step D done: entry ${newId} v${newVersion} saved with status=extracted, score=${confidenceScore}`)
 
     return c.json({
       success: true,
       id: newId,
       version: newVersion,
-      status: 'pending',
-      message: 'Plan OVO créé avec succès. Le remplissage IA sera disponible prochainement.',
+      status: 'generated',
+      message: 'Données extraites, remplissage Excel en cours...',
+      country: fiscal.country,
+      confidence: confidenceScore,
+      extraction_summary: {
+        company: extractionResult.hypotheses?.company_name || 'N/A',
+        sector: extractionResult.hypotheses?.sector || 'N/A',
+        products_count: extractionResult.produits?.length || 0,
+        staff_categories: extractionResult.personnel?.length || 0,
+        investments_count: extractionResult.investissements?.length || 0,
+        sources_used: extractionResult.metadata?.sources_used || [],
+        missing_data: extractionResult.metadata?.missing_data_notes?.length || 0,
+        cascade_rules: extractionResult.metadata?.cascade_applied?.length || 0
+      },
       sources: {
-        framework: !!framework,
+        framework: true,
         bmc: !!bmc,
         sic: !!sic,
         diagnostic: !!diagnostic
