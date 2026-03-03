@@ -40,7 +40,8 @@ import { callClaudeForSicExtraction, extractSicSectionsRegex, type SicExtraction
 import { analyzeSicWithClaude, analyzeSicFallback, type SicAnalystResult } from './sic-analyst'
 import { detectCountry, getFiscalParams, buildKBContext, type FiscalParams } from './fiscal-params'
 import { extractOVOData, type DeliverableData as OVODeliverableData, type OVOExtractionResult, type PmeStructuredData } from './ovo-extraction-engine'
-import { isValidApiKey } from './claude-api'
+import { isValidApiKey, callClaudeJSON } from './claude-api'
+import { generateDeterministicDiagnostic, generateDiagnosticReportHtml } from './diagnostic-report-generator'
 import { fillOVOTemplate, gzipCompressSync, gunzipDecompressSync, type FillingStats } from './ovo-excel-filler'
 
 type Bindings = {
@@ -7782,45 +7783,197 @@ app.post('/api/diagnostic/generate', async (c) => {
 
     const db = c.env.DB
     const pmeId = `pme_${payload.userId}`
+    const apiKey = c.env.ANTHROPIC_API_KEY || ''
 
-    // 1. Fetch all available deliverables in parallel
-    const [bmcRow, sicRow, frameworkRow, frameworkPmeRow, planOvoRow, diagnosticHtmlRow] = await Promise.all([
+    // ═══════════════════════════════════════════════════════════════
+    // ÉTAPE A — Collecter TOUS les livrables disponibles en parallèle
+    // ═══════════════════════════════════════════════════════════════
+    const [bmcRow, sicRow, frameworkRow, frameworkPmeRow, planOvoRow, bpRow, oddRow] = await Promise.all([
       db.prepare(`SELECT id, content, score FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'bmc_analysis' ORDER BY created_at DESC LIMIT 1`).bind(payload.userId).first(),
       db.prepare(`SELECT id, content, score FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'sic_analysis' ORDER BY created_at DESC LIMIT 1`).bind(payload.userId).first(),
       db.prepare(`SELECT id, content, score FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'framework' ORDER BY created_at DESC LIMIT 1`).bind(payload.userId).first(),
       db.prepare(`SELECT id, content, score FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'framework_pme_data' ORDER BY created_at DESC LIMIT 1`).bind(payload.userId).first(),
       db.prepare(`SELECT id, extraction_json, score, status FROM plan_ovo_analyses WHERE user_id = ? AND pme_id = ? ORDER BY created_at DESC LIMIT 1`).bind(payload.userId, pmeId).first(),
-      db.prepare(`SELECT id, content, score FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'diagnostic_html' ORDER BY created_at DESC LIMIT 1`).bind(payload.userId).first(),
+      db.prepare(`SELECT id, content, score FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'business_plan' ORDER BY created_at DESC LIMIT 1`).bind(payload.userId).first(),
+      db.prepare(`SELECT id, content, score FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'odd' ORDER BY created_at DESC LIMIT 1`).bind(payload.userId).first(),
     ])
 
-    // 2. Count available sources — at least 2 required
     const sources: Record<string, boolean> = {
       bmc: !!bmcRow,
       sic: !!sicRow,
       framework: !!frameworkRow,
       framework_pme_data: !!frameworkPmeRow,
-      plan_ovo: !!(planOvoRow && planOvoRow.status === 'generated'),
+      plan_ovo: !!(planOvoRow && (planOvoRow.status === 'generated' || planOvoRow.status === 'filled')),
+      business_plan: !!bpRow,
+      odd: !!oddRow,
     }
     const availableCount = Object.values(sources).filter(Boolean).length
 
-    console.log(`[Diagnostic] Sources: bmc=${sources.bmc}, sic=${sources.sic}, framework=${sources.framework}, pme_data=${sources.framework_pme_data}, plan_ovo=${sources.plan_ovo} (${availableCount} available)`)
+    console.log(`[Diagnostic] ÉTAPE A — Sources: bmc=${sources.bmc}, sic=${sources.sic}, fw=${sources.framework}, pme=${sources.framework_pme_data}, ovo=${sources.plan_ovo}, bp=${sources.business_plan}, odd=${sources.odd} (${availableCount} total)`)
 
     if (availableCount < 2) {
-      return c.json({
-        success: false,
-        error: 'Au moins 2 modules complétés sont nécessaires pour générer le diagnostic.',
-        sources,
-        availableCount
-      }, 400)
+      return c.json({ success: false, error: 'Au moins 2 modules complétés sont nécessaires pour générer le diagnostic.', sources, availableCount }, 400)
     }
 
-    // 3. Determine version
+    // Parse JSON contents for each deliverable
+    const safeParseJSON = (row: any, field: string = 'content') => {
+      if (!row) return null
+      try { return JSON.parse(row[field] as string) } catch { return null }
+    }
+    const allDeliverables: Record<string, any> = {}
+    if (bmcRow) allDeliverables.bmc_analysis = safeParseJSON(bmcRow)
+    if (sicRow) allDeliverables.sic_analysis = safeParseJSON(sicRow)
+    if (frameworkRow) allDeliverables.framework_analysis = safeParseJSON(frameworkRow)
+    if (frameworkPmeRow) allDeliverables.framework_pme_data = safeParseJSON(frameworkPmeRow)
+    if (planOvoRow) allDeliverables.plan_ovo = safeParseJSON(planOvoRow, 'extraction_json')
+    if (bpRow) allDeliverables.business_plan = safeParseJSON(bpRow)
+    if (oddRow) allDeliverables.odd_analysis = safeParseJSON(oddRow)
+
+    // ═══════════════════════════════════════════════════════════════
+    // ÉTAPE A-BIS — Consulter la Base de Connaissances (KB) + RAG
+    // ═══════════════════════════════════════════════════════════════
+
+    // Detect country from deliverables content
+    const contentStrings: string[] = []
+    if (frameworkRow?.content) contentStrings.push(frameworkRow.content as string)
+    if (bmcRow?.content) contentStrings.push(bmcRow.content as string)
+    if (frameworkPmeRow?.content) contentStrings.push(frameworkPmeRow.content as string)
+    if (sicRow?.content) contentStrings.push(sicRow.content as string)
+    const countryKey = detectCountry(contentStrings)
+    const fiscal = getFiscalParams(countryKey)
+
+    // Extract sector from deliverables (try multiple paths)
+    let sector = 'PME'
+    let zone = 'urbain'
+    try {
+      const pmeData = allDeliverables.framework_pme_data
+      if (pmeData?.secteur) sector = pmeData.secteur
+      else if (pmeData?.entreprise?.secteur) sector = pmeData.entreprise.secteur
+      else if (pmeData?.entreprise?.activite) sector = pmeData.entreprise.activite
+      // Try BMC
+      if (sector === 'PME' && allDeliverables.bmc_analysis) {
+        const bmc = allDeliverables.bmc_analysis
+        if (bmc?.sector) sector = bmc.sector
+        else if (bmc?.companyName) sector = bmc.companyName
+        else if (bmc?.segments_clients && typeof bmc.segments_clients === 'string') {
+          const segMatch = bmc.segments_clients.match(/secteur\s*:?\s*([^,.\n]+)/i)
+          if (segMatch) sector = segMatch[1].trim()
+        }
+      }
+      // Try Framework analysis
+      if (sector === 'PME' && allDeliverables.framework_analysis) {
+        const fw = allDeliverables.framework_analysis
+        if (fw?.sector) sector = fw.sector
+        else if (fw?.entreprise?.secteur) sector = fw.entreprise.secteur
+      }
+      // Detect zone from PME data
+      if (pmeData?.zone) zone = pmeData.zone
+      else if (pmeData?.entreprise?.zone) zone = pmeData.entreprise.zone
+      else if (pmeData?.entreprise?.ville) {
+        const ville = (pmeData.entreprise.ville as string || '').toLowerCase()
+        if (['abidjan', 'dakar', 'ouagadougou', 'bamako', 'cotonou', 'lome', 'niamey'].includes(ville)) zone = 'urbain'
+        else zone = 'peri-urbain'
+      }
+    } catch { /* ignore sector extraction errors */ }
+
+    // Build KB context from fiscal-params (deterministic, always available)
+    const { kbContext: fiscalKBText } = buildKBContext(fiscal)
+
+    // Query KB database with 5 targeted RAG queries including sector and country
+    let kbBenchmarks: any[] = []
+    let kbFiscalParams: any[] = []
+    let kbFunders: any[] = []
+    let kbCriteria: any[] = []
+    let kbRisks: any[] = []
+    let kbUsed = false
+    try {
+      const [benchResult, fiscalResult, funderResult, criteriaResult, risksResult] = await Promise.all([
+        // Requête 1: Benchmarks sectoriels
+        db.prepare(`SELECT * FROM kb_benchmarks WHERE (sector = ? OR sector = 'all' OR sector IS NULL) ORDER BY relevance_score DESC, metric LIMIT 50`).bind(sector).all(),
+        // Requête 2: Réglementation fiscale
+        db.prepare(`SELECT * FROM kb_fiscal_params WHERE (country = ? OR country = 'UEMOA' OR country IS NULL) ORDER BY param_code LIMIT 30`).bind(fiscal.country).all(),
+        // Requête 3: Bailleurs de fonds
+        db.prepare(`SELECT * FROM kb_funders WHERE (focus_regions LIKE ? OR focus_regions LIKE '%UEMOA%' OR focus_regions IS NULL) ORDER BY relevance_score DESC, name LIMIT 20`).bind('%' + fiscal.country + '%').all(),
+        // Requête 4: Critères d'évaluation
+        db.prepare(`SELECT * FROM kb_evaluation_criteria ORDER BY dimension, weight DESC LIMIT 30`).all(),
+        // Requête 5: Risques sectoriels (from kb_sources if available)
+        db.prepare(`SELECT * FROM kb_sources WHERE (category = 'risks' OR category = 'sector_risks') AND (region = ? OR region = 'UEMOA' OR region IS NULL) ORDER BY relevance_score DESC LIMIT 15`).bind(fiscal.country).all(),
+      ])
+      kbBenchmarks = benchResult.results || []
+      kbFiscalParams = fiscalResult.results || []
+      kbFunders = funderResult.results || []
+      kbCriteria = criteriaResult.results || []
+      kbRisks = risksResult.results || []
+      kbUsed = (kbBenchmarks.length + kbFiscalParams.length + kbFunders.length + kbCriteria.length + kbRisks.length) > 0
+    } catch (e: any) {
+      console.log(`[Diagnostic] KB query failed (non-fatal): ${e.message}`)
+    }
+
+    // Build structured KB context object for Claude
+    const kbContext = {
+      pays: fiscal.country,
+      zone: zone,
+      secteur: sector,
+      benchmarks_sectoriels: {
+        marge_brute: { min: Math.round(fiscal.sectorBenchmarks.grossMarginRange[0] * 100), max: Math.round(fiscal.sectorBenchmarks.grossMarginRange[1] * 100), source: 'BCEAO/UEMOA', pays: fiscal.country },
+        marge_nette: { min: Math.round(fiscal.sectorBenchmarks.netMarginRange[0] * 100), max: Math.round(fiscal.sectorBenchmarks.netMarginRange[1] * 100), source: 'BCEAO/UEMOA', pays: fiscal.country },
+        marge_ebitda: { min: Math.round(fiscal.sectorBenchmarks.ebitdaMarginRange[0] * 100), max: Math.round(fiscal.sectorBenchmarks.ebitdaMarginRange[1] * 100), source: 'BCEAO/UEMOA', pays: fiscal.country },
+        ratio_dette_max: { value: Math.round(fiscal.sectorBenchmarks.debtRatioMax * 100), source: 'BCEAO/UEMOA', pays: fiscal.country },
+        ratio_liquidite_min: { value: fiscal.sectorBenchmarks.currentRatioMin, source: 'BCEAO/UEMOA', pays: fiscal.country },
+        seuil_rentabilite_mois: { min: fiscal.sectorBenchmarks.breakEvenMonths[0], max: fiscal.sectorBenchmarks.breakEvenMonths[1], source: 'BCEAO/UEMOA', pays: fiscal.country },
+      },
+      reglementation_fiscale: {
+        tva: Math.round(fiscal.vat * 100),
+        is: Math.round(fiscal.corporateTax * 100),
+        charges_sociales: Math.round(fiscal.socialChargesRate * 100),
+        smig: fiscal.smig,
+        pays: fiscal.country,
+        source: 'Code fiscal ' + fiscal.country,
+        unite: fiscal.currency,
+        regime1: fiscal.taxRegime1,
+        regime2: fiscal.taxRegime2,
+      },
+      risques_sectoriels: kbRisks.length > 0
+        ? kbRisks.map((r: any) => ({ risque: r.name || r.description, secteur: sector, pays: fiscal.country, source: r.category }))
+        : [
+          { risque: 'Volatilité des coûts matières premières', secteur: sector, pays: fiscal.country },
+          { risque: 'Accès au financement bancaire limité pour PME', pays: fiscal.country },
+          { risque: 'Infrastructures énergétiques (coupures fréquentes)', pays: fiscal.country },
+          { risque: 'Environnement réglementaire changeant', pays: fiscal.country },
+          { risque: 'Pression concurrentielle du secteur informel', pays: fiscal.country },
+        ],
+      bonnes_pratiques: [
+        { pratique: 'BFR 15-20% du CA pour commerce, 30-40% pour production', pays: fiscal.country },
+        { pratique: '3 mois de trésorerie minimale de sécurité', pays: fiscal.country },
+        { pratique: 'Masse salariale < 35% du CA', pays: fiscal.country },
+        { pratique: 'Charges fixes < 50% du CA pour les PME en croissance', pays: fiscal.country },
+        { pratique: 'Ratio dette/fonds propres < ' + Math.round(fiscal.sectorBenchmarks.debtRatioMax * 100) + '%', pays: fiscal.country },
+      ],
+      bailleurs_fonds: kbFunders.length > 0
+        ? kbFunders.map((f: any) => ({ nom: f.name, type: f.type, montant_moyen: f.typical_ticket_min && f.typical_ticket_max ? f.typical_ticket_min + '-' + f.typical_ticket_max + ' EUR' : 'N/A', focus: f.focus_sectors || 'PME', pays: fiscal.country }))
+        : [
+          { nom: 'OVO', type: 'Prêt', montant_moyen: '10-100M XOF', focus: 'PME impact', pays: fiscal.country },
+          { nom: 'BAD/BAfD', type: 'Subvention/Prêt', montant_moyen: '50-500M XOF', focus: 'Infrastructure', pays: fiscal.country },
+          { nom: 'AFD/Proparco', type: 'Prêt/Garantie', montant_moyen: '100-1000M XOF', focus: 'PME croissance', pays: fiscal.country },
+          { nom: 'IFC / SFI', type: 'Equity/Prêt', montant_moyen: '200M-2Md XOF', focus: 'PME établies', pays: fiscal.country },
+          { nom: 'Investisseurs d\'Impact locaux', type: 'Equity', montant_moyen: '20-200M XOF', focus: 'PME impact social', pays: fiscal.country },
+        ],
+      kb_benchmarks_raw: kbBenchmarks.slice(0, 20),
+      kb_fiscal_raw: kbFiscalParams.slice(0, 15),
+      kb_criteria_raw: kbCriteria.slice(0, 15),
+    }
+
+    console.log(`[Diagnostic] ÉTAPE A-BIS — Pays=${fiscal.country}, Secteur=${sector}, Zone=${zone}, KB=${kbUsed} (bench=${kbBenchmarks.length}, fisc=${kbFiscalParams.length}, fund=${kbFunders.length}, crit=${kbCriteria.length}, risk=${kbRisks.length})`)
+
+    // ═══════════════════════════════════════════════════════════════
+    // ÉTAPE B — Envoyer à Claude (température 0.3, max 6000 tokens)
+    // ═══════════════════════════════════════════════════════════════
+
+    // Determine version
     const existingDiag = await db.prepare(
       `SELECT version FROM diagnostic_analyses WHERE user_id = ? AND pme_id = ? ORDER BY version DESC LIMIT 1`
     ).bind(payload.userId, pmeId).first()
     const newVersion = existingDiag ? Number(existingDiag.version) + 1 : 1
-
-    // 4. Create new diagnostic_analyses record (status = generating)
     const diagId = crypto.randomUUID()
     const isPartial = availableCount < 4
     const sourcesJson = JSON.stringify(sources)
@@ -7830,56 +7983,254 @@ app.post('/api/diagnostic/generate', async (c) => {
       VALUES (?, ?, ?, ?, 'generating', ?, datetime('now'), datetime('now'))
     `).bind(diagId, pmeId, payload.userId, newVersion, sourcesJson).run()
 
-    console.log(`[Diagnostic] Record created: id=${diagId}, version=${newVersion}, partial=${isPartial}`)
-
-    // 5. Build analysis stub (no AI agent yet — structure only)
-    //    Later: call generateDiagnosticExpert() here with full data
-    const analysisStub = {
-      scoreGlobal: 0,
-      verdict: 'En attente',
-      verdictColor: '#6b7280',
-      dimensions: [
-        { name: 'Modèle Économique', code: 'modele_economique', score: 0, verdict: sources.bmc ? 'Données disponibles' : 'Données manquantes', color: sources.bmc ? '#2563eb' : '#dc2626', strengths: [], weaknesses: [], recommendations: [], analysis: '' },
-        { name: 'Impact Social & ODD', code: 'impact_social', score: 0, verdict: sources.sic ? 'Données disponibles' : 'Données manquantes', color: sources.sic ? '#2563eb' : '#dc2626', strengths: [], weaknesses: [], recommendations: [], analysis: '' },
-        { name: 'Viabilité Financière', code: 'viabilite_financiere', score: 0, verdict: sources.framework ? 'Données disponibles' : 'Données manquantes', color: sources.framework ? '#2563eb' : '#dc2626', strengths: [], weaknesses: [], recommendations: [], analysis: '' },
-        { name: 'Équipe & Gouvernance', code: 'equipe_gouvernance', score: 0, verdict: 'En attente', color: '#6b7280', strengths: [], weaknesses: [], recommendations: [], analysis: '' },
-        { name: 'Marché & Positionnement', code: 'marche_positionnement', score: 0, verdict: 'En attente', color: '#6b7280', strengths: [], weaknesses: [], recommendations: [], analysis: '' },
-      ],
-      strengths: [],
-      weaknesses: [],
-      risks: [],
-      actionPlan: [],
-      funders: [],
-      executiveSummary: '',
-      financialSnapshot: { ca: '—', margebrute: '—', ebitda: '—', ebitdaMargin: '—', bfr: '—', tresorerie: '—', capexNeeded: '—' },
-      coherenceScore: 0,
-      coherenceIssues: [],
-      alerts: isPartial ? ['⚠️ Diagnostic partiel — certaines sources sont manquantes. Complétez les modules manquants pour un diagnostic complet.'] : [],
-      aiSource: 'stub',
-      sources,
-      generatedAt: new Date().toISOString(),
+    // Check if Claude API is available
+    if (!isValidApiKey(apiKey)) {
+      console.log('[Diagnostic] No valid API key — using deterministic fallback engine')
+      // Fallback: generate deterministic diagnostic using local engine
+      const fallbackResult = generateDeterministicDiagnostic(allDeliverables, sources, fiscal, sector, zone, kbContext, kbUsed)
+      const fallbackHtml = generateDiagnosticReportHtml(fallbackResult, sector, fiscal.country, zone)
+      
+      await db.prepare(`UPDATE diagnostic_analyses SET analysis_json = ?, html_content = ?, status = 'analyzed', score = ?, kb_context = ?, kb_used = ?, updated_at = datetime('now') WHERE id = ?`).bind(
+        JSON.stringify(fallbackResult), fallbackHtml, fallbackResult.score_global, JSON.stringify(kbContext), kbUsed ? 1 : 0, diagId
+      ).run()
+      
+      return c.json({ 
+        success: true, message: 'Diagnostic Expert généré (mode déterministe).', 
+        diagId, version: newVersion, status: 'analyzed', 
+        score_global: fallbackResult.score_global, palier: fallbackResult.palier, 
+        sources, availableCount, partial: isPartial, kb_used: kbUsed 
+      })
     }
 
-    // 6. Update record with analysis stub
+    // Build system prompt
+    const systemPrompt = `Tu es un coach expert en Investment Readiness pour PME en Afrique de l'Ouest (UEMOA / ${fiscal.country}). Tu es bienveillant, pédagogique et constructif. Ton rôle est d'accompagner l'entrepreneur dans son apprentissage, pas de le juger.
+
+MISSION : Analyser TOUS les livrables fournis et produire un DIAGNOSTIC EXPERT complet.
+
+TON & LANGAGE :
+- Utilise un langage bienveillant et encourageant
+- Évite les mots alarmistes : remplace "critique/échec/dangereux" par "à améliorer/opportunité/point d'attention"
+- Formule les points faibles comme des opportunités d'amélioration
+- Présente les risques comme des défis à anticiper
+- Utilise le "nous" : "Nous pouvons améliorer...", "Ensemble, nous allons..."
+- Félicite les points forts : "Excellent travail sur...", "Bravo pour..."
+- Le score est un indicateur discret, pas LA métrique centrale
+
+SCORING — 5 DIMENSIONS (score 0-100 chacune) :
+1. COHÉRENCE FINANCIÈRE (poids 25%) : Données cohérentes entre livrables ? CA BMC = CA Framework ? Ratios alignés ?
+2. VIABILITÉ ÉCONOMIQUE (poids 25%) : Seuil de rentabilité ? DSCR > 1.25 ? Cash flow positif ?
+3. RÉALISME DES PROJECTIONS (poids 20%) : Croissance réaliste ? Red flags d'optimisme ?
+4. COMPLÉTUDE DES COÛTS (poids 15%) : Charges sociales (${Math.round(fiscal.socialChargesRate * 100)}%) ? TVA (${Math.round(fiscal.vat * 100)}%) ? IS (${Math.round(fiscal.corporateTax * 100)}%) ? BFR ?
+5. CAPACITÉ DE REMBOURSEMENT (poids 15%) : DSCR suffisant ? Durée réaliste ? Structure équilibrée ?
+
+score_global = (coherence×0.25) + (viabilite×0.25) + (realisme×0.20) + (completude_couts×0.15) + (capacite_remboursement×0.15)
+
+Paliers : 0-30 "en_construction", 31-50 "a_renforcer", 51-70 "moyen", 71-85 "bon", 86-100 "excellent"
+
+POINTS DE VIGILANCE (minimum 2) : Catégorie (financier|operationnel|strategique|esg), Niveau (eleve|moyen|faible), avec action recommandée bienveillante.
+
+DÉTECTION DES INCOHÉRENCES entre livrables (BMC↔Framework, BMC↔SIC, Framework↔Plan OVO, SIC↔ODD). Cherche les écarts de CA, de marges, d'effectifs, de segments entre les différents documents. Détaille chaque incohérence trouvée.
+
+FORCES (3-7) et OPPORTUNITÉS D'AMÉLIORATION (toutes) avec justification pédagogique.
+
+RECOMMANDATIONS TOP 5-7 classées par impact sur la viabilité (PAS sur le score). Chaque recommandation doit avoir un message encourageant.
+
+BENCHMARKS SECTORIELS : Compare l'entreprise aux fourchettes du pays (${fiscal.country}).
+
+RÉSUMÉ EXÉCUTIF : 3-5 paragraphes bienveillants, score discret, vision d'ensemble de la maturité Investment Readiness.
+
+CONTEXTE FISCAL ${fiscal.country.toUpperCase()} :
+${fiscalKBText}
+
+RÉPONDS UNIQUEMENT EN JSON avec cette structure EXACTE :
+{
+  "score_global": number,
+  "palier": "en_construction"|"a_renforcer"|"moyen"|"bon"|"excellent",
+  "label": string,
+  "couleur": "⬜"|"🟠"|"🟡"|"🟢"|"🌟",
+  "scores_dimensions": {
+    "coherence": { "score": number, "label": "Cohérence financière", "commentaire": string, "incoherences_detectees": [{ "type": string, "champ": string, "valeur_source1": string, "valeur_source2": string, "ecart": string, "explication": string }] },
+    "viabilite": { "score": number, "label": "Viabilité économique", "commentaire": string, "seuil_rentabilite_mois": number|null, "dscr": number|null, "cash_flow_positif_mois": number|null },
+    "realisme": { "score": number, "label": "Réalisme des projections", "commentaire": string, "red_flags": [string] },
+    "completude_couts": { "score": number, "label": "Complétude des coûts", "commentaire": string, "postes_manquants": [string], "postes_presents": [string] },
+    "capacite_remboursement": { "score": number, "label": "Capacité de remboursement", "commentaire": string, "dscr": number|null, "duree_remboursement_ans": number|null, "taux_endettement": number|null }
+  },
+  "points_vigilance": [{ "categorie": string, "niveau": string, "probabilite": string, "titre": string, "description": string, "impact_financier": string, "action_recommandee": string }],
+  "incoherences": [{ "type": string, "champ": string, "valeur_bmc": string, "valeur_framework": string, "ecart": string, "explication": string }],
+  "forces": [{ "titre": string, "justification": string }],
+  "opportunites_amelioration": [{ "titre": string, "justification": string, "priorite": string }],
+  "recommandations": [{ "priorite": number, "titre": string, "detail": string, "impact_viabilite": string, "urgence": string, "action_concrete": string, "message_encourageant": string }],
+  "benchmarks": { "marge_brute": { "entreprise": number|null, "secteur_min": number, "secteur_max": number, "verdict": string, "ecart": string }, "marge_ebitda": { "entreprise": number|null, "secteur_min": number, "secteur_max": number, "verdict": string, "ecart": string }, "marge_nette": { "entreprise": number|null, "secteur_min": number, "secteur_max": number, "verdict": string, "ecart": string }, "ratio_endettement": { "entreprise": number|null, "secteur_min": number, "secteur_max": number, "verdict": string, "ecart": string }, "seuil_rentabilite": { "entreprise": number|null, "secteur_min": number, "secteur_max": number, "verdict": string, "ecart": string } },
+  "resume_executif": string,
+  "points_attention_prioritaires": [string],
+  "livrables_analyses": { "bmc": boolean, "sic": boolean, "framework": boolean, "plan_ovo": boolean, "business_plan": boolean, "odd": boolean },
+  "contexte_pays": { "pays": string, "zone": string, "secteur": string, "kb_utilisee": boolean, "sources_kb": [string] },
+  "donnees_completes": boolean,
+  "message_incomplet": string|null
+}`
+
+    // Build user prompt with all deliverables
+    const delivParts: string[] = []
+    if (allDeliverables.bmc_analysis) {
+      delivParts.push(`=== BMC ANALYSIS (score: ${bmcRow?.score || 'N/A'}/100) ===\n${JSON.stringify(allDeliverables.bmc_analysis).slice(0, 6000)}`)
+    }
+    if (allDeliverables.sic_analysis) {
+      delivParts.push(`=== SIC ANALYSIS (score: ${sicRow?.score || 'N/A'}/100) ===\n${JSON.stringify(allDeliverables.sic_analysis).slice(0, 4000)}`)
+    }
+    if (allDeliverables.framework_analysis) {
+      delivParts.push(`=== FRAMEWORK ANALYSIS (score: ${frameworkRow?.score || 'N/A'}/100) ===\n${JSON.stringify(allDeliverables.framework_analysis).slice(0, 6000)}`)
+    }
+    if (allDeliverables.framework_pme_data) {
+      delivParts.push(`=== DONNÉES PME STRUCTURÉES ===\n${JSON.stringify(allDeliverables.framework_pme_data).slice(0, 5000)}`)
+    }
+    if (allDeliverables.plan_ovo) {
+      delivParts.push(`=== PLAN OVO (score: ${planOvoRow?.score || 'N/A'}/100) ===\n${JSON.stringify(allDeliverables.plan_ovo).slice(0, 5000)}`)
+    }
+    if (allDeliverables.business_plan) {
+      delivParts.push(`=== BUSINESS PLAN (score: ${bpRow?.score || 'N/A'}/100) ===\n${JSON.stringify(allDeliverables.business_plan).slice(0, 4000)}`)
+    }
+    if (allDeliverables.odd_analysis) {
+      delivParts.push(`=== ODD DUE DILIGENCE (score: ${oddRow?.score || 'N/A'}/100) ===\n${JSON.stringify(allDeliverables.odd_analysis).slice(0, 3000)}`)
+    }
+
+    const missingList = Object.entries(sources).filter(([, v]) => !v).map(([k]) => k)
+    const userPrompt = `Voici les livrables à analyser pour produire le Diagnostic Expert :
+
+${delivParts.join('\n\n')}
+
+=== CONTEXTE KB (${fiscal.country}) ===
+${JSON.stringify(kbContext, null, 1).slice(0, 3000)}
+
+LIVRABLES MANQUANTS : ${missingList.length > 0 ? missingList.join(', ') : 'Aucun (tous disponibles)'}
+${isPartial ? '\n⚠️ DIAGNOSTIC PARTIEL : Certains livrables manquent. Indique les limites dans ton analyse et ce que les données manquantes auraient apporté.' : ''}
+
+Produis le diagnostic complet en JSON. Sois bienveillant et pédagogique. Score discret. Minimum 2 points_vigilance, 3 forces, 5 recommandations.`
+
+    console.log(`[Diagnostic] ÉTAPE B — Claude call: ${delivParts.length} deliverables, prompt ${userPrompt.length} chars, temp=0.3, maxTokens=6000`)
+
+    let claudeResult: any
+    try {
+      claudeResult = await callClaudeJSON({
+        apiKey,
+        systemPrompt,
+        userPrompt,
+        maxTokens: 6000,
+        temperature: 0.3,
+        timeoutMs: 120_000,
+        maxRetries: 2,
+        label: 'Diagnostic Expert'
+      })
+      console.log(`[Diagnostic] Claude returned: score_global=${claudeResult.score_global}, palier=${claudeResult.palier}, dims=${Object.keys(claudeResult.scores_dimensions || {}).length}`)
+    } catch (claudeErr: any) {
+      console.error(`[Diagnostic] Claude API error: ${claudeErr.message} — falling back to deterministic engine`)
+      // Fallback to deterministic engine instead of failing
+      claudeResult = generateDeterministicDiagnostic(allDeliverables, sources, fiscal, sector, zone, kbContext, kbUsed)
+      claudeResult._fallback = true
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // ÉTAPE C — Valider, enrichir, sauvegarder, générer HTML
+    // ═══════════════════════════════════════════════════════════════
+
+    // Validate and clamp score_global to 0-100
+    const scoreGlobal = Math.min(100, Math.max(0, Math.round(claudeResult.score_global || 0)))
+    claudeResult.score_global = scoreGlobal
+
+    // Ensure palier is consistent with score
+    if (scoreGlobal <= 30) claudeResult.palier = 'en_construction'
+    else if (scoreGlobal <= 50) claudeResult.palier = 'a_renforcer'
+    else if (scoreGlobal <= 70) claudeResult.palier = 'moyen'
+    else if (scoreGlobal <= 85) claudeResult.palier = 'bon'
+    else claudeResult.palier = 'excellent'
+
+    // Ensure couleur is consistent
+    const palierCouleurs: Record<string, string> = { en_construction: '\u2B1C', a_renforcer: '\uD83D\uDFE0', moyen: '\uD83D\uDFE1', bon: '\uD83D\uDFE2', excellent: '\uD83C\uDF1F' }
+    claudeResult.couleur = palierCouleurs[claudeResult.palier] || '\u2B1C'
+
+    // Ensure livrables_analyses matches actual sources
+    claudeResult.livrables_analyses = sources
+
+    // Ensure contexte_pays
+    claudeResult.contexte_pays = {
+      pays: fiscal.country,
+      zone: zone,
+      secteur: sector,
+      kb_utilisee: kbUsed,
+      sources_kb: kbUsed ? ['kb_benchmarks', 'kb_fiscal_params', 'kb_funders', 'kb_evaluation_criteria', 'kb_sources'] : []
+    }
+
+    // Ensure donnees_completes
+    claudeResult.donnees_completes = availableCount >= 5
+    if (!claudeResult.donnees_completes && !claudeResult.message_incomplet) {
+      claudeResult.message_incomplet = `Données incomplètes — ${missingList.length} livrable(s) manquant(s) : ${missingList.join(', ')}. Le diagnostic serait plus précis avec tous les livrables.`
+    }
+
+    // Validate dimensions have scores
+    const dimKeys = ['coherence', 'viabilite', 'realisme', 'completude_couts', 'capacite_remboursement']
+    if (claudeResult.scores_dimensions) {
+      for (const dk of dimKeys) {
+        if (claudeResult.scores_dimensions[dk]) {
+          claudeResult.scores_dimensions[dk].score = Math.min(100, Math.max(0, Math.round(claudeResult.scores_dimensions[dk].score || 0)))
+        }
+      }
+    }
+
+    // Ensure minimum points_vigilance
+    if (!claudeResult.points_vigilance || claudeResult.points_vigilance.length < 1) {
+      claudeResult.points_vigilance = [{ categorie: 'financier', niveau: 'moyen', probabilite: 'moyenne', titre: 'Suivi de trésorerie', description: 'Nous recommandons un suivi régulier de la trésorerie pour anticiper les besoins.', impact_financier: 'Modéré', action_recommandee: 'Mettre en place un tableau de bord de suivi hebdomadaire de la trésorerie.' }]
+    }
+
+    // Ensure minimum forces
+    if (!claudeResult.forces || claudeResult.forces.length < 1) {
+      claudeResult.forces = [{ titre: 'Démarche structurée', justification: 'L\'entrepreneur a complété plusieurs modules, démontrant une approche méthodique.' }]
+    }
+
+    // Ensure minimum recommandations
+    if (!claudeResult.recommandations || claudeResult.recommandations.length < 1) {
+      claudeResult.recommandations = [{ priorite: 1, titre: 'Compléter les livrables manquants', detail: 'Finalisez les modules restants pour obtenir un diagnostic plus complet.', impact_viabilite: 'Élevé', urgence: 'Court terme', action_concrete: 'Retournez sur le tableau de bord et complétez les modules en attente.', message_encourageant: 'Vous avez déjà fait un excellent travail en arrivant jusqu\'ici !' }]
+    }
+
+    // Generate full HTML report
+    const diagHtml = generateDiagnosticReportHtml(claudeResult, sector, fiscal.country, zone)
+
+    const finalStatus = 'analyzed'
+
     await db.prepare(`
       UPDATE diagnostic_analyses
-      SET analysis_json = ?, status = ?, score = 0, updated_at = datetime('now')
+      SET analysis_json = ?, html_content = ?, score = ?, status = ?, kb_context = ?, kb_used = ?, updated_at = datetime('now')
       WHERE id = ?
-    `).bind(JSON.stringify(analysisStub), isPartial ? 'partial' : 'generated', diagId).run()
+    `).bind(
+      JSON.stringify(claudeResult),
+      diagHtml,
+      scoreGlobal,
+      finalStatus,
+      JSON.stringify(kbContext),
+      kbUsed ? 1 : 0,
+      diagId
+    ).run()
 
-    console.log(`[Diagnostic] Analysis stub saved. Status=${isPartial ? 'partial' : 'generated'}, sources=${availableCount}`)
+    // Also store in entrepreneur_deliverables for cross-module access
+    try {
+      await db.prepare(`
+        INSERT INTO entrepreneur_deliverables (user_id, type, content, score, version, created_at)
+        VALUES (?, 'diagnostic_html', ?, ?, ?, datetime('now'))
+      `).bind(payload.userId, diagHtml, scoreGlobal, newVersion).run()
+    } catch { /* non-fatal: deliverable table might already have this */ }
+
+    console.log(`[Diagnostic] ÉTAPE C — Saved: score=${scoreGlobal}, palier=${claudeResult.palier}, status=${finalStatus}, kb_used=${kbUsed}, dims=${Object.keys(claudeResult.scores_dimensions || {}).length}, html=${diagHtml.length} chars, fallback=${!!claudeResult._fallback}`)
 
     return c.json({
       success: true,
-      message: isPartial
-        ? 'Diagnostic partiel en cours de génération — données incomplètes.'
-        : 'Diagnostic en cours de génération.',
+      message: claudeResult._fallback ? 'Diagnostic Expert généré (mode déterministe — IA indisponible).' : 'Diagnostic Expert généré avec succès.',
       diagId,
       version: newVersion,
-      status: isPartial ? 'partial' : 'generated',
+      status: finalStatus,
+      score_global: scoreGlobal,
+      palier: claudeResult.palier,
       sources,
       availableCount,
-      partial: isPartial
+      partial: isPartial,
+      kb_used: kbUsed
     })
 
   } catch (error: any) {

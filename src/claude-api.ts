@@ -27,6 +27,7 @@ export interface ClaudeCallOptions {
   timeoutMs?: number
   maxRetries?: number
   label?: string  // for logging, e.g. "BMC Deliverable", "SIC Deliverable"
+  temperature?: number  // 0.0-1.0, default undefined (API default)
 }
 
 /**
@@ -60,6 +61,7 @@ export async function callClaudeJSON<T = any>(opts: ClaudeCallOptions): Promise<
         body: JSON.stringify({
           model: CLAUDE_MODEL,
           max_tokens: maxTokens,
+          ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
           system: systemPrompt,
           messages: [{ role: 'user', content: opts.userContent || userPrompt }]
         }),
