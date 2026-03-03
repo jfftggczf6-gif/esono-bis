@@ -1937,6 +1937,10 @@ function renderPlanOvoModulePage(opts: {
     .ovo-btn--download { background: #059669; color: white; box-shadow: 0 4px 14px rgba(5,150,105,0.3); }
     .ovo-btn--download:hover { background: #047857; }
     .ovo-btn--download:disabled { opacity: 0.4; cursor: not-allowed; }
+    .ovo-btn--fill { background: #2563eb; color: white; box-shadow: 0 4px 14px rgba(37,99,235,0.3); }
+    .ovo-btn--fill:hover { background: #1d4ed8; }
+    .ovo-btn--fill:disabled { opacity: 0.4; cursor: not-allowed; }
+    .ovo-badge--filled { background: #d1fae5; color: #065f46; }
     .ovo-preview { background: #f1f5f9; border-radius: 16px; border: 2px dashed #cbd5e1; padding: 60px 20px; text-align: center; color: #64748b; }
     .ovo-preview--ready { border-style: solid; border-color: #059669; background: #f0fdf4; }
     .ovo-badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; }
@@ -2058,6 +2062,8 @@ function renderPlanOvoModulePage(opts: {
           planStatus === 'pending' ? '<i class="fas fa-clock"></i> En attente' :
           planStatus === 'generating' ? '<i class="fas fa-spinner ovo-spin"></i> En cours' :
           planStatus === 'generated' ? '<i class="fas fa-check-circle"></i> G\u00E9n\u00E9r\u00E9' :
+          planStatus === 'filling' ? '<i class="fas fa-spinner ovo-spin"></i> Remplissage' :
+          planStatus === 'filled' ? '<i class="fas fa-file-excel"></i> Excel pr\u00EAt' :
           planStatus === 'error' ? '<i class="fas fa-exclamation-circle"></i> Erreur' :
           '<i class="fas fa-minus"></i> Inconnu'
         }</span>` : '<span class="ovo-badge ovo-badge--none"><i class="fas fa-minus"></i> Non g\u00E9n\u00E9r\u00E9</span>'}
@@ -2073,11 +2079,17 @@ function renderPlanOvoModulePage(opts: {
         </button>
 
         <button class="ovo-btn ovo-btn--download" id="btn-download" 
-          ${!hasPlan || planStatus !== 'generated' ? 'disabled title="Plan non encore g\u00E9n\u00E9r\u00E9"' : ''}
+          ${!hasPlan || (planStatus !== 'generated' && planStatus !== 'filled') ? 'disabled title="Plan non encore g\u00E9n\u00E9r\u00E9"' : ''}
           onclick="downloadPlanOVO()">
           <i class="fas fa-download"></i>
           T\u00E9l\u00E9charger Excel (.xlsx)
         </button>
+
+        ${hasPlan && planStatus === 'generated' ? `
+        <button class="ovo-btn ovo-btn--fill" id="btn-fill" onclick="fillPlanOVO()">
+          <i class="fas fa-file-excel"></i>
+          Remplir le Template Excel
+        </button>` : ''}
       </div>
 
       ${!hasFramework ? `
@@ -2170,8 +2182,103 @@ function renderPlanOvoModulePage(opts: {
       }
     }
 
+    async function fillPlanOVO() {
+      const btn = document.getElementById('btn-fill');
+      if (!btn) return;
+      const prev = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = '<i class="fas fa-spinner ovo-spin"></i> Remplissage en cours...';
+      try {
+        const latestRes = await fetch('/api/plan-ovo/latest/pme_current', {
+          headers: { 'Authorization': 'Bearer ' + getToken() }
+        });
+        const latestData = await latestRes.json();
+        const planId = latestData?.data?.id;
+        if (!planId) { alert('Plan non trouv\u00E9'); btn.innerHTML = prev; btn.disabled = false; return; }
+        const res = await fetch('/api/plan-ovo/fill', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+          body: JSON.stringify({ planId: planId })
+        });
+        const data = await res.json();
+        if (data.success) {
+          btn.innerHTML = '<i class="fas fa-check"></i> Excel rempli !';
+          document.getElementById('btn-download').disabled = false;
+          setTimeout(function() { location.reload(); }, 2000);
+        } else {
+          alert(data.error || 'Erreur remplissage');
+          btn.innerHTML = prev; btn.disabled = false;
+        }
+      } catch (err) {
+        alert('Erreur: ' + err.message);
+        btn.innerHTML = prev; btn.disabled = false;
+      }
+    }
+
     async function downloadPlanOVO() {
-      alert('Le t\u00E9l\u00E9chargement Excel sera disponible une fois le remplissage IA impl\u00E9ment\u00E9.');
+      const btn = document.getElementById('btn-download');
+      const prev = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = '<i class="fas fa-spinner ovo-spin"></i> Pr\u00E9paration...';
+      try {
+        // Get plan ID
+        const latestRes = await fetch('/api/plan-ovo/latest/pme_current', {
+          headers: { 'Authorization': 'Bearer ' + getToken() }
+        });
+        const latestData = await latestRes.json();
+        const planId = latestData?.data?.id;
+        if (!planId) { alert('Aucun plan trouv\u00E9'); btn.innerHTML = prev; btn.disabled = false; return; }
+
+        // If status is 'generated' but not 'filled', fill first
+        if (latestData?.data?.status === 'generated' && !latestData?.data?.hasExcel) {
+          btn.innerHTML = '<i class="fas fa-spinner ovo-spin"></i> Remplissage Excel...';
+          const fillRes = await fetch('/api/plan-ovo/fill', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+            body: JSON.stringify({ planId: planId })
+          });
+          const fillData = await fillRes.json();
+          if (!fillData.success) {
+            alert('Erreur remplissage: ' + (fillData.error || 'Inconnu'));
+            btn.innerHTML = prev; btn.disabled = false;
+            return;
+          }
+        }
+
+        // Download the file
+        btn.innerHTML = '<i class="fas fa-spinner ovo-spin"></i> T\u00E9l\u00E9chargement...';
+        const resp = await fetch('/api/plan-ovo/download/' + planId, {
+          headers: { 'Authorization': 'Bearer ' + getToken() }
+        });
+        if (!resp.ok) {
+          const errData = await resp.json().catch(() => ({}));
+          alert(errData.error || errData.message || 'Erreur t\u00E9l\u00E9chargement');
+          btn.innerHTML = prev; btn.disabled = false;
+          return;
+        }
+        // Get filename from Content-Disposition header
+        const cd = resp.headers.get('Content-Disposition') || '';
+        const fnMatch = cd.match(/filename="([^"]+)"/);
+        const filename = fnMatch ? fnMatch[1] : 'Plan_OVO.xlsx';
+
+        // Create download link
+        const blob = await resp.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+
+        btn.innerHTML = '<i class="fas fa-check"></i> T\u00E9l\u00E9charg\u00E9 !';
+        setTimeout(function() { btn.innerHTML = prev; btn.disabled = false; }, 3000);
+      } catch (err) {
+        alert('Erreur: ' + err.message);
+        btn.innerHTML = prev;
+        btn.disabled = false;
+      }
     }
   </script>
 </body>
@@ -7067,7 +7174,9 @@ app.get('/api/plan-ovo/latest/:pmeId', async (c) => {
     const payload = await verifyToken(token)
     if (!payload) return c.json({ error: 'Token invalide' }, 401)
 
-    const pmeId = c.req.param('pmeId')
+    const rawPmeId = c.req.param('pmeId')
+    // Resolve 'pme_current' to actual pme_id for this user
+    const pmeId = rawPmeId === 'pme_current' ? `pme_${payload.userId}` : rawPmeId
 
     const plan = await c.env.DB.prepare(`
       SELECT id, pme_id, version, extraction_json, analysis_json, filled_excel_base64,
