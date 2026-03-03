@@ -3254,10 +3254,11 @@ entrepreneurRoutes.get('/deliverable/:type', async (c) => {
       const originalHtml = btn ? btn.innerHTML : '';
       if (btn) { btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Téléchargement...'; btn.disabled = true; }
       try {
-        const token = document.cookie.split(';').map(c => c.trim()).find(c => c.startsWith('token='));
-        const tokenVal = token ? token.split('=')[1] : '';
+        const token = document.cookie.split(';').map(c => c.trim()).find(c => c.startsWith('auth_token='));
+        const tokenVal = token ? token.split('=').slice(1).join('=') : '';
         const resp = await fetch('/api/plan-ovo/download/' + PLAN_OVO_ID, {
-          headers: tokenVal ? { 'Authorization': 'Bearer ' + tokenVal } : {}
+          headers: tokenVal ? { 'Authorization': 'Bearer ' + tokenVal } : {},
+          credentials: 'include'
         });
         if (!resp.ok) {
           const err = await resp.json().catch(() => ({ error: 'Erreur ' + resp.status }));
@@ -3756,6 +3757,16 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
       }
     }
 
+    // ═══ Fetch Plan OVO ID for direct download from main page ═══
+    let mainPlanOvoId: string | null = null
+    try {
+      const pmeId = `pme_${payload.userId}`
+      const planRow = await c.env.DB.prepare(
+        "SELECT id FROM plan_ovo_analyses WHERE user_id = ? AND pme_id = ? AND status = 'filled' ORDER BY created_at DESC LIMIT 1"
+      ).bind(payload.userId, pmeId).first() as any
+      if (planRow?.id) mainPlanOvoId = planRow.id
+    } catch { /* ignore */ }
+
     // Fetch chat messages
     const chatMessages = await c.env.DB.prepare(
       'SELECT id, role, content, created_at FROM chat_messages WHERE user_id = ? ORDER BY created_at ASC LIMIT 50'
@@ -4174,6 +4185,7 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
     const DIAGNOSTIC_HTML_TEMPLATE = ${JSON.stringify(diagnosticClaudeHtml)};
     const SIC_HTML_TEMPLATE = ${JSON.stringify(sicClaudeHtml)};
     const sources = ${JSON.stringify(allUploads.map((u: any) => ({ id: u.id, filename: u.filename, category: u.category })))};
+    const PLAN_OVO_ID = ${JSON.stringify(mainPlanOvoId)};
 
     // ── Mobile sidebar toggle ──
     function toggleSidebar() {
@@ -4574,7 +4586,11 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
       html += '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;padding:16px 20px;background:linear-gradient(135deg,#f0fdf4,#ecfdf5);border:1px solid #bbf7d0;border-radius:12px;margin-bottom:20px">';
       html += '<div style="display:flex;align-items:center;gap:10px"><i class="fas fa-file-excel" style="font-size:24px;color:#059669"></i><div><div style="font-size:14px;font-weight:700;color:#065f46">💰 Plan Financier OVO</div><div style="font-size:12px;color:#047857">Fichier Excel avec projections financières</div></div></div>';
       html += '<div style="display:flex;gap:8px;flex-wrap:wrap">';
-      html += '<button data-download="xlsx" style="display:inline-flex;align-items:center;gap:8px;padding:10px 20px;border-radius:10px;background:#059669;color:white;border:none;font-size:13px;font-weight:600;cursor:pointer;transition:all 0.2s;box-shadow:0 2px 8px rgba(5,150,105,0.3)" onmouseover="this.style.opacity=0.9" onmouseout="this.style.opacity=1"><i class="fas fa-download"></i> Excel (.xlsx)</button>';
+      if (PLAN_OVO_ID) {
+        html += '<button onclick="downloadPlanOVOExcelDirect()" style="display:inline-flex;align-items:center;gap:8px;padding:10px 20px;border-radius:10px;background:#059669;color:white;border:none;font-size:13px;font-weight:600;cursor:pointer;transition:all 0.2s;box-shadow:0 2px 8px rgba(5,150,105,0.3)" onmouseover="this.style.opacity=0.9" onmouseout="this.style.opacity=1"><i class="fas fa-download"></i> T\u00e9l\u00e9charger Excel (.xlsm)</button>';
+      } else {
+        html += '<button data-download="xlsx" style="display:inline-flex;align-items:center;gap:8px;padding:10px 20px;border-radius:10px;background:#059669;color:white;border:none;font-size:13px;font-weight:600;cursor:pointer;transition:all 0.2s;box-shadow:0 2px 8px rgba(5,150,105,0.3)" onmouseover="this.style.opacity=0.9" onmouseout="this.style.opacity=1"><i class="fas fa-download"></i> Excel (.xlsm)</button>';
+      }
       html += '<a href="/module/plan-ovo" style="display:inline-flex;align-items:center;gap:6px;padding:10px 16px;border-radius:10px;background:#ea580c;color:white;border:1px solid #ea580c;font-size:12px;font-weight:600;text-decoration:none;cursor:pointer" onmouseover="this.style.opacity=0.9" onmouseout="this.style.opacity=1"><i class="fas fa-wand-magic-sparkles"></i> Module OVO</a>';
       html += '<a href="/deliverable/plan_ovo" style="display:inline-flex;align-items:center;gap:6px;padding:10px 16px;border-radius:10px;background:white;color:#065f46;border:1px solid #bbf7d0;font-size:12px;font-weight:600;text-decoration:none;cursor:pointer" onmouseover="this.style.background=&apos;#f0fdf4&apos;" onmouseout="this.style.background=&apos;white&apos;"><i class="fas fa-expand"></i> Pleine page</a>';
       html += '</div></div>';
@@ -4603,6 +4619,8 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
         html += '<div style="display:flex;gap:8px;flex-wrap:wrap">';
         if (type === 'framework') {
           html += '<button onclick="downloadFrameworkExcelInline()" id="btn-download-inline" style="display:inline-flex;align-items:center;gap:8px;padding:10px 20px;border-radius:10px;background:#059669;color:white;border:none;font-size:13px;font-weight:600;cursor:pointer;transition:all 0.2s;box-shadow:0 2px 8px rgba(5,150,105,0.3)" onmouseover="this.style.opacity=0.9" onmouseout="this.style.opacity=1"><i class="fas fa-download"></i> Télécharger Excel (.xlsx)</button>';
+        } else if (type === 'plan_ovo' && PLAN_OVO_ID) {
+          html += '<button onclick="downloadPlanOVOExcelDirect()" style="display:inline-flex;align-items:center;gap:8px;padding:10px 20px;border-radius:10px;background:#059669;color:white;border:none;font-size:13px;font-weight:600;cursor:pointer;transition:all 0.2s;box-shadow:0 2px 8px rgba(5,150,105,0.3)" onmouseover="this.style.opacity=0.9" onmouseout="this.style.opacity=1"><i class="fas fa-download"></i> Télécharger Excel (.xlsm)</button>';
         }
         html += '<a href="/deliverable/' + type + '" style="display:inline-flex;align-items:center;gap:6px;padding:10px 16px;border-radius:10px;background:white;color:#065f46;border:1px solid #bbf7d0;font-size:12px;font-weight:600;text-decoration:none;cursor:pointer" onmouseover="this.style.background=&apos;#f0fdf4&apos;" onmouseout="this.style.background=&apos;white&apos;"><i class="fas fa-expand"></i> Voir en pleine page</a>';
         html += '</div></div>';
@@ -4699,10 +4717,44 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
       } catch (e) { alert('Erreur: ' + e.message); }
     }
 
+    async function downloadPlanOVOExcelDirect() {
+      const btn = event?.target?.closest?.('button');
+      const originalHtml = btn ? btn.innerHTML : '';
+      if (btn) { btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Téléchargement...'; btn.disabled = true; }
+      try {
+        const token = document.cookie.split(';').map(c => c.trim()).find(c => c.startsWith('auth_token='));
+        const tokenVal = token ? token.split('=').slice(1).join('=') : '';
+        const resp = await fetch('/api/plan-ovo/download/' + PLAN_OVO_ID, {
+          headers: tokenVal ? { 'Authorization': 'Bearer ' + tokenVal } : {},
+          credentials: 'include'
+        });
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({ error: 'Erreur ' + resp.status }));
+          throw new Error(err.error || err.message || 'Erreur ' + resp.status);
+        }
+        const blob = await resp.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        const cd = resp.headers.get('Content-Disposition');
+        const fnMatch = cd && cd.match(/filename="?([^"]+)"?/);
+        a.download = fnMatch ? fnMatch[1] : 'Plan_OVO_' + USER_NAME.replace(/\\s+/g, '_') + '_' + new Date().toISOString().slice(0,10) + '.xlsm';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        if (btn) { btn.innerHTML = '<i class="fas fa-check"></i> Téléchargé !'; setTimeout(() => { btn.innerHTML = originalHtml; btn.disabled = false; }, 3000); }
+      } catch(e) {
+        alert('Erreur téléchargement Plan OVO: ' + e.message);
+        if (btn) { btn.innerHTML = originalHtml; btn.disabled = false; }
+      }
+    }
+
     function downloadDeliverable(format) {
       const type = currentDelivType;
       try {
         if (format === 'xlsx' && type === 'framework') { downloadFrameworkExcelDirect(); return; }
+        if (format === 'xlsx' && type === 'plan_ovo' && PLAN_OVO_ID) { downloadPlanOVOExcelDirect(); return; }
         if (format === 'xlsx') { window.open('/deliverable/' + type, '_blank'); return; }
         
         if (format === 'html' && type === 'diagnostic' && DIAGNOSTIC_HTML_TEMPLATE) {
