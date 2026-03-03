@@ -2285,9 +2285,346 @@ function renderPlanOvoModulePage(opts: {
 </html>`
 }
 
+// ═══════════════════════════════════════════════════════════════
+// Helper: Render Diagnostic Expert Module Page HTML
+// ═══════════════════════════════════════════════════════════════
+function renderDiagnosticModulePage(opts: {
+  hasBmc: boolean; hasSic: boolean; hasFramework: boolean; hasFrameworkPme: boolean; hasPlanOvo: boolean;
+  hasDiagnostic: boolean; diagStatus: string; diagScore: number | null; diagVersion: number;
+  diagId: string | null; isPartial: boolean; user: any;
+}): string {
+  const { hasBmc, hasSic, hasFramework, hasFrameworkPme, hasPlanOvo, hasDiagnostic, diagStatus, diagScore, diagVersion, diagId, isPartial, user } = opts
+  const availableCount = [hasBmc, hasSic, hasFramework, hasFrameworkPme, hasPlanOvo].filter(Boolean).length
+  const canGenerate = availableCount >= 2
+
+  const statusBadge = (status: string) => {
+    switch (status) {
+      case 'generated': return '<span class="diag-badge diag-badge--generated"><i class="fas fa-check-circle"></i> Généré</span>'
+      case 'partial': return '<span class="diag-badge diag-badge--partial"><i class="fas fa-exclamation-triangle"></i> Partiel</span>'
+      case 'generating': return '<span class="diag-badge diag-badge--generating"><i class="fas fa-spinner fa-spin"></i> En cours</span>'
+      case 'error': return '<span class="diag-badge diag-badge--error"><i class="fas fa-times-circle"></i> Erreur</span>'
+      default: return '<span class="diag-badge diag-badge--none"><i class="fas fa-clock"></i> Non généré</span>'
+    }
+  }
+
+  return `<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Diagnostic Expert — Investment Readiness | ESONO</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+    * { font-family: 'Inter', sans-serif; }
+    body { background: #f8fafc; margin: 0; }
+    .diag-header { background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); color: white; padding: 24px 32px; }
+    .diag-header__back { color: #94a3b8; text-decoration: none; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; margin-bottom: 16px; transition: color 0.2s; }
+    .diag-header__back:hover { color: white; }
+    .diag-header__title { font-size: 28px; font-weight: 800; display: flex; align-items: center; gap: 14px; }
+    .diag-header__sub { color: #94a3b8; font-size: 14px; margin-top: 6px; }
+    .diag-container { max-width: 1100px; margin: 0 auto; padding: 24px 20px 60px; }
+    .diag-card { background: white; border-radius: 16px; border: 1px solid #e2e8f0; padding: 24px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+    .diag-card__title { font-size: 16px; font-weight: 700; color: #1e293b; margin-bottom: 12px; display: flex; align-items: center; gap: 10px; }
+    .diag-source { display: flex; align-items: center; gap: 14px; padding: 14px 16px; background: #f8fafc; border-radius: 12px; margin-bottom: 8px; border: 1px solid #e2e8f0; }
+    .diag-source--ok { background: #f0fdf4; border-color: #bbf7d0; }
+    .diag-source--missing { background: #fef2f2; border-color: #fecaca; }
+    .diag-source__icon { width: 40px; height: 40px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 16px; flex-shrink: 0; }
+    .diag-source__label { font-size: 14px; font-weight: 600; color: #1e293b; }
+    .diag-source__status { font-size: 12px; margin-top: 2px; }
+    .diag-btn { display: inline-flex; align-items: center; gap: 10px; padding: 14px 28px; border-radius: 12px; font-size: 15px; font-weight: 700; border: none; cursor: pointer; transition: all 0.2s; }
+    .diag-btn--primary { background: linear-gradient(135deg, #dc2626, #b91c1c); color: white; box-shadow: 0 4px 14px rgba(220,38,38,0.3); }
+    .diag-btn--primary:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(220,38,38,0.4); }
+    .diag-btn--primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
+    .diag-btn--download { background: #059669; color: white; box-shadow: 0 4px 14px rgba(5,150,105,0.3); padding: 10px 20px; font-size: 13px; }
+    .diag-btn--download:hover { background: #047857; }
+    .diag-btn--download:disabled { opacity: 0.4; cursor: not-allowed; }
+    .diag-badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+    .diag-badge--generated { background: #d1fae5; color: #065f46; }
+    .diag-badge--partial { background: #fef3c7; color: #92400e; }
+    .diag-badge--generating { background: #dbeafe; color: #1e40af; }
+    .diag-badge--error { background: #fee2e2; color: #991b1b; }
+    .diag-badge--none { background: #f1f5f9; color: #64748b; }
+    .diag-preview { background: #f1f5f9; border-radius: 16px; border: 2px dashed #cbd5e1; padding: 60px 20px; text-align: center; color: #64748b; }
+    .diag-preview--ready { border-style: solid; border-color: #059669; background: #f0fdf4; }
+    .diag-dimensions { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; margin-top: 14px; }
+    .diag-dim { padding: 14px; background: #f8fafc; border-radius: 10px; border: 1px solid #e2e8f0; text-align: center; }
+    .diag-dim__name { font-size: 13px; font-weight: 600; color: #334155; }
+    .diag-dim__score { font-size: 22px; font-weight: 800; margin-top: 4px; }
+    .diag-dim__status { font-size: 11px; color: #94a3b8; margin-top: 2px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .diag-spin { animation: spin 1s linear infinite; }
+  </style>
+</head>
+<body>
+  <div class="diag-header">
+    <a href="/entrepreneur" class="diag-header__back"><i class="fas fa-arrow-left"></i> Retour au tableau de bord</a>
+    <div class="diag-header__title">
+      \u{1F50D} Diagnostic Expert \u2014 Investment Readiness
+    </div>
+    <div class="diag-header__sub">
+      Phase 2 \u00B7 Finance \u2014 Module 5 \u00B7 Score d'investissabilit\u00E9, dimensions, risques, recommandations
+    </div>
+  </div>
+
+  <div class="diag-container">
+
+    <!-- Description -->
+    <div class="diag-card">
+      <div class="diag-card__title"><i class="fas fa-info-circle" style="color:#dc2626"></i> \u00C0 propos</div>
+      <p style="font-size:14px;color:#475569;line-height:1.7;margin:0">
+        Le <strong>Diagnostic Expert</strong> analyse l'ensemble de vos livrables (BMC, SIC, Framework, Plan OVO, Business Plan, ODD) 
+        et produit un rapport compl\u00E8t d'Investment Readiness :
+        <strong>score global /100</strong>, analyse sur 5 dimensions, d\u00E9tection des risques et incoh\u00E9rences,
+        forces/faiblesses, recommandations prioritaires, benchmarks sectoriels et r\u00E9sum\u00E9 ex\u00E9cutif.
+      </p>
+      <p style="font-size:13px;color:#94a3b8;margin-top:10px;margin-bottom:0">
+        \u{1F4A1} Le diagnostic se g\u00E9n\u00E8re automatiquement d\u00E8s que 2 modules sont compl\u00E9t\u00E9s. G\u00E9n\u00E9rer le diagnostic pour voir l'analyse compl\u00E8te.
+      </p>
+    </div>
+
+    <!-- Sources de données -->
+    <div class="diag-card">
+      <div class="diag-card__title"><i class="fas fa-database" style="color:#7c3aed"></i> Sources de donn\u00E9es (${availableCount}/5)</div>
+      
+      <div class="diag-source ${hasBmc ? 'diag-source--ok' : 'diag-source--missing'}">
+        <div class="diag-source__icon" style="background:${hasBmc ? '#d1fae5' : '#fee2e2'};color:${hasBmc ? '#059669' : '#dc2626'}">
+          <i class="fas fa-diagram-project"></i>
+        </div>
+        <div style="flex:1">
+          <div class="diag-source__label">BMC (Business Model Canvas)</div>
+          <div class="diag-source__status" style="color:${hasBmc ? '#059669' : '#dc2626'}">
+            ${hasBmc ? '<i class="fas fa-check-circle"></i> Disponible' : '<i class="fas fa-times-circle"></i> Non disponible'}
+          </div>
+        </div>
+      </div>
+
+      <div class="diag-source ${hasSic ? 'diag-source--ok' : 'diag-source--missing'}">
+        <div class="diag-source__icon" style="background:${hasSic ? '#d1fae5' : '#fee2e2'};color:${hasSic ? '#059669' : '#dc2626'}">
+          <i class="fas fa-hand-holding-heart"></i>
+        </div>
+        <div style="flex:1">
+          <div class="diag-source__label">SIC (Social Impact Canvas)</div>
+          <div class="diag-source__status" style="color:${hasSic ? '#059669' : '#dc2626'}">
+            ${hasSic ? '<i class="fas fa-check-circle"></i> Disponible' : '<i class="fas fa-times-circle"></i> Non disponible'}
+          </div>
+        </div>
+      </div>
+
+      <div class="diag-source ${hasFramework ? 'diag-source--ok' : 'diag-source--missing'}">
+        <div class="diag-source__icon" style="background:${hasFramework ? '#d1fae5' : '#fee2e2'};color:${hasFramework ? '#059669' : '#dc2626'}">
+          <i class="fas fa-chart-bar"></i>
+        </div>
+        <div style="flex:1">
+          <div class="diag-source__label">Framework Analyse PME</div>
+          <div class="diag-source__status" style="color:${hasFramework ? '#059669' : '#dc2626'}">
+            ${hasFramework ? '<i class="fas fa-check-circle"></i> Disponible' : '<i class="fas fa-times-circle"></i> Non disponible'}
+          </div>
+        </div>
+      </div>
+
+      <div class="diag-source ${hasFrameworkPme ? 'diag-source--ok' : 'diag-source--missing'}">
+        <div class="diag-source__icon" style="background:${hasFrameworkPme ? '#d1fae5' : '#fee2e2'};color:${hasFrameworkPme ? '#059669' : '#dc2626'}">
+          <i class="fas fa-calculator"></i>
+        </div>
+        <div style="flex:1">
+          <div class="diag-source__label">Donn\u00E9es PME structur\u00E9es</div>
+          <div class="diag-source__status" style="color:${hasFrameworkPme ? '#059669' : '#dc2626'}">
+            ${hasFrameworkPme ? '<i class="fas fa-check-circle"></i> Disponible' : '<i class="fas fa-times-circle"></i> Non disponible'}
+          </div>
+        </div>
+      </div>
+
+      <div class="diag-source ${hasPlanOvo ? 'diag-source--ok' : 'diag-source--missing'}">
+        <div class="diag-source__icon" style="background:${hasPlanOvo ? '#d1fae5' : '#fee2e2'};color:${hasPlanOvo ? '#059669' : '#dc2626'}">
+          <i class="fas fa-file-excel"></i>
+        </div>
+        <div style="flex:1">
+          <div class="diag-source__label">Plan Financier OVO</div>
+          <div class="diag-source__status" style="color:${hasPlanOvo ? '#059669' : '#dc2626'}">
+            ${hasPlanOvo ? '<i class="fas fa-check-circle"></i> Disponible' : '<i class="fas fa-times-circle"></i> Non disponible'}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Statut du diagnostic -->
+    <div class="diag-card">
+      <div class="diag-card__title"><i class="fas fa-stethoscope" style="color:#dc2626"></i> Statut du diagnostic</div>
+      <div style="display:flex;align-items:center;gap:16px;margin-bottom:16px">
+        ${statusBadge(diagStatus)}
+        ${diagScore !== null ? '<span style="font-size:14px;color:#475569">Score: <strong>' + diagScore + '/100</strong></span>' : ''}
+        ${diagVersion > 0 ? '<span style="font-size:12px;color:#94a3b8">v' + diagVersion + '</span>' : ''}
+      </div>
+
+      <!-- 5 Dimensions preview -->
+      <div class="diag-dimensions">
+        <div class="diag-dim">
+          <div class="diag-dim__name">\u{1F4BC} Mod\u00E8le \u00C9co.</div>
+          <div class="diag-dim__score" style="color:${hasBmc ? '#2563eb' : '#cbd5e1'}">\u2014</div>
+          <div class="diag-dim__status">${hasBmc ? 'Donn\u00E9es OK' : 'En attente'}</div>
+        </div>
+        <div class="diag-dim">
+          <div class="diag-dim__name">\u{1F30D} Impact Social</div>
+          <div class="diag-dim__score" style="color:${hasSic ? '#059669' : '#cbd5e1'}">\u2014</div>
+          <div class="diag-dim__status">${hasSic ? 'Donn\u00E9es OK' : 'En attente'}</div>
+        </div>
+        <div class="diag-dim">
+          <div class="diag-dim__name">\u{1F4B0} Viabilit\u00E9 Fin.</div>
+          <div class="diag-dim__score" style="color:${hasFramework ? '#7c3aed' : '#cbd5e1'}">\u2014</div>
+          <div class="diag-dim__status">${hasFramework ? 'Donn\u00E9es OK' : 'En attente'}</div>
+        </div>
+        <div class="diag-dim">
+          <div class="diag-dim__name">\u{1F465} \u00C9quipe & Gouv.</div>
+          <div class="diag-dim__score" style="color:#cbd5e1">\u2014</div>
+          <div class="diag-dim__status">En attente</div>
+        </div>
+        <div class="diag-dim">
+          <div class="diag-dim__name">\u{1F3AF} March\u00E9 & Pos.</div>
+          <div class="diag-dim__score" style="color:#cbd5e1">\u2014</div>
+          <div class="diag-dim__status">En attente</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Action buttons -->
+    <div class="diag-card" style="text-align:center">
+      <button id="btnGenerate" class="diag-btn diag-btn--primary" ${!canGenerate ? 'disabled' : ''} onclick="generateDiagnostic()">
+        <i class="fas fa-search"></i>
+        \u{1F50D} G\u00E9n\u00E9rer le Diagnostic Expert
+      </button>
+      ${!canGenerate ? '<p style="font-size:12px;color:#dc2626;margin-top:10px">\u26A0\uFE0F Au moins 2 modules compl\u00E9t\u00E9s sont requis pour g\u00E9n\u00E9rer le diagnostic.</p>' : ''}
+      
+      <div id="generateStatus" style="margin-top:16px;display:none"></div>
+
+      <div style="display:flex;gap:10px;justify-content:center;margin-top:20px">
+        <button id="btnDownloadHtml" class="diag-btn diag-btn--download" disabled onclick="downloadDiagnostic('html')">
+          <i class="fas fa-download"></i> \u{1F4E5} HTML
+        </button>
+        <button id="btnDownloadPdf" class="diag-btn diag-btn--download" disabled onclick="downloadDiagnostic('pdf')" title="PDF non encore disponible">
+          <i class="fas fa-file-pdf"></i> \u{1F4E5} PDF
+        </button>
+      </div>
+    </div>
+
+    <!-- Preview area -->
+    <div class="diag-card">
+      <div class="diag-card__title"><i class="fas fa-eye" style="color:#2563eb"></i> Aper\u00E7u du diagnostic</div>
+      <div id="diagPreview" class="diag-preview">
+        <i class="fas fa-search" style="font-size:40px;color:#cbd5e1;display:block;margin-bottom:16px"></i>
+        <p style="font-size:15px;font-weight:600;color:#64748b">G\u00E9n\u00E9rer le diagnostic pour voir l'analyse compl\u00E8te</p>
+        <p style="font-size:13px;color:#94a3b8;margin-top:8px">Le rapport s'affichera ici apr\u00E8s g\u00E9n\u00E9ration</p>
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    const diagId = ${diagId ? "'" + diagId + "'" : 'null'};
+    const diagStatus = '${diagStatus}';
+
+    function getCookie(name) {
+      const v = document.cookie.match('(^|;)\\\\s*' + name + '\\\\s*=\\\\s*([^;]+)');
+      return v ? v.pop() : '';
+    }
+
+    async function generateDiagnostic() {
+      const btn = document.getElementById('btnGenerate');
+      const status = document.getElementById('generateStatus');
+      btn.disabled = true;
+      btn.innerHTML = '<i class="fas fa-spinner diag-spin"></i> G\u00E9n\u00E9ration en cours...';
+      status.style.display = 'block';
+      status.innerHTML = '<p style="color:#2563eb;font-size:13px"><i class="fas fa-circle-notch fa-spin"></i> Analyse des livrables en cours...</p>';
+
+      try {
+        const token = getCookie('auth_token');
+        const res = await fetch('/api/diagnostic/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+          body: JSON.stringify({ pmeId: 'pme_current' })
+        });
+        const data = await res.json();
+        
+        if (data.success) {
+          status.innerHTML = '<p style="color:#059669;font-size:13px"><i class="fas fa-check-circle"></i> ' + data.message + '</p>';
+          // Reload page to show updated status
+          setTimeout(() => window.location.reload(), 1500);
+        } else {
+          status.innerHTML = '<p style="color:#dc2626;font-size:13px"><i class="fas fa-exclamation-circle"></i> ' + (data.error || 'Erreur') + '</p>';
+          btn.disabled = false;
+          btn.innerHTML = '<i class="fas fa-search"></i> \u{1F50D} G\u00E9n\u00E9rer le Diagnostic Expert';
+        }
+      } catch (err) {
+        status.innerHTML = '<p style="color:#dc2626;font-size:13px"><i class="fas fa-exclamation-circle"></i> Erreur: ' + err.message + '</p>';
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-search"></i> \u{1F50D} G\u00E9n\u00E9rer le Diagnostic Expert';
+      }
+    }
+
+    async function downloadDiagnostic(format) {
+      if (!diagId) return alert('Aucun diagnostic disponible.');
+      const token = getCookie('auth_token');
+      window.open('/api/diagnostic/download/' + diagId + '?format=' + format + '&token=' + token, '_blank');
+    }
+
+    // On page load: enable download buttons if diagnostic is ready
+    if (diagStatus === 'generated' || diagStatus === 'partial') {
+      document.getElementById('btnDownloadHtml').disabled = false;
+      // PDF remains disabled until implemented
+    }
+  </script>
+</body>
+</html>`
+}
+
 // Module entry point
-// IMPORTANT: Specific routes (/module/plan-ovo) must be registered BEFORE the :code catch-all
+// IMPORTANT: Specific routes (/module/plan-ovo, /module/diagnostic) must be registered BEFORE the :code catch-all
 // Otherwise Hono matches :code first and creates redirect loops
+
+// Diagnostic Expert dedicated module page — registered before :code catch-all
+app.get('/module/diagnostic', async (c) => {
+  try {
+    const token = getAuthToken(c) || getCookie(c, 'auth_token')
+    if (!token) return c.redirect('/login')
+    const payload = await verifyToken(token)
+    if (!payload) return c.redirect('/login')
+
+    const db = c.env.DB
+    const pmeId = `pme_${payload.userId}`
+
+    // Fetch available sources in parallel
+    const [bmcRow, sicRow, frameworkRow, frameworkPmeRow, planOvoRow, diagRow, userRow] = await Promise.all([
+      db.prepare(`SELECT id FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'bmc_analysis' ORDER BY created_at DESC LIMIT 1`).bind(payload.userId).first(),
+      db.prepare(`SELECT id FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'sic_analysis' ORDER BY created_at DESC LIMIT 1`).bind(payload.userId).first(),
+      db.prepare(`SELECT id FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'framework' ORDER BY created_at DESC LIMIT 1`).bind(payload.userId).first(),
+      db.prepare(`SELECT id FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'framework_pme_data' ORDER BY created_at DESC LIMIT 1`).bind(payload.userId).first(),
+      db.prepare(`SELECT id, status FROM plan_ovo_analyses WHERE user_id = ? AND pme_id = ? ORDER BY created_at DESC LIMIT 1`).bind(payload.userId, pmeId).first(),
+      db.prepare(`SELECT id, version, score, status, sources_used FROM diagnostic_analyses WHERE user_id = ? AND pme_id = ? ORDER BY created_at DESC LIMIT 1`).bind(payload.userId, pmeId).first(),
+      db.prepare('SELECT name, email FROM users WHERE id = ?').bind(payload.userId).first(),
+    ])
+
+    const hasBmc = !!bmcRow
+    const hasSic = !!sicRow
+    const hasFramework = !!frameworkRow
+    const hasFrameworkPme = !!frameworkPmeRow
+    const hasPlanOvo = !!(planOvoRow && planOvoRow.status === 'generated')
+    const hasDiagnostic = !!diagRow
+    const diagStatus = diagRow ? (diagRow.status as string) : 'none'
+    const diagScore = diagRow?.score ? Number(diagRow.score) : null
+    const diagVersion = diagRow?.version ? Number(diagRow.version) : 0
+    const diagId = diagRow ? (diagRow.id as string) : null
+    const isPartial = diagStatus === 'partial'
+
+    return c.html(renderDiagnosticModulePage({
+      hasBmc, hasSic, hasFramework, hasFrameworkPme, hasPlanOvo,
+      hasDiagnostic, diagStatus, diagScore, diagVersion, diagId, isPartial, user: userRow
+    }))
+  } catch (error: any) {
+    console.error('[Diagnostic Module Page] Error:', error)
+    return c.text('Erreur: ' + error.message, 500)
+  }
+})
 
 // Plan OVO dedicated module page — registered before :code catch-all
 app.get('/module/plan-ovo', async (c) => {
@@ -2365,6 +2702,7 @@ app.get('/module/plan-ovo', async (c) => {
 app.get('/module/:code', (c) => {
   const code = c.req.param('code')
   if (code === 'sic') return c.redirect('/module/sic/page')
+  if (code === 'mod5_diagnostic' || code === 'mod_05_diagnostic') return c.redirect('/module/diagnostic')
   if (code === 'mod6_ovo') return c.redirect('/module/plan-ovo')
   return c.redirect(`/module/${code}/download`)
 })
@@ -7423,6 +7761,262 @@ app.get('/api/plan-ovo/template', async (c) => {
     })
   } catch (error: any) {
     console.error('[Plan OVO Template] Error:', error)
+    return c.json({ error: error.message || 'Erreur serveur' }, 500)
+  }
+})
+
+
+// ═══════════════════════════════════════════════════════════════
+// DIAGNOSTIC EXPERT MODULE — API Routes
+// POST /api/diagnostic/generate — Fetch all deliverables, create diagnostic record
+// GET /api/diagnostic/latest/:pmeId — Returns latest diagnostic or {available: false}
+// GET /api/diagnostic/download/:id — Returns HTML (or future PDF)
+// ═══════════════════════════════════════════════════════════════
+
+app.post('/api/diagnostic/generate', async (c) => {
+  try {
+    const token = getAuthToken(c) || getCookie(c, 'auth_token')
+    if (!token) return c.json({ error: 'Non authentifié' }, 401)
+    const payload = await verifyToken(token)
+    if (!payload) return c.json({ error: 'Token invalide' }, 401)
+
+    const db = c.env.DB
+    const pmeId = `pme_${payload.userId}`
+
+    // 1. Fetch all available deliverables in parallel
+    const [bmcRow, sicRow, frameworkRow, frameworkPmeRow, planOvoRow, diagnosticHtmlRow] = await Promise.all([
+      db.prepare(`SELECT id, content, score FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'bmc_analysis' ORDER BY created_at DESC LIMIT 1`).bind(payload.userId).first(),
+      db.prepare(`SELECT id, content, score FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'sic_analysis' ORDER BY created_at DESC LIMIT 1`).bind(payload.userId).first(),
+      db.prepare(`SELECT id, content, score FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'framework' ORDER BY created_at DESC LIMIT 1`).bind(payload.userId).first(),
+      db.prepare(`SELECT id, content, score FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'framework_pme_data' ORDER BY created_at DESC LIMIT 1`).bind(payload.userId).first(),
+      db.prepare(`SELECT id, extraction_json, score, status FROM plan_ovo_analyses WHERE user_id = ? AND pme_id = ? ORDER BY created_at DESC LIMIT 1`).bind(payload.userId, pmeId).first(),
+      db.prepare(`SELECT id, content, score FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'diagnostic_html' ORDER BY created_at DESC LIMIT 1`).bind(payload.userId).first(),
+    ])
+
+    // 2. Count available sources — at least 2 required
+    const sources: Record<string, boolean> = {
+      bmc: !!bmcRow,
+      sic: !!sicRow,
+      framework: !!frameworkRow,
+      framework_pme_data: !!frameworkPmeRow,
+      plan_ovo: !!(planOvoRow && planOvoRow.status === 'generated'),
+    }
+    const availableCount = Object.values(sources).filter(Boolean).length
+
+    console.log(`[Diagnostic] Sources: bmc=${sources.bmc}, sic=${sources.sic}, framework=${sources.framework}, pme_data=${sources.framework_pme_data}, plan_ovo=${sources.plan_ovo} (${availableCount} available)`)
+
+    if (availableCount < 2) {
+      return c.json({
+        success: false,
+        error: 'Au moins 2 modules complétés sont nécessaires pour générer le diagnostic.',
+        sources,
+        availableCount
+      }, 400)
+    }
+
+    // 3. Determine version
+    const existingDiag = await db.prepare(
+      `SELECT version FROM diagnostic_analyses WHERE user_id = ? AND pme_id = ? ORDER BY version DESC LIMIT 1`
+    ).bind(payload.userId, pmeId).first()
+    const newVersion = existingDiag ? Number(existingDiag.version) + 1 : 1
+
+    // 4. Create new diagnostic_analyses record (status = generating)
+    const diagId = crypto.randomUUID()
+    const isPartial = availableCount < 4
+    const sourcesJson = JSON.stringify(sources)
+
+    await db.prepare(`
+      INSERT INTO diagnostic_analyses (id, pme_id, user_id, version, status, sources_used, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 'generating', ?, datetime('now'), datetime('now'))
+    `).bind(diagId, pmeId, payload.userId, newVersion, sourcesJson).run()
+
+    console.log(`[Diagnostic] Record created: id=${diagId}, version=${newVersion}, partial=${isPartial}`)
+
+    // 5. Build analysis stub (no AI agent yet — structure only)
+    //    Later: call generateDiagnosticExpert() here with full data
+    const analysisStub = {
+      scoreGlobal: 0,
+      verdict: 'En attente',
+      verdictColor: '#6b7280',
+      dimensions: [
+        { name: 'Modèle Économique', code: 'modele_economique', score: 0, verdict: sources.bmc ? 'Données disponibles' : 'Données manquantes', color: sources.bmc ? '#2563eb' : '#dc2626', strengths: [], weaknesses: [], recommendations: [], analysis: '' },
+        { name: 'Impact Social & ODD', code: 'impact_social', score: 0, verdict: sources.sic ? 'Données disponibles' : 'Données manquantes', color: sources.sic ? '#2563eb' : '#dc2626', strengths: [], weaknesses: [], recommendations: [], analysis: '' },
+        { name: 'Viabilité Financière', code: 'viabilite_financiere', score: 0, verdict: sources.framework ? 'Données disponibles' : 'Données manquantes', color: sources.framework ? '#2563eb' : '#dc2626', strengths: [], weaknesses: [], recommendations: [], analysis: '' },
+        { name: 'Équipe & Gouvernance', code: 'equipe_gouvernance', score: 0, verdict: 'En attente', color: '#6b7280', strengths: [], weaknesses: [], recommendations: [], analysis: '' },
+        { name: 'Marché & Positionnement', code: 'marche_positionnement', score: 0, verdict: 'En attente', color: '#6b7280', strengths: [], weaknesses: [], recommendations: [], analysis: '' },
+      ],
+      strengths: [],
+      weaknesses: [],
+      risks: [],
+      actionPlan: [],
+      funders: [],
+      executiveSummary: '',
+      financialSnapshot: { ca: '—', margebrute: '—', ebitda: '—', ebitdaMargin: '—', bfr: '—', tresorerie: '—', capexNeeded: '—' },
+      coherenceScore: 0,
+      coherenceIssues: [],
+      alerts: isPartial ? ['⚠️ Diagnostic partiel — certaines sources sont manquantes. Complétez les modules manquants pour un diagnostic complet.'] : [],
+      aiSource: 'stub',
+      sources,
+      generatedAt: new Date().toISOString(),
+    }
+
+    // 6. Update record with analysis stub
+    await db.prepare(`
+      UPDATE diagnostic_analyses
+      SET analysis_json = ?, status = ?, score = 0, updated_at = datetime('now')
+      WHERE id = ?
+    `).bind(JSON.stringify(analysisStub), isPartial ? 'partial' : 'generated', diagId).run()
+
+    console.log(`[Diagnostic] Analysis stub saved. Status=${isPartial ? 'partial' : 'generated'}, sources=${availableCount}`)
+
+    return c.json({
+      success: true,
+      message: isPartial
+        ? 'Diagnostic partiel en cours de génération — données incomplètes.'
+        : 'Diagnostic en cours de génération.',
+      diagId,
+      version: newVersion,
+      status: isPartial ? 'partial' : 'generated',
+      sources,
+      availableCount,
+      partial: isPartial
+    })
+
+  } catch (error: any) {
+    console.error('[Diagnostic Generate] Error:', error)
+    return c.json({ error: error.message || 'Erreur serveur' }, 500)
+  }
+})
+
+// GET /api/diagnostic/latest/:pmeId — Returns latest diagnostic or {available: false}
+app.get('/api/diagnostic/latest/:pmeId', async (c) => {
+  try {
+    const token = getAuthToken(c) || getCookie(c, 'auth_token')
+    if (!token) return c.json({ error: 'Non authentifié' }, 401)
+    const payload = await verifyToken(token)
+    if (!payload) return c.json({ error: 'Token invalide' }, 401)
+
+    const db = c.env.DB
+    const pmeId = c.req.param('pmeId')
+    const resolvedPmeId = pmeId === 'pme_current' ? `pme_${payload.userId}` : pmeId
+
+    const row = await db.prepare(`
+      SELECT id, pme_id, version, analysis_json, score, status, sources_used, kb_used, error_message, created_at, updated_at
+      FROM diagnostic_analyses
+      WHERE user_id = ? AND pme_id = ?
+      ORDER BY created_at DESC LIMIT 1
+    `).bind(payload.userId, resolvedPmeId).first()
+
+    if (!row) {
+      return c.json({ available: false })
+    }
+
+    let analysisData = null
+    try {
+      analysisData = row.analysis_json ? JSON.parse(row.analysis_json as string) : null
+    } catch { /* ignore parse errors */ }
+
+    let sourcesUsed = null
+    try {
+      sourcesUsed = row.sources_used ? JSON.parse(row.sources_used as string) : null
+    } catch { /* ignore parse errors */ }
+
+    return c.json({
+      available: true,
+      data: {
+        id: row.id,
+        pmeId: row.pme_id,
+        version: row.version,
+        score: row.score,
+        status: row.status,
+        sources: sourcesUsed,
+        kbUsed: row.kb_used,
+        analysis: analysisData,
+        errorMessage: row.error_message,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      }
+    })
+  } catch (error: any) {
+    console.error('[Diagnostic Latest] Error:', error)
+    return c.json({ error: error.message || 'Erreur serveur' }, 500)
+  }
+})
+
+// GET /api/diagnostic/download/:id — Returns diagnostic HTML (or PDF placeholder)
+app.get('/api/diagnostic/download/:id', async (c) => {
+  try {
+    const token = getAuthToken(c) || getCookie(c, 'auth_token')
+    if (!token) return c.json({ error: 'Non authentifié' }, 401)
+    const payload = await verifyToken(token)
+    if (!payload) return c.json({ error: 'Token invalide' }, 401)
+
+    const db = c.env.DB
+    const diagId = c.req.param('id')
+    const format = c.req.query('format') || 'html'
+
+    const row = await db.prepare(`
+      SELECT id, analysis_json, html_content, status, score
+      FROM diagnostic_analyses
+      WHERE id = ? AND user_id = ?
+    `).bind(diagId, payload.userId).first()
+
+    if (!row) {
+      return c.json({ error: 'Diagnostic non trouvé' }, 404)
+    }
+
+    if (row.status === 'pending' || row.status === 'generating') {
+      return c.json({
+        error: 'Le diagnostic n\'est pas encore prêt.',
+        status: row.status,
+        message: 'Veuillez patienter ou relancer la génération via POST /api/diagnostic/generate.'
+      }, 422)
+    }
+
+    if (format === 'pdf') {
+      // PDF generation not yet implemented
+      return c.json({
+        error: 'Le format PDF n\'est pas encore disponible.',
+        message: 'Utilisez format=html pour télécharger le diagnostic en HTML.',
+        availableFormats: ['html']
+      }, 501)
+    }
+
+    // Return HTML format
+    // First check if we have pre-generated HTML content
+    if (row.html_content) {
+      return new Response(row.html_content as string, {
+        headers: {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Content-Disposition': `attachment; filename="diagnostic-expert-${diagId}.html"`,
+        }
+      })
+    }
+
+    // Fallback: check entrepreneur_deliverables for diagnostic_html
+    const diagHtmlRow = await db.prepare(
+      `SELECT content FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'diagnostic_html' ORDER BY version DESC LIMIT 1`
+    ).bind(payload.userId).first()
+
+    if (diagHtmlRow && diagHtmlRow.content) {
+      return new Response(diagHtmlRow.content as string, {
+        headers: {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Content-Disposition': `attachment; filename="diagnostic-expert-${diagId}.html"`,
+        }
+      })
+    }
+
+    // No HTML available yet — return analysis JSON as structured response
+    return c.json({
+      error: 'Le fichier HTML de diagnostic n\'a pas encore été généré.',
+      status: row.status,
+      score: row.score,
+      message: 'L\'agent IA de génération HTML sera intégré dans une prochaine version.',
+    }, 422)
+
+  } catch (error: any) {
+    console.error('[Diagnostic Download] Error:', error)
     return c.json({ error: error.message || 'Erreur serveur' }, 500)
   }
 })
