@@ -60,19 +60,15 @@
             } catch(e) {}
           }
           
-          // Redirect based on existing role or to role selection
+          // Redirect based on existing role — role is fixed at registration
           var userRole = resp.result.user && resp.result.user.role;
           if (userRole) {
-            // User already has a role — go directly
             try { localStorage.setItem('esono_role', userRole); } catch(e) {}
-            if (userRole === 'coach') {
-              window.location.href = '/coach/dashboard';
-            } else {
-              window.location.href = '/entrepreneur?token=' + encodeURIComponent(token);
-            }
+          }
+          if (userRole === 'coach') {
+            window.location.href = '/coach/dashboard';
           } else {
-            // No role yet — show role selection
-            window.location.href = '/select-role?token=' + encodeURIComponent(token);
+            window.location.href = '/entrepreneur?token=' + encodeURIComponent(token);
           }
         } else {
           if (errorMessage) {

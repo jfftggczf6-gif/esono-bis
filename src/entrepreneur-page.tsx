@@ -4147,7 +4147,6 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
     <a href="/entrepreneur" class="ev2-header__brand">ESONO</a>
     <div class="ev2-header__right">
       <span class="ev2-header__user"><strong>${user.name}</strong> · ${user.email}</span>
-      <a href="/select-role" class="ev2-btn-sm" style="background:rgba(124,58,237,0.1);color:#7c3aed;border-color:rgba(124,58,237,0.2)" title="Changer de rôle"><i class="fas fa-sync-alt"></i> <span class="ev2-hide-mobile">Changer de rôle</span></a>
       <a href="/formations" class="ev2-btn-sm" title="Micro-learning & formations"><i class="fas fa-book-open"></i> Formations</a>
       <button class="ev2-btn-sm ev2-btn-sm--danger" onclick="fetch('/api/logout',{method:'POST',credentials:'include'}).then(()=>location.href='/login')">
         <i class="fas fa-right-from-bracket"></i> Déconnexion
