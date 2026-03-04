@@ -9009,51 +9009,92 @@ function renderBusinessPlanModulePage(opts: {
     ['Dettes totales', finTable.dettes_totales],
     ['Fonds propres', finTable.fonds_propres],
   ]
-  const finTableHtml = finRows.some(([, v]) => Array.isArray(v) && v.length > 0) ? ('<div class="bp-table-wrap"><table class="bp-table"><thead><tr><th>Plan financier</th><th>1ere annee</th><th>2eme annee</th><th>3eme annee</th></tr></thead><tbody>' + finRows.map(([label, values]) => {
-    const isHL = label === "Chiffre d'affaires" || label === 'Resultat net' || label === 'Cash-flow'
-    const vals = Array.isArray(values) ? values : ['\u2014','\u2014','\u2014']
-    return '<tr class="' + (isHL ? 'bp-table__highlight' : '') + '"><td class="bp-table__label">' + esc(label) + '</td>' + vals.map((v: any) => '<td class="bp-table__num">' + esc(fmtCurrency(v)) + '</td>').join('') + '</tr>'
-  }).join('') + '</tbody></table></div>') : ''
+  const finTableHtml = finRows.some(([, v]) => Array.isArray(v) && v.length > 0) ? `
+    <div class="bp-table-wrap">
+      <table class="bp-table">
+        <thead><tr><th>Plan financier</th><th>Annee 1</th><th>Annee 2</th><th>Annee 3</th></tr></thead>
+        <tbody>${finRows.map(([label, values]) => {
+          const isHighlight = label === "Chiffre d'affaires" || label === 'Resultat net' || label === 'Cash-flow'
+          const vals = Array.isArray(values) ? values : ['\u2014','\u2014','\u2014']
+          return '<tr class="' + (isHighlight ? 'bp-table__highlight' : '') + '"><td class="bp-table__label">' + esc(label) + '</td>' + vals.map((v: any) => '<td class="bp-table__num">' + esc(fmtCurrency(v)) + '</td>').join('') + '</tr>'
+        }).join('')}</tbody>
+      </table>
+    </div>` : ''
 
-  // Chart data for financial projections
-  const caVals = Array.isArray(finTable.chiffre_affaires) ? finTable.chiffre_affaires.map((v: any) => Number(String(v).replace(/\s/g,''))) : []
-  const rnVals = Array.isArray(finTable.resultat_net) ? finTable.resultat_net.map((v: any) => Number(String(v).replace(/\s/g,''))) : []
-  const cfVals = Array.isArray(finTable.cash_flow) ? finTable.cash_flow.map((v: any) => Number(String(v).replace(/\s/g,''))) : []
-  const hasChartData = caVals.length === 3 && caVals.every((v: number) => !isNaN(v))
+  // Financial chart data (for Canvas)
+  const finChartData = {
+    ca: Array.isArray(finTable.chiffre_affaires) ? finTable.chiffre_affaires.map((v: any) => Number(String(v).replace(/\s/g,'')) || 0) : [],
+    net: Array.isArray(finTable.resultat_net) ? finTable.resultat_net.map((v: any) => Number(String(v).replace(/\s/g,'')) || 0) : [],
+    cf: Array.isArray(finTable.cash_flow) ? finTable.cash_flow.map((v: any) => Number(String(v).replace(/\s/g,'')) || 0) : [],
+  }
+  const hasFinChart = finChartData.ca.length >= 2
 
   // SWOT matrix
-  const swotHtml = (swot.forces?.length || swot.faiblesses?.length || swot.opportunites?.length || swot.menaces?.length) ? ('<div class="bp-swot"><div class="bp-swot__cell bp-swot__cell--s"><div class="bp-swot__header"><i class="fas fa-plus-circle"></i> Forces</div>' + (swot.forces || []).map((f: string) => '<div class="bp-swot__item">' + esc(f) + '</div>').join('') + '</div><div class="bp-swot__cell bp-swot__cell--w"><div class="bp-swot__header"><i class="fas fa-minus-circle"></i> Faiblesses</div>' + (swot.faiblesses || []).map((f: string) => '<div class="bp-swot__item">' + esc(f) + '</div>').join('') + '</div><div class="bp-swot__cell bp-swot__cell--o"><div class="bp-swot__header"><i class="fas fa-arrow-up-right-dots"></i> Opportunites</div>' + (swot.opportunites || []).map((f: string) => '<div class="bp-swot__item">' + esc(f) + '</div>').join('') + '</div><div class="bp-swot__cell bp-swot__cell--t"><div class="bp-swot__header"><i class="fas fa-triangle-exclamation"></i> Menaces</div>' + (swot.menaces || []).map((f: string) => '<div class="bp-swot__item">' + esc(f) + '</div>').join('') + '</div></div>') : ''
+  const swotHtml = (swot.forces?.length || swot.faiblesses?.length || swot.opportunites?.length || swot.menaces?.length) ? `
+    <div class="bp-swot">
+      <div class="bp-swot__cell bp-swot__cell--s">
+        <div class="bp-swot__header"><i class="fas fa-plus-circle"></i> Forces</div>
+        ${(swot.forces || []).map((f: string) => '<div class="bp-swot__item">' + esc(f) + '</div>').join('')}
+      </div>
+      <div class="bp-swot__cell bp-swot__cell--w">
+        <div class="bp-swot__header"><i class="fas fa-minus-circle"></i> Faiblesses</div>
+        ${(swot.faiblesses || []).map((f: string) => '<div class="bp-swot__item">' + esc(f) + '</div>').join('')}
+      </div>
+      <div class="bp-swot__cell bp-swot__cell--o">
+        <div class="bp-swot__header"><i class="fas fa-arrow-up-right-dots"></i> Opportunites</div>
+        ${(swot.opportunites || []).map((f: string) => '<div class="bp-swot__item">' + esc(f) + '</div>').join('')}
+      </div>
+      <div class="bp-swot__cell bp-swot__cell--t">
+        <div class="bp-swot__header"><i class="fas fa-triangle-exclamation"></i> Menaces</div>
+        ${(swot.menaces || []).map((f: string) => '<div class="bp-swot__item">' + esc(f) + '</div>').join('')}
+      </div>
+    </div>` : ''
 
   // Risk table
-  const riskTableHtml = Array.isArray(risques) && risques.length > 0 ? ('<div class="bp-table-wrap"><table class="bp-table"><thead><tr><th>Risque</th><th>Probabilite</th><th>Impact</th><th>Mitigation</th></tr></thead><tbody>' + risques.map((r: any) => '<tr><td>' + esc(r.risque || r.type_risque || '') + '</td><td><span class="bp-risk-badge">' + esc(r.probabilite || '\u2014') + '</span></td><td><span class="bp-risk-badge">' + esc(r.impact || r.gravite || '\u2014') + '</span></td><td>' + esc(r.mitigation || '\u2014') + '</td></tr>').join('') + '</tbody></table></div>') : ''
+  const riskTableHtml = Array.isArray(risques) && risques.length > 0 ? `
+    <div class="bp-table-wrap">
+      <table class="bp-table">
+        <thead><tr><th>Risque</th><th>Probabilite</th><th>Impact</th><th>Mitigation</th></tr></thead>
+        <tbody>${risques.map((r: any) => '<tr><td>' + esc(r.risque || r.type_risque || '') + '</td><td><span class="bp-risk-badge">' + esc(r.probabilite || '\u2014') + '</span></td><td><span class="bp-risk-badge">' + esc(r.impact || r.gravite || '\u2014') + '</span></td><td>' + esc(r.mitigation || '\u2014') + '</td></tr>').join('')}</tbody>
+      </table>
+    </div>` : ''
 
   // Company info table
   const infoTable = presentation.informations_table || {}
-  const infoEntries: [string, any][] = [['Nom', infoTable.nom], ['Site web', infoTable.site_web], ['Personne en contact', infoTable.contact], ['Adresse', infoTable.adresse], ['Telephone', infoTable.telephone], ['Email', infoTable.email], ['Date de creation', infoTable.date_creation], ['Forme juridique', infoTable.forme_juridique]]
-  const infoTableHtml = Object.keys(infoTable).length > 0 ? ('<div class="bp-table-wrap"><table class="bp-table bp-table--info"><tbody>' + infoEntries.map(([l, v]) => '<tr><td class="bp-table__label">' + esc(l) + '</td><td>' + esc(v || '\u2014') + '</td></tr>').join('') + '</tbody></table></div>') : ''
+  const infoTableHtml = Object.keys(infoTable).length > 0 ? `
+    <div class="bp-table-wrap">
+      <table class="bp-table bp-table--info">
+        <tbody>
+          ${([['Nom', infoTable.nom], ['Site web', infoTable.site_web], ['Personne en contact', infoTable.contact], ['Adresse', infoTable.adresse], ['Telephone', infoTable.telephone], ['Email', infoTable.email], ['Date de creation', infoTable.date_creation], ['Forme juridique', infoTable.forme_juridique]] as [string, any][])
+            .map(([l, v]) => '<tr><td class="bp-table__label">' + esc(l) + '</td><td>' + esc(v || '\u2014') + '</td></tr>').join('')}
+        </tbody>
+      </table>
+    </div>` : ''
 
   // Scores badges
   const scoresBadges = [
-    scores.bmc !== null && scores.bmc !== undefined ? 'BMC: ' + scores.bmc + '/100' : null,
-    scores.framework !== null && scores.framework !== undefined ? 'Framework: ' + scores.framework + '/100' : null,
-    scores.diagnostic !== null && scores.diagnostic !== undefined ? 'Diagnostic: ' + scores.diagnostic + '/100' : null,
-    scores.plan_ovo !== null && scores.plan_ovo !== undefined ? 'Plan OVO: ' + scores.plan_ovo + '/100' : null,
+    scores.bmc != null ? 'BMC: ' + scores.bmc + '/100' : null,
+    scores.framework != null ? 'Framework: ' + scores.framework + '/100' : null,
+    scores.diagnostic != null ? 'Diagnostic: ' + scores.diagnostic + '/100' : null,
+    scores.plan_ovo != null ? 'Plan OVO: ' + scores.plan_ovo + '/100' : null,
   ].filter(Boolean)
 
-  // Section completeness calculation
-  const sectionData: Record<string,any> = { resume, presentation, marche, offre, marketing, modele, operations, impact, financier, gouvernance, risques, annexes }
-  const sectionComplete = navSections.map(s => {
-    const d = sectionData[s.id]
-    if (!d) return { ...s, filled: false }
-    if (Array.isArray(d)) return { ...s, filled: d.length > 0 }
-    if (typeof d === 'object') {
-      const vals = Object.values(d).filter(v => v && v !== 'A completer')
-      return { ...s, filled: vals.length > 0 }
-    }
-    return { ...s, filled: !!d }
-  })
-  const filledCount = sectionComplete.filter(s => s.filled).length
-  const completePct = Math.round((filledCount / 12) * 100)
+  // Completeness score
+  const completenessItems = [
+    { label: 'Resume Executif', done: !!(resume.synthese || resume.points_cles?.length) },
+    { label: 'Presentation', done: !!(presentation.description_generale || Object.keys(infoTable).length > 0) },
+    { label: 'Analyse Marche', done: !!(marche.taille_marche || marche.tendances?.length) },
+    { label: 'SWOT', done: !!(swot.forces?.length || swot.faiblesses?.length) },
+    { label: 'Offre Produit', done: !!(offre.description || offre.proposition_valeur) },
+    { label: 'Marketing', done: !!(marketing.produit || marketing.prix) },
+    { label: 'Modele Economique', done: !!(modele.segments_clients || modele.sources_revenus) },
+    { label: 'Plan Operationnel', done: !!(operations.equipe_direction?.length || operations.personnel) },
+    { label: 'Impact Social', done: !!(impact.impact_social || impact.odd_cibles?.length) },
+    { label: 'Plan Financier', done: !!(finTableHtml || financier.plan_investissement) },
+    { label: 'Gouvernance', done: !!(gouvernance.projet_description || gouvernance.situation_actuelle) },
+    { label: 'Risques', done: !!(Array.isArray(risques) && risques.length > 0) },
+  ]
+  const completenessScore = Math.round((completenessItems.filter(c => c.done).length / completenessItems.length) * 100)
 
   return `<!DOCTYPE html>
 <html lang="fr">
@@ -9062,230 +9103,240 @@ function renderBusinessPlanModulePage(opts: {
   <title>ESONO | Business Plan \u2014 ${esc(companyName)}</title>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.5.0/css/all.min.css" rel="stylesheet">
-  ${hasChartData ? '<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"><\/script>' : ''}
+  ${hasFinChart ? '<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"><\/script>' : ''}
   <style>
     :root {
-      --bp-violet: #7c3aed; --bp-violet-light: #a78bfa; --bp-violet-bg: rgba(124,58,237,0.08);
-      --bp-violet-dark: #5b21b6; --bp-violet-glow: rgba(124,58,237,0.25);
-      --bp-dark: #0f172a; --bp-card: #1e293b; --bp-border: #334155;
-      --bp-text: #e2e8f0; --bp-text-muted: #94a3b8; --bp-text-dim: #64748b;
-      --bp-success: #059669; --bp-warning: #d97706; --bp-danger: #dc2626; --bp-info: #0284c7;
-      --bp-radius: 14px; --bp-radius-sm: 10px; --bp-radius-xs: 6px;
-      --bp-title: 24px; --bp-subtitle: 18px; --bp-body: 14px;
-      --bp-gap-section: 24px; --bp-gap-element: 16px;
+      --bp-violet: #7c3aed;
+      --bp-violet-light: #a78bfa;
+      --bp-violet-bg: rgba(124,58,237,0.08);
+      --bp-violet-glow: rgba(124,58,237,0.25);
+      --bp-dark: #0f172a;
+      --bp-card: #1e293b;
+      --bp-border: #334155;
+      --bp-text: #e2e8f0;
+      --bp-text-muted: #94a3b8;
+      --bp-text-dim: #64748b;
+      --bp-success: #059669;
+      --bp-warning: #d97706;
+      --bp-danger: #dc2626;
+      --bp-info: #0284c7;
+      --bp-radius: 16px;
+      --bp-radius-sm: 10px;
+      --bp-radius-xs: 6px;
+      --bp-title-size: 24px;
+      --bp-subtitle-size: 18px;
+      --bp-body-size: 14px;
+      --bp-section-gap: 24px;
+      --bp-element-gap: 16px;
+      --bp-sidebar-w: 280px;
     }
     *{margin:0;padding:0;box-sizing:border-box}
-    html{scroll-behavior:smooth;scroll-padding-top:20px}
-    body{background:var(--bp-dark);color:var(--bp-text);font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh;line-height:1.6;font-size:var(--bp-body)}
+    html{scroll-behavior:smooth;-webkit-font-smoothing:antialiased}
+    body{background:var(--bp-dark);color:var(--bp-text);font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh;line-height:1.6;font-size:var(--bp-body-size)}
 
     /* ===== LAYOUT ===== */
     .bp-layout{display:flex;min-height:100vh}
-    .bp-sidebar{width:290px;position:fixed;top:0;left:0;bottom:0;background:linear-gradient(180deg,#1a1040 0%,#111827 100%);border-right:1px solid rgba(124,58,237,0.2);display:flex;flex-direction:column;z-index:100;transition:transform 0.3s cubic-bezier(.4,0,.2,1)}
-    .bp-sidebar__brand{padding:24px 22px 20px;border-bottom:1px solid rgba(124,58,237,0.15)}
+    .bp-sidebar{width:var(--bp-sidebar-w);position:fixed;top:0;left:0;bottom:0;background:linear-gradient(180deg,#111827 0%,#0f0d1a 100%);border-right:1px solid var(--bp-border);display:flex;flex-direction:column;z-index:100;transition:transform .3s cubic-bezier(.4,0,.2,1)}
+    .bp-sidebar__brand{padding:24px 20px 18px;border-bottom:1px solid var(--bp-border)}
     .bp-sidebar__logo{font-size:22px;font-weight:800;background:linear-gradient(135deg,#7c3aed,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:1.5px}
-    .bp-sidebar__company{font-size:12px;color:var(--bp-text-muted);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .bp-sidebar__company{font-size:11px;color:var(--bp-text-muted);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .bp-sidebar__progress{padding:16px 20px;border-bottom:1px solid var(--bp-border)}
+    .bp-sidebar__progress-label{font-size:11px;font-weight:700;color:var(--bp-text-dim);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;display:flex;justify-content:space-between}
+    .bp-sidebar__progress-bar{height:6px;background:rgba(255,255,255,.06);border-radius:3px;overflow:hidden}
+    .bp-sidebar__progress-fill{height:100%;background:linear-gradient(90deg,#7c3aed,#a78bfa);border-radius:3px;transition:width .6s ease}
+    .bp-sidebar__nav{flex:1;overflow-y:auto;padding:12px 10px;scrollbar-width:thin;scrollbar-color:rgba(124,58,237,.3) transparent}
+    .bp-sidebar__link{display:flex;align-items:center;gap:10px;padding:9px 14px;border-radius:var(--bp-radius-sm);font-size:13px;font-weight:500;color:var(--bp-text-muted);text-decoration:none;transition:all .2s;cursor:pointer;border:none;background:none;width:100%;text-align:left;position:relative}
+    .bp-sidebar__link:hover{background:var(--bp-violet-bg);color:var(--bp-violet-light)}
+    .bp-sidebar__link--active{font-weight:700;color:white;background:rgba(124,58,237,.18)}
+    .bp-sidebar__link--active::before{content:'';position:absolute;left:0;top:50%;transform:translateY(-50%);width:3px;height:20px;background:var(--bp-violet);border-radius:0 3px 3px 0}
+    .bp-sidebar__icon{width:28px;height:28px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0;background:rgba(124,58,237,.12);color:var(--bp-violet-light)}
+    .bp-sidebar__num{font-size:10px;font-weight:800;color:var(--bp-text-dim);margin-left:auto;min-width:18px;text-align:center}
+    .bp-sidebar__check{color:var(--bp-success);font-size:10px;margin-left:auto}
+    .bp-sidebar__actions{padding:12px 14px;border-top:1px solid var(--bp-border);display:flex;flex-direction:column;gap:8px}
+    .bp-sidebar__footer{padding:14px 20px;border-top:1px solid var(--bp-border);font-size:10px;color:var(--bp-text-dim);text-align:center}
 
-    /* Progress ring in sidebar */
-    .bp-sidebar__progress{padding:16px 22px;border-bottom:1px solid rgba(124,58,237,0.1)}
-    .bp-progress-ring{display:flex;align-items:center;gap:14px}
-    .bp-progress-ring__circle{width:48px;height:48px;position:relative;flex-shrink:0}
-    .bp-progress-ring__circle svg{transform:rotate(-90deg)}
-    .bp-progress-ring__pct{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;color:var(--bp-violet-light)}
-    .bp-progress-ring__info{font-size:12px;color:var(--bp-text-muted);line-height:1.5}
-    .bp-progress-ring__info strong{color:var(--bp-text);display:block;font-size:13px}
+    .bp-main{margin-left:var(--bp-sidebar-w);flex:1;min-width:0}
 
-    .bp-sidebar__nav{flex:1;overflow-y:auto;padding:10px 10px;scrollbar-width:thin;scrollbar-color:rgba(124,58,237,0.3) transparent}
-    .bp-sidebar__nav::-webkit-scrollbar{width:4px}
-    .bp-sidebar__nav::-webkit-scrollbar-thumb{background:rgba(124,58,237,0.3);border-radius:4px}
-    .bp-nav-item{display:flex;align-items:center;gap:12px;padding:10px 14px;border-radius:var(--bp-radius-sm);font-size:13px;font-weight:500;color:var(--bp-text-muted);text-decoration:none;transition:all 0.2s;cursor:pointer;border:none;background:none;width:100%;text-align:left;position:relative}
-    .bp-nav-item:hover{background:var(--bp-violet-bg);color:var(--bp-violet-light)}
-    .bp-nav-item--active{background:rgba(124,58,237,0.18);color:white;font-weight:700}
-    .bp-nav-item--active::before{content:'';position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:0 3px 3px 0;background:var(--bp-violet)}
-    .bp-nav-item__icon{width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0;background:rgba(124,58,237,0.12);color:var(--bp-violet-light)}
-    .bp-nav-item__check{margin-left:auto;font-size:10px;opacity:0.5}
-    .bp-nav-item__check--done{color:#6ee7b7;opacity:1}
-
-    .bp-sidebar__actions{padding:14px 16px;border-top:1px solid rgba(124,58,237,0.1);display:flex;flex-direction:column;gap:8px}
-    .bp-sidebar__footer{padding:14px 22px;border-top:1px solid rgba(124,58,237,0.08);font-size:11px;color:var(--bp-text-dim);text-align:center}
-
-    .bp-main{margin-left:290px;flex:1;min-width:0}
-
-    /* Mobile toggle */
-    .bp-mobile-toggle{display:none;position:fixed;top:16px;left:16px;z-index:200;width:48px;height:48px;border-radius:14px;background:linear-gradient(135deg,var(--bp-violet),var(--bp-violet-dark));color:white;border:none;font-size:18px;cursor:pointer;box-shadow:0 4px 16px var(--bp-violet-glow)}
-    .bp-sidebar__close{display:none;position:absolute;top:20px;right:16px;width:32px;height:32px;border-radius:8px;background:rgba(255,255,255,0.08);color:white;border:none;cursor:pointer;font-size:14px}
-    .bp-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:90;backdrop-filter:blur(4px)}
+    /* Mobile */
+    .bp-mobile-toggle{display:none;position:fixed;top:16px;left:16px;z-index:200;width:44px;height:44px;border-radius:12px;background:var(--bp-violet);color:white;border:none;font-size:18px;cursor:pointer;box-shadow:0 4px 16px var(--bp-violet-glow)}
+    .bp-sidebar__close{display:none;position:absolute;top:16px;right:16px;width:32px;height:32px;border-radius:8px;background:rgba(255,255,255,.1);color:white;border:none;cursor:pointer;font-size:14px}
+    .bp-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:90;backdrop-filter:blur(2px)}
 
     /* ===== HEADER ===== */
-    .bp-header{padding:36px 44px 32px;background:linear-gradient(135deg,#1e1040 0%,#2e1065 40%,#4c1d95 70%,#5b21b6 100%);position:relative;overflow:hidden}
-    .bp-header::before{content:'';position:absolute;top:-80%;right:-15%;width:500px;height:500px;border-radius:50%;background:radial-gradient(circle,rgba(124,58,237,0.2),transparent 70%)}
-    .bp-header::after{content:'';position:absolute;bottom:-60%;left:10%;width:400px;height:400px;border-radius:50%;background:radial-gradient(circle,rgba(167,139,250,0.1),transparent 70%)}
-    .bp-header__back{display:inline-flex;align-items:center;gap:8px;color:rgba(255,255,255,0.5);text-decoration:none;font-size:13px;font-weight:500;margin-bottom:20px;transition:color 0.2s;position:relative;z-index:1}
+    .bp-header{padding:36px 40px 30px;background:linear-gradient(135deg,#1e1b4b 0%,#312e81 40%,#4c1d95 100%);position:relative;overflow:hidden}
+    .bp-header::before{content:'';position:absolute;top:-80%;right:-15%;width:500px;height:500px;border-radius:50%;background:radial-gradient(circle,rgba(124,58,237,.2) 0%,transparent 70%)}
+    .bp-header::after{content:'';position:absolute;bottom:-40%;left:-10%;width:300px;height:300px;border-radius:50%;background:radial-gradient(circle,rgba(167,139,250,.1) 0%,transparent 70%)}
+    .bp-header__back{display:inline-flex;align-items:center;gap:6px;color:rgba(255,255,255,.55);text-decoration:none;font-size:13px;margin-bottom:18px;transition:color .2s;position:relative;z-index:1}
     .bp-header__back:hover{color:white}
     .bp-header__row{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;flex-wrap:wrap;position:relative;z-index:1}
-    .bp-header__title{font-size:var(--bp-title);font-weight:800;color:white;line-height:1.25;letter-spacing:-0.3px}
+    .bp-header__title{font-size:var(--bp-title-size);font-weight:800;color:white;line-height:1.2;letter-spacing:-.3px}
     .bp-header__meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
-    .bp-header__tag{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;border-radius:20px;font-size:12px;font-weight:600;background:rgba(255,255,255,0.1);color:rgba(255,255,255,0.8);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,0.06)}
-    .bp-header__tag--version{background:rgba(124,58,237,0.35);color:#c4b5fd;border-color:rgba(124,58,237,0.3)}
-    .bp-header__tag--ai{background:rgba(5,150,105,0.25);color:#6ee7b7;border-color:rgba(5,150,105,0.2)}
+    .bp-header__tag{display:inline-flex;align-items:center;gap:6px;padding:5px 14px;border-radius:20px;font-size:12px;font-weight:600;background:rgba(255,255,255,.1);color:rgba(255,255,255,.8);backdrop-filter:blur(8px)}
+    .bp-header__tag--version{background:rgba(124,58,237,.35);color:#c4b5fd}
+    .bp-header__tag--ai{background:rgba(5,150,105,.25);color:#6ee7b7}
+    .bp-header__tag--status{background:rgba(5,150,105,.2);color:#6ee7b7}
     .bp-header__scores{display:flex;gap:6px;flex-wrap:wrap;align-items:flex-start}
-    .bp-header__score{padding:5px 12px;border-radius:16px;font-size:11px;font-weight:700;background:rgba(255,255,255,0.06);color:rgba(255,255,255,0.65);border:1px solid rgba(255,255,255,0.05)}
+    .bp-header__score{padding:4px 10px;border-radius:16px;font-size:11px;font-weight:700;background:rgba(255,255,255,.08);color:rgba(255,255,255,.65)}
 
     /* ===== CONTENT ===== */
-    .bp-content{padding:var(--bp-gap-section) 44px 60px}
+    .bp-content{padding:28px 40px 60px;max-width:1100px}
 
-    /* ===== SECTION BLOCKS ===== */
-    .bp-section{background:var(--bp-card);border:1px solid var(--bp-border);border-radius:var(--bp-radius);margin-bottom:var(--bp-gap-section);overflow:hidden;scroll-margin-top:20px;transition:border-color 0.3s}
-    .bp-section:hover{border-color:rgba(124,58,237,0.25)}
-    .bp-section__head{display:flex;align-items:center;gap:16px;padding:22px 28px;border-bottom:1px solid var(--bp-border);background:rgba(15,23,42,0.3)}
-    .bp-section__num{width:40px;height:40px;border-radius:var(--bp-radius-sm);display:flex;align-items:center;justify-content:center;color:white;font-size:15px;font-weight:800;flex-shrink:0;background:var(--bp-violet);box-shadow:0 2px 8px var(--bp-violet-glow)}
-    .bp-section__title{font-size:var(--bp-subtitle);font-weight:700;color:var(--bp-text)}
-    .bp-section__body{padding:var(--bp-gap-section) 28px}
+    /* ===== SECTIONS ===== */
+    .bp-section{background:var(--bp-card);border:1px solid var(--bp-border);border-radius:var(--bp-radius);margin-bottom:var(--bp-section-gap);overflow:hidden;scroll-margin-top:24px;transition:border-color .3s}
+    .bp-section:hover{border-color:rgba(124,58,237,.25)}
+    .bp-section__head{display:flex;align-items:center;gap:14px;padding:20px 28px;border-bottom:1px solid var(--bp-border);background:rgba(15,23,42,.3)}
+    .bp-section__num{width:38px;height:38px;border-radius:var(--bp-radius-sm);display:flex;align-items:center;justify-content:center;color:white;font-size:14px;font-weight:800;flex-shrink:0;background:var(--bp-violet)}
+    .bp-section__title{font-size:var(--bp-subtitle-size);font-weight:700;color:var(--bp-text)}
+    .bp-section__body{padding:24px 28px}
 
     /* ===== SUB-SECTIONS ===== */
-    .bp-sub{margin-bottom:var(--bp-gap-section)}
+    .bp-sub{margin-bottom:var(--bp-section-gap)}
     .bp-sub:last-child{margin-bottom:0}
-    .bp-sub__title{font-size:15px;font-weight:700;color:var(--bp-text);margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid rgba(124,58,237,0.12);display:flex;align-items:center;gap:10px}
+    .bp-sub__title{font-size:15px;font-weight:700;color:var(--bp-text);margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid rgba(51,65,85,.4);display:flex;align-items:center;gap:8px}
     .bp-sub__title i{color:var(--bp-violet-light);font-size:13px}
 
-    /* ===== PARAGRAPHS ===== */
-    .bp-para{font-size:var(--bp-body);color:var(--bp-text-muted);line-height:1.85;margin-bottom:var(--bp-gap-element)}
+    /* ===== TEXT ===== */
+    .bp-para{font-size:var(--bp-body-size);color:var(--bp-text-muted);line-height:1.85;margin-bottom:var(--bp-element-gap)}
     .bp-para:last-child{margin-bottom:0}
-    .bp-empty{font-size:13px;color:var(--bp-text-dim);font-style:italic;padding:10px 0}
+    .bp-empty{font-size:13px;color:var(--bp-text-dim);font-style:italic;padding:8px 0}
 
     /* ===== LISTS ===== */
     .bp-list{list-style:none;padding:0;margin:0}
-    .bp-list li{position:relative;padding:7px 0 7px 24px;font-size:14px;color:var(--bp-text-muted);line-height:1.75}
-    .bp-list li::before{content:'';position:absolute;left:2px;top:16px;width:8px;height:8px;border-radius:50%;background:var(--bp-violet);opacity:0.5}
+    .bp-list li{position:relative;padding:7px 0 7px 24px;font-size:var(--bp-body-size);color:var(--bp-text-muted);line-height:1.75}
+    .bp-list li::before{content:'';position:absolute;left:0;top:15px;width:8px;height:8px;border-radius:50%;background:var(--bp-violet);opacity:.5}
 
     /* ===== KEY-VALUE ===== */
-    .bp-kv{display:flex;gap:16px;padding:12px 0;border-bottom:1px solid rgba(51,65,85,0.25)}
+    .bp-kv{display:flex;gap:12px;padding:10px 0;border-bottom:1px solid rgba(51,65,85,.25)}
     .bp-kv:last-child{border-bottom:none}
     .bp-kv__label{font-size:13px;font-weight:600;color:var(--bp-text);min-width:170px;flex-shrink:0}
     .bp-kv__value{font-size:13px;color:var(--bp-text-muted);flex:1}
 
     /* ===== BADGES ===== */
     .bp-badge{display:inline-flex;align-items:center;gap:5px;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:700}
-    .bp-badges{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0}
+    .bp-badges{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
 
     /* ===== CARDS ===== */
-    .bp-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:var(--bp-gap-element)}
-    .bp-card-item{background:rgba(124,58,237,0.05);border:1px solid rgba(124,58,237,0.12);border-radius:var(--bp-radius-sm);padding:18px;transition:border-color 0.2s,transform 0.2s}
-    .bp-card-item:hover{border-color:rgba(124,58,237,0.3);transform:translateY(-1px)}
-    .bp-card-item__title{font-size:14px;font-weight:700;color:var(--bp-text);margin-bottom:8px}
-    .bp-card-item__desc{font-size:13px;color:var(--bp-text-muted);line-height:1.65}
+    .bp-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:14px}
+    .bp-card-item{background:rgba(124,58,237,.05);border:1px solid rgba(124,58,237,.15);border-radius:var(--bp-radius-sm);padding:18px;transition:border-color .2s,transform .2s}
+    .bp-card-item:hover{border-color:rgba(124,58,237,.35);transform:translateY(-1px)}
+    .bp-card-item__title{font-size:var(--bp-body-size);font-weight:700;color:var(--bp-text);margin-bottom:6px}
+    .bp-card-item__desc{font-size:12.5px;color:var(--bp-text-muted);line-height:1.65}
 
     /* ===== STAT CARDS ===== */
-    .bp-stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:var(--bp-gap-element);margin-bottom:20px}
-    .bp-stat{background:linear-gradient(135deg,rgba(124,58,237,0.08),rgba(99,102,241,0.05));border:1px solid rgba(124,58,237,0.15);border-radius:var(--bp-radius-sm);padding:20px;text-align:center}
-    .bp-stat__value{font-size:22px;font-weight:800;color:white;margin-bottom:6px}
-    .bp-stat__label{font-size:11px;color:var(--bp-text-dim);font-weight:600;text-transform:uppercase;letter-spacing:0.6px}
+    .bp-stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:14px;margin-bottom:20px}
+    .bp-stat{background:linear-gradient(135deg,rgba(124,58,237,.08),rgba(99,102,241,.04));border:1px solid rgba(124,58,237,.18);border-radius:var(--bp-radius-sm);padding:20px;text-align:center}
+    .bp-stat__value{font-size:22px;font-weight:800;color:white;margin-bottom:4px;letter-spacing:-.3px}
+    .bp-stat__label{font-size:11px;color:var(--bp-text-dim);font-weight:600;text-transform:uppercase;letter-spacing:.5px}
 
     /* ===== TABLES ===== */
-    .bp-table-wrap{overflow-x:auto;margin:var(--bp-gap-element) 0;border-radius:var(--bp-radius-sm);border:1px solid var(--bp-border)}
+    .bp-table-wrap{overflow-x:auto;margin:var(--bp-element-gap) 0;border-radius:var(--bp-radius-sm);border:1px solid var(--bp-border)}
     .bp-table{width:100%;border-collapse:collapse;font-size:13px}
-    .bp-table th{background:rgba(124,58,237,0.1);color:var(--bp-violet-light);font-weight:700;padding:14px 18px;text-align:left;border-bottom:2px solid rgba(124,58,237,0.2);white-space:nowrap}
-    .bp-table td{padding:12px 18px;border-bottom:1px solid rgba(51,65,85,0.25);color:var(--bp-text-muted)}
+    .bp-table th{background:rgba(124,58,237,.1);color:var(--bp-violet-light);font-weight:700;padding:12px 16px;text-align:left;border-bottom:2px solid rgba(124,58,237,.2);white-space:nowrap}
+    .bp-table td{padding:10px 16px;border-bottom:1px solid rgba(51,65,85,.25);color:var(--bp-text-muted)}
     .bp-table__label{font-weight:600;color:var(--bp-text)}
     .bp-table__num{text-align:right;font-variant-numeric:tabular-nums;font-weight:500}
-    .bp-table__highlight td{background:rgba(124,58,237,0.06);font-weight:700;color:var(--bp-text)}
-    .bp-table--info td:first-child{width:190px;font-weight:600;color:var(--bp-text)}
+    .bp-table__highlight td{background:rgba(124,58,237,.06);font-weight:700;color:var(--bp-text)}
+    .bp-table--info td:first-child{width:180px;font-weight:600;color:var(--bp-text)}
 
     /* ===== SWOT ===== */
-    .bp-swot{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:var(--bp-gap-element) 0}
-    .bp-swot__cell{border-radius:var(--bp-radius-sm);padding:18px;min-height:130px}
-    .bp-swot__cell--s{background:rgba(5,150,105,0.08);border:1px solid rgba(5,150,105,0.2)}
-    .bp-swot__cell--w{background:rgba(234,88,12,0.06);border:1px solid rgba(234,88,12,0.15)}
-    .bp-swot__cell--o{background:rgba(37,99,235,0.06);border:1px solid rgba(37,99,235,0.15)}
-    .bp-swot__cell--t{background:rgba(220,38,38,0.06);border:1px solid rgba(220,38,38,0.15)}
-    .bp-swot__header{font-size:14px;font-weight:700;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+    .bp-swot{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:var(--bp-element-gap) 0}
+    .bp-swot__cell{border-radius:var(--bp-radius-sm);padding:18px;min-height:120px}
+    .bp-swot__cell--s{background:rgba(5,150,105,.08);border:1px solid rgba(5,150,105,.2)}
+    .bp-swot__cell--w{background:rgba(234,88,12,.06);border:1px solid rgba(234,88,12,.18)}
+    .bp-swot__cell--o{background:rgba(37,99,235,.06);border:1px solid rgba(37,99,235,.18)}
+    .bp-swot__cell--t{background:rgba(220,38,38,.06);border:1px solid rgba(220,38,38,.18)}
+    .bp-swot__header{font-size:13px;font-weight:700;margin-bottom:10px;display:flex;align-items:center;gap:8px}
     .bp-swot__cell--s .bp-swot__header{color:#6ee7b7}
     .bp-swot__cell--w .bp-swot__header{color:#fdba74}
     .bp-swot__cell--o .bp-swot__header{color:#93c5fd}
     .bp-swot__cell--t .bp-swot__header{color:#fca5a5}
-    .bp-swot__item{font-size:13px;color:var(--bp-text-muted);padding:5px 0 5px 16px;position:relative;line-height:1.6}
-    .bp-swot__item::before{content:'\u2022';position:absolute;left:0;font-weight:bold}
+    .bp-swot__item{font-size:12.5px;color:var(--bp-text-muted);padding:4px 0 4px 16px;position:relative}
+    .bp-swot__item::before{content:'\u2022';position:absolute;left:2px;font-weight:bold}
 
     /* ===== RISK BADGES ===== */
-    .bp-risk-badge{display:inline-block;padding:3px 12px;border-radius:12px;font-size:11px;font-weight:700;background:rgba(255,255,255,0.05);color:var(--bp-text-muted)}
+    .bp-risk-badge{display:inline-block;padding:3px 10px;border-radius:12px;font-size:11px;font-weight:700;background:rgba(255,255,255,.06);color:var(--bp-text-muted)}
 
     /* ===== VMV CARDS ===== */
-    .bp-vmv{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:var(--bp-gap-element);margin:14px 0}
-    .bp-vmv__card{padding:20px;border-radius:var(--bp-radius-sm);background:linear-gradient(135deg,rgba(124,58,237,0.06),rgba(99,102,241,0.04));border:1px solid rgba(124,58,237,0.1)}
-    .bp-vmv__label{font-size:11px;font-weight:700;color:var(--bp-violet-light);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:8px}
+    .bp-vmv{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px;margin:12px 0}
+    .bp-vmv__card{padding:20px;border-radius:var(--bp-radius-sm);background:linear-gradient(135deg,rgba(124,58,237,.06),rgba(99,102,241,.03));border:1px solid rgba(124,58,237,.15)}
+    .bp-vmv__label{font-size:11px;font-weight:700;color:var(--bp-violet-light);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px}
     .bp-vmv__text{font-size:13px;color:var(--bp-text-muted);line-height:1.7}
 
     /* ===== ODD BADGES ===== */
-    .bp-odd{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;border-radius:20px;font-size:12px;font-weight:700;background:rgba(225,29,72,0.1);color:#fb7185;margin:3px;border:1px solid rgba(225,29,72,0.15)}
+    .bp-odd{display:inline-flex;align-items:center;gap:5px;padding:5px 12px;border-radius:20px;font-size:12px;font-weight:700;background:rgba(225,29,72,.1);color:#fb7185;margin:3px}
 
-    /* ===== CHART CONTAINER ===== */
-    .bp-chart-wrap{position:relative;height:320px;margin:var(--bp-gap-element) 0;background:rgba(15,23,42,0.4);border-radius:var(--bp-radius-sm);padding:20px;border:1px solid var(--bp-border)}
+    /* ===== CHART ===== */
+    .bp-chart-container{position:relative;height:300px;margin:var(--bp-element-gap) 0;background:rgba(15,23,42,.4);border-radius:var(--bp-radius-sm);padding:16px;border:1px solid var(--bp-border)}
 
     /* ===== GENERATE VIEW ===== */
-    .bp-pregen{max-width:720px;margin:0 auto;padding:40px 0}
-    .bp-source-row{display:flex;align-items:center;gap:14px;padding:14px 18px;border-radius:var(--bp-radius-sm);margin-bottom:10px;border:1px solid;transition:transform 0.2s}
+    .bp-pregen{max-width:700px;margin:0 auto;padding:40px 0}
+    .bp-source-row{display:flex;align-items:center;gap:14px;padding:12px 16px;border-radius:var(--bp-radius-sm);margin-bottom:8px;border:1px solid;transition:transform .2s}
     .bp-source-row:hover{transform:translateX(4px)}
-    .bp-source-icon{width:34px;height:34px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0}
-    .gen-btn{display:inline-flex;align-items:center;gap:10px;padding:16px 40px;border-radius:14px;font-size:16px;font-weight:700;border:none;cursor:pointer;color:white;transition:all 0.25s;box-shadow:0 4px 20px var(--bp-violet-glow)}
-    .gen-btn:disabled{opacity:0.35;cursor:not-allowed;box-shadow:none}
+    .bp-source-icon{width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0}
+    .gen-btn{display:inline-flex;align-items:center;gap:10px;padding:14px 40px;border-radius:14px;font-size:15px;font-weight:700;border:none;cursor:pointer;color:white;transition:all .25s;box-shadow:0 4px 20px rgba(0,0,0,.3)}
+    .gen-btn:disabled{opacity:.4;cursor:not-allowed}
     .gen-btn--primary{background:linear-gradient(135deg,#7c3aed,#6366f1)}
-    .gen-btn--primary:not(:disabled):hover{transform:translateY(-2px);box-shadow:0 8px 30px var(--bp-violet-glow)}
+    .gen-btn--primary:not(:disabled):hover{transform:translateY(-2px);box-shadow:0 8px 28px var(--bp-violet-glow)}
 
     /* ===== DOWNLOAD BAR ===== */
-    .bp-dl-bar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:14px;padding:18px 26px;background:linear-gradient(135deg,rgba(124,58,237,0.1),rgba(99,102,241,0.06));border:1px solid rgba(124,58,237,0.2);border-radius:var(--bp-radius);margin-bottom:var(--bp-gap-section)}
-    .bp-dl-btn{display:inline-flex;align-items:center;gap:8px;padding:10px 22px;border-radius:var(--bp-radius-sm);font-size:13px;font-weight:700;border:none;cursor:pointer;color:white;text-decoration:none;transition:all 0.2s}
+    .bp-dl-bar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;padding:18px 24px;background:linear-gradient(135deg,rgba(124,58,237,.1),rgba(99,102,241,.06));border:1px solid rgba(124,58,237,.25);border-radius:var(--bp-radius);margin-bottom:var(--bp-section-gap)}
+    .bp-dl-btn{display:inline-flex;align-items:center;gap:8px;padding:10px 20px;border-radius:var(--bp-radius-sm);font-size:13px;font-weight:700;border:none;cursor:pointer;color:white;text-decoration:none;transition:all .2s}
     .bp-dl-btn--primary{background:var(--bp-violet)}
-    .bp-dl-btn--primary:hover{background:var(--bp-violet-dark);transform:translateY(-1px)}
+    .bp-dl-btn--primary:hover{background:#6d28d9;transform:translateY(-1px)}
     .bp-dl-btn--ghost{background:transparent;border:1px solid var(--bp-border);color:var(--bp-text-muted)}
-    .bp-dl-btn--ghost:hover{background:rgba(255,255,255,0.04);border-color:rgba(124,58,237,0.3)}
-
-    /* ===== SHARE MODAL ===== */
-    .bp-share-modal{display:none;position:fixed;inset:0;z-index:300;align-items:center;justify-content:center;background:rgba(0,0,0,0.7);backdrop-filter:blur(6px)}
-    .bp-share-modal--open{display:flex}
-    .bp-share-modal__box{background:var(--bp-card);border:1px solid var(--bp-border);border-radius:var(--bp-radius);padding:32px;max-width:440px;width:90%;box-shadow:0 20px 60px rgba(0,0,0,0.5)}
-    .bp-share-modal__title{font-size:18px;font-weight:700;color:var(--bp-text);margin-bottom:16px;display:flex;align-items:center;gap:10px}
-    .bp-share-modal__close{position:absolute;top:16px;right:16px;background:none;border:none;color:var(--bp-text-muted);font-size:18px;cursor:pointer}
-    .bp-share-input{width:100%;padding:12px 16px;background:var(--bp-dark);border:1px solid var(--bp-border);border-radius:var(--bp-radius-sm);color:var(--bp-text);font-size:13px;margin-bottom:12px}
-    .bp-share-input:focus{outline:none;border-color:var(--bp-violet)}
+    .bp-dl-btn--ghost:hover{background:rgba(255,255,255,.05);border-color:var(--bp-violet-light)}
 
     /* ===== BACK TO TOP ===== */
-    .bp-totop{position:fixed;bottom:28px;right:28px;width:48px;height:48px;border-radius:14px;background:linear-gradient(135deg,var(--bp-violet),var(--bp-violet-dark));color:white;border:none;font-size:16px;cursor:pointer;box-shadow:0 4px 16px var(--bp-violet-glow);opacity:0;transform:translateY(12px);transition:all 0.3s;z-index:100}
+    .bp-totop{position:fixed;bottom:28px;right:28px;width:46px;height:46px;border-radius:50%;background:var(--bp-violet);color:white;border:none;font-size:16px;cursor:pointer;box-shadow:0 4px 16px var(--bp-violet-glow);opacity:0;transform:translateY(12px);transition:all .3s;z-index:100}
     .bp-totop--visible{opacity:1;transform:translateY(0)}
-    .bp-totop:hover{transform:translateY(-2px);box-shadow:0 8px 24px var(--bp-violet-glow)}
+    .bp-totop:hover{background:#6d28d9;transform:translateY(-2px)!important}
+
+    /* ===== SHARE MODAL ===== */
+    .bp-share-modal{display:none;position:fixed;inset:0;z-index:300;align-items:center;justify-content:center;background:rgba(0,0,0,.65);backdrop-filter:blur(4px)}
+    .bp-share-modal--open{display:flex}
+    .bp-share-modal__box{background:var(--bp-card);border:1px solid var(--bp-border);border-radius:var(--bp-radius);padding:32px;max-width:460px;width:90%;position:relative}
+    .bp-share-modal__close{position:absolute;top:16px;right:16px;background:none;border:none;color:var(--bp-text-muted);cursor:pointer;font-size:16px}
+    .bp-share-modal__title{font-size:var(--bp-subtitle-size);font-weight:700;color:var(--bp-text);margin-bottom:16px}
+    .bp-share-modal__input{display:flex;gap:8px}
+    .bp-share-modal__url{flex:1;background:var(--bp-dark);border:1px solid var(--bp-border);border-radius:var(--bp-radius-xs);padding:10px 14px;color:var(--bp-text);font-size:13px;font-family:monospace}
+    .bp-share-modal__copy{background:var(--bp-violet);color:white;border:none;border-radius:var(--bp-radius-xs);padding:10px 18px;font-size:13px;font-weight:700;cursor:pointer}
+    .bp-share-modal__copy:hover{background:#6d28d9}
+    .bp-share-modal__msg{display:none;margin-top:10px;color:#6ee7b7;font-size:12px;font-weight:600}
 
     /* ===== PRINT ===== */
     @media print {
-      body{background:white!important;color:#1f2937!important;font-size:11pt}
+      body{background:white!important;color:#1f2937!important;font-size:12px!important}
       .bp-sidebar,.bp-mobile-toggle,.bp-totop,.bp-dl-bar,.gen-btn,.bp-header__back,.bp-sidebar__actions,.bp-overlay,.bp-share-modal{display:none!important}
       .bp-main{margin-left:0!important}
-      .bp-header{background:#f3f0ff!important;-webkit-print-color-adjust:exact;print-color-adjust:exact;padding:24px 20px!important}
-      .bp-header__title{color:#4c1d95!important;font-size:20pt!important}
-      .bp-header__tag{background:#ede9fe!important;color:#5b21b6!important;border:1px solid #c4b5fd!important}
-      .bp-content{padding:16px 20px!important}
-      .bp-section{border:1px solid #e5e7eb!important;break-inside:avoid;margin-bottom:16px!important;box-shadow:none!important}
-      .bp-section__head{background:#f9fafb!important;border-bottom:1px solid #e5e7eb!important}
-      .bp-section__num{background:#7c3aed!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
-      .bp-section__title{color:#1f2937!important}
-      .bp-section__body{padding:16px 20px!important}
-      .bp-para,.bp-list li,.bp-kv__value,.bp-swot__item,.bp-table td,.bp-card-item__desc,.bp-vmv__text{color:#374151!important}
-      .bp-kv__label,.bp-table__label,.bp-card-item__title,.bp-sub__title{color:#1f2937!important}
-      .bp-chart-wrap{height:250px!important;border:1px solid #e5e7eb!important}
-      .bp-swot__cell{border:1px solid #d1d5db!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
-      a{color:#4c1d95!important;text-decoration:none}
+      .bp-header{background:#f3f4f6!important;padding:20px!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+      .bp-header__title{color:#1f2937!important;font-size:20px!important}
+      .bp-header__tag{background:#e5e7eb!important;color:#374151!important}
+      .bp-content{padding:0 16px!important}
+      .bp-section{border-color:#e5e7eb!important;break-inside:avoid;margin-bottom:16px!important;box-shadow:none!important}
+      .bp-section:hover{border-color:#e5e7eb!important}
+      .bp-section__head{background:#f9fafb!important}
+      .bp-section__num{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+      .bp-section__body,.bp-para,.bp-list li,.bp-kv__value,.bp-swot__item,.bp-table td{color:#374151!important}
+      .bp-card-item{background:#f9fafb!important;border-color:#e5e7eb!important}
+      .bp-chart-container{height:250px!important}
+      .bp-stat{background:#f3f4f6!important;border-color:#e5e7eb!important}
+      .bp-stat__value{color:#1f2937!important}
     }
 
     /* ===== RESPONSIVE ===== */
     @media(max-width:1024px){
       .bp-sidebar{transform:translateX(-100%)}
-      .bp-sidebar--open{transform:translateX(0);box-shadow:8px 0 40px rgba(0,0,0,0.5)}
+      .bp-sidebar--open{transform:translateX(0);box-shadow:4px 0 30px rgba(0,0,0,.5)}
       .bp-sidebar__close{display:flex;align-items:center;justify-content:center}
       .bp-mobile-toggle{display:flex;align-items:center;justify-content:center}
       .bp-overlay--visible{display:block}
       .bp-main{margin-left:0}
-      .bp-header{padding:24px 20px 22px}
+      .bp-header{padding:24px 20px 20px}
       .bp-header__title{font-size:20px}
       .bp-content{padding:20px 16px 60px}
-      .bp-section__head{padding:18px 20px}
-      .bp-section__body{padding:20px}
+      .bp-section__head{padding:16px 20px}
+      .bp-section__body{padding:18px 20px}
+      .bp-section__title{font-size:16px}
       .bp-swot{grid-template-columns:1fr}
       .bp-kv{flex-direction:column;gap:4px}
       .bp-kv__label{min-width:auto}
@@ -9295,8 +9346,8 @@ function renderBusinessPlanModulePage(opts: {
       .bp-stats{grid-template-columns:1fr 1fr}
       .bp-vmv{grid-template-columns:1fr}
       .bp-header__row{flex-direction:column}
-      .bp-dl-bar{flex-direction:column;text-align:center}
-      .bp-chart-wrap{height:240px;padding:12px}
+      .bp-dl-bar{flex-direction:column;align-items:stretch;text-align:center}
+      .bp-chart-container{height:220px}
     }
     ${embedded ? '.bp-sidebar,.bp-mobile-toggle,.bp-header__back,.bp-sidebar__actions,.bp-totop,.bp-overlay{display:none!important}.bp-main{margin-left:0!important}' : ''}
   </style>
@@ -9307,40 +9358,30 @@ function renderBusinessPlanModulePage(opts: {
 <button class="bp-mobile-toggle" onclick="toggleSidebar()" aria-label="Menu">
   <i class="fas fa-bars"></i>
 </button>
-<div class="bp-overlay" id="bpOverlay" onclick="toggleSidebar()"></div>
+<div class="bp-overlay" id="bpOverlay" onclick="closeSidebar()"></div>
 
 <div class="bp-layout">
   <!-- SIDEBAR -->
   ${hasBp ? `
   <aside class="bp-sidebar" id="bpSidebar">
-    <button class="bp-sidebar__close" onclick="toggleSidebar()" aria-label="Fermer"><i class="fas fa-times"></i></button>
+    <button class="bp-sidebar__close" onclick="closeSidebar()" aria-label="Fermer"><i class="fas fa-times"></i></button>
     <div class="bp-sidebar__brand">
       <div class="bp-sidebar__logo">ESONO</div>
       <div class="bp-sidebar__company">${esc(companyName)} \u2014 v${bpVersion}</div>
     </div>
     <div class="bp-sidebar__progress">
-      <div class="bp-progress-ring">
-        <div class="bp-progress-ring__circle">
-          <svg width="48" height="48" viewBox="0 0 48 48">
-            <circle cx="24" cy="24" r="20" fill="none" stroke="rgba(124,58,237,0.15)" stroke-width="4"/>
-            <circle cx="24" cy="24" r="20" fill="none" stroke="#7c3aed" stroke-width="4" stroke-linecap="round" stroke-dasharray="${Math.round(125.6 * completePct / 100)} 125.6"/>
-          </svg>
-          <span class="bp-progress-ring__pct">${completePct}%</span>
-        </div>
-        <div class="bp-progress-ring__info">
-          <strong>${filledCount}/12 sections</strong>
-          Completude du plan
-        </div>
-      </div>
+      <div class="bp-sidebar__progress-label"><span>Completude</span><span>${completenessScore}%</span></div>
+      <div class="bp-sidebar__progress-bar"><div class="bp-sidebar__progress-fill" style="width:${completenessScore}%"></div></div>
     </div>
     <nav class="bp-sidebar__nav" id="bpNav">
-      ${sectionComplete.map(s => `
-        <a class="bp-nav-item" data-section="${s.id}" onclick="scrollToSection('${s.id}');closeSidebar()">
-          <span class="bp-nav-item__icon"><i class="fas ${s.icon}"></i></span>
-          <span>${esc(s.label)}</span>
-          <span class="bp-nav-item__check ${s.filled ? 'bp-nav-item__check--done' : ''}"><i class="fas ${s.filled ? 'fa-check-circle' : 'fa-circle'}"></i></span>
-        </a>
-      `).join('')}
+      ${navSections.map((s, i) => {
+        const done = completenessItems[i]?.done
+        return '<a class="bp-sidebar__link" data-section="' + s.id + '" onclick="scrollToSection(\'' + s.id + '\');closeSidebar()">' +
+          '<span class="bp-sidebar__icon"><i class="fas ' + s.icon + '"></i></span>' +
+          esc(s.label) +
+          (done ? '<span class="bp-sidebar__check"><i class="fas fa-check-circle"></i></span>' : '<span class="bp-sidebar__num">' + s.num + '</span>') +
+          '</a>'
+      }).join('')}
     </nav>
     <div class="bp-sidebar__actions">
       ${bpId ? '<a href="/api/business-plan/download/' + bpId + '?format=docx" class="bp-dl-btn bp-dl-btn--primary" style="justify-content:center"><i class="fas fa-file-word"></i> Telecharger Word</a>' : ''}
@@ -9352,6 +9393,7 @@ function renderBusinessPlanModulePage(opts: {
 
   <!-- MAIN -->
   <main class="bp-main">
+
     <!-- Header -->
     <div class="bp-header">
       ${embedded ? '' : '<a href="/entrepreneur" class="bp-header__back"><i class="fas fa-arrow-left"></i> Retour au tableau de bord</a>'}
@@ -9365,6 +9407,7 @@ function renderBusinessPlanModulePage(opts: {
               ${genDate ? '<span class="bp-header__tag"><i class="fas fa-calendar"></i> ' + genDate + '</span>' : ''}
               <span class="bp-header__tag bp-header__tag--version"><i class="fas fa-code-branch"></i> Version ${bpVersion}</span>
               ${isAI ? '<span class="bp-header__tag bp-header__tag--ai"><i class="fas fa-robot"></i> IA</span>' : ''}
+              <span class="bp-header__tag bp-header__tag--status"><i class="fas fa-circle-check"></i> ${esc(bpStatus || 'completed')}</span>
             ` : '<span class="bp-header__tag"><i class="fas fa-info-circle"></i> Document non encore genere</span>'}
           </div>
         </div>
@@ -9378,12 +9421,10 @@ function renderBusinessPlanModulePage(opts: {
       <!-- Download bar -->
       <div class="bp-dl-bar">
         <div style="display:flex;align-items:center;gap:14px">
-          <div style="width:44px;height:44px;border-radius:12px;background:rgba(5,150,105,0.15);display:flex;align-items:center;justify-content:center">
-            <i class="fas fa-check-circle" style="font-size:22px;color:#6ee7b7"></i>
-          </div>
+          <div style="width:44px;height:44px;border-radius:12px;background:rgba(5,150,105,.15);display:flex;align-items:center;justify-content:center"><i class="fas fa-check-circle" style="font-size:22px;color:#6ee7b7"></i></div>
           <div>
-            <div style="font-size:15px;font-weight:700;color:var(--bp-text)">Business Plan genere avec succes</div>
-            <div style="font-size:12px;color:var(--bp-text-muted)">Version ${bpVersion} \u2022 ${availableCount}/5 sources integrees \u2022 ${filledCount}/12 sections remplies</div>
+            <div style="font-size:14px;font-weight:700;color:var(--bp-text)">Business Plan genere avec succes</div>
+            <div style="font-size:12px;color:var(--bp-text-muted)">Version ${bpVersion} \u2022 ${availableCount}/5 sources integrees \u2022 Completude ${completenessScore}%</div>
           </div>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
@@ -9397,36 +9438,46 @@ function renderBusinessPlanModulePage(opts: {
       <!-- 1. RESUME EXECUTIF -->
       <div class="bp-section" id="bp-resume">
         <div class="bp-section__head">
-          <div class="bp-section__num">1</div>
-          <div class="bp-section__title"><i class="fas fa-file-lines" style="color:var(--bp-violet);margin-right:10px"></i>Resume Executif</div>
+          <div class="bp-section__num" style="background:#7c3aed">1</div>
+          <div class="bp-section__title"><i class="fas fa-file-lines" style="color:#7c3aed;margin-right:8px"></i>Resume Executif</div>
         </div>
         <div class="bp-section__body">
           ${renderPara(resume.synthese, 'Synthese non disponible')}
           ${resume.points_cles?.length ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-star"></i> Points cles</div>' + renderList(resume.points_cles) + '</div>' : ''}
-          ${(resume.montant_recherche && resume.montant_recherche !== 'A completer') || (resume.usage_fonds && resume.usage_fonds !== 'A completer') ? '<div class="bp-stats">' + (resume.montant_recherche && resume.montant_recherche !== 'A completer' ? '<div class="bp-stat"><div class="bp-stat__value">' + esc(resume.montant_recherche) + '</div><div class="bp-stat__label">Financement recherche</div></div>' : '') + (resume.usage_fonds && resume.usage_fonds !== 'A completer' ? '<div class="bp-stat" style="grid-column:span 2"><div class="bp-stat__value" style="font-size:14px">' + esc(resume.usage_fonds) + '</div><div class="bp-stat__label">Utilisation des fonds</div></div>' : '') + '</div>' : ''}
+          ${(resume.montant_recherche && resume.montant_recherche !== 'A completer') || (resume.usage_fonds && resume.usage_fonds !== 'A completer') ? '<div class="bp-stats">' +
+            (resume.montant_recherche && resume.montant_recherche !== 'A completer' ? '<div class="bp-stat"><div class="bp-stat__value">' + esc(resume.montant_recherche) + '</div><div class="bp-stat__label">Financement recherche</div></div>' : '') +
+            (resume.usage_fonds && resume.usage_fonds !== 'A completer' ? '<div class="bp-stat" style="grid-column:span 2"><div class="bp-stat__value" style="font-size:14px">' + esc(resume.usage_fonds) + '</div><div class="bp-stat__label">Utilisation des fonds</div></div>' : '') +
+            '</div>' : ''}
         </div>
       </div>
 
       <!-- 2. PRESENTATION ENTREPRISE -->
       <div class="bp-section" id="bp-presentation">
         <div class="bp-section__head">
-          <div class="bp-section__num" style="background:#2563eb">2</div>
-          <div class="bp-section__title"><i class="fas fa-building" style="color:#2563eb;margin-right:10px"></i>Presentation de l'Entreprise</div>
+          <div class="bp-section__num" style="background:#7c3aed">2</div>
+          <div class="bp-section__title"><i class="fas fa-building" style="color:#7c3aed;margin-right:8px"></i>Presentation de l'Entreprise</div>
         </div>
         <div class="bp-section__body">
           ${infoTableHtml ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-id-card"></i> Informations</div>' + infoTableHtml + '</div>' : ''}
           ${renderPara(presentation.description_generale)}
           ${presentation.revue_historique ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-clock-rotate-left"></i> Historique</div>' + renderPara(presentation.revue_historique.raison_creation) + (presentation.revue_historique.realisations_cles?.length ? renderList(presentation.revue_historique.realisations_cles) : '') + '</div>' : ''}
-          ${presentation.vision_mission_valeurs ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-eye"></i> Vision, Mission & Valeurs</div><div class="bp-vmv">' + (presentation.vision_mission_valeurs.vision ? '<div class="bp-vmv__card"><div class="bp-vmv__label">Vision</div><div class="bp-vmv__text">' + nl2br(presentation.vision_mission_valeurs.vision) + '</div></div>' : '') + (presentation.vision_mission_valeurs.mission ? '<div class="bp-vmv__card"><div class="bp-vmv__label">Mission</div><div class="bp-vmv__text">' + nl2br(presentation.vision_mission_valeurs.mission) + '</div></div>' : '') + (Array.isArray(presentation.vision_mission_valeurs.valeurs) ? presentation.vision_mission_valeurs.valeurs.map((v: any) => '<div class="bp-vmv__card"><div class="bp-vmv__label">' + esc(v.valeur || 'Valeur') + '</div><div class="bp-vmv__text">' + esc(v.exemple || '') + '</div></div>').join('') : '') + '</div></div>' : ''}
-          ${presentation.objectifs_smart ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-bullseye"></i> Objectifs SMART</div>' + (presentation.objectifs_smart.court_terme_1an?.length ? '<div style="margin-bottom:14px"><strong style="font-size:12px;color:var(--bp-violet-light)">Court terme (1 an)</strong>' + renderList(presentation.objectifs_smart.court_terme_1an) + '</div>' : '') + (presentation.objectifs_smart.long_terme_3_5ans?.length ? '<div><strong style="font-size:12px;color:var(--bp-violet-light)">Long terme (3-5 ans)</strong>' + renderList(presentation.objectifs_smart.long_terme_3_5ans) + '</div>' : '') + '</div>' : ''}
+          ${presentation.vision_mission_valeurs ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-eye"></i> Vision, Mission & Valeurs</div><div class="bp-vmv">' +
+            (presentation.vision_mission_valeurs.vision ? '<div class="bp-vmv__card"><div class="bp-vmv__label">Vision</div><div class="bp-vmv__text">' + nl2br(presentation.vision_mission_valeurs.vision) + '</div></div>' : '') +
+            (presentation.vision_mission_valeurs.mission ? '<div class="bp-vmv__card"><div class="bp-vmv__label">Mission</div><div class="bp-vmv__text">' + nl2br(presentation.vision_mission_valeurs.mission) + '</div></div>' : '') +
+            (Array.isArray(presentation.vision_mission_valeurs.valeurs) ? presentation.vision_mission_valeurs.valeurs.map((v: any) => '<div class="bp-vmv__card"><div class="bp-vmv__label">' + esc(v.valeur || 'Valeur') + '</div><div class="bp-vmv__text">' + esc(v.exemple || '') + '</div></div>').join('') : '') +
+            '</div></div>' : ''}
+          ${presentation.objectifs_smart ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-bullseye"></i> Objectifs SMART</div>' +
+            (presentation.objectifs_smart.court_terme_1an?.length ? '<div style="margin-bottom:12px"><strong style="font-size:12px;color:var(--bp-violet-light)">Court terme (1 an)</strong>' + renderList(presentation.objectifs_smart.court_terme_1an) + '</div>' : '') +
+            (presentation.objectifs_smart.long_terme_3_5ans?.length ? '<div><strong style="font-size:12px;color:var(--bp-violet-light)">Long terme (3-5 ans)</strong>' + renderList(presentation.objectifs_smart.long_terme_3_5ans) + '</div>' : '') +
+            '</div>' : ''}
         </div>
       </div>
 
       <!-- 3. ANALYSE MARCHE -->
       <div class="bp-section" id="bp-marche">
         <div class="bp-section__head">
-          <div class="bp-section__num" style="background:#059669">3</div>
-          <div class="bp-section__title"><i class="fas fa-chart-pie" style="color:#059669;margin-right:10px"></i>Analyse de Marche</div>
+          <div class="bp-section__num" style="background:#7c3aed">3</div>
+          <div class="bp-section__title"><i class="fas fa-chart-pie" style="color:#7c3aed;margin-right:8px"></i>Analyse de Marche</div>
         </div>
         <div class="bp-section__body">
           ${renderPara(marche.taille_marche)}
@@ -9435,15 +9486,17 @@ function renderBusinessPlanModulePage(opts: {
           ${Array.isArray(marche.concurrents) && marche.concurrents.length > 0 ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-users"></i> Concurrence</div>' + renderCards(marche.concurrents, 'nom', 'forces') + '</div>' : ''}
           ${renderPara(marche.differenciation)}
           ${swotHtml ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-th-large"></i> Matrice SWOT</div>' + swotHtml + '</div>' : ''}
-          ${swot.gestion_risques?.length ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-shield-halved"></i> Gestion des risques</div><div class="bp-table-wrap"><table class="bp-table"><thead><tr><th>Type de risque</th><th>Gravite</th><th>Mitigation</th></tr></thead><tbody>' + swot.gestion_risques.map((r: any) => '<tr><td>' + esc(r.type_risque || '') + '</td><td><span class="bp-risk-badge">' + esc(r.gravite || '') + '</span></td><td>' + esc(r.mitigation || '') + '</td></tr>').join('') + '</tbody></table></div></div>' : ''}
+          ${swot.gestion_risques?.length ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-shield-halved"></i> Gestion des risques</div><div class="bp-table-wrap"><table class="bp-table"><thead><tr><th>Type de risque</th><th>Gravite</th><th>Mitigation</th></tr></thead><tbody>' +
+            swot.gestion_risques.map((r: any) => '<tr><td>' + esc(r.type_risque || '') + '</td><td><span class="bp-risk-badge">' + esc(r.gravite || '') + '</span></td><td>' + esc(r.mitigation || '') + '</td></tr>').join('') +
+            '</tbody></table></div></div>' : ''}
         </div>
       </div>
 
       <!-- 4. OFFRE PRODUIT/SERVICE -->
       <div class="bp-section" id="bp-offre">
         <div class="bp-section__head">
-          <div class="bp-section__num" style="background:#0891b2">4</div>
-          <div class="bp-section__title"><i class="fas fa-box-open" style="color:#0891b2;margin-right:10px"></i>Offre Produit / Service</div>
+          <div class="bp-section__num" style="background:#7c3aed">4</div>
+          <div class="bp-section__title"><i class="fas fa-box-open" style="color:#7c3aed;margin-right:8px"></i>Offre Produit / Service</div>
         </div>
         <div class="bp-section__body">
           ${renderPara(offre.description)}
@@ -9456,8 +9509,8 @@ function renderBusinessPlanModulePage(opts: {
       <!-- 5. STRATEGIE MARKETING -->
       <div class="bp-section" id="bp-marketing">
         <div class="bp-section__head">
-          <div class="bp-section__num" style="background:#d97706">5</div>
-          <div class="bp-section__title"><i class="fas fa-bullhorn" style="color:#d97706;margin-right:10px"></i>Strategie Marketing (5P)</div>
+          <div class="bp-section__num" style="background:#7c3aed">5</div>
+          <div class="bp-section__title"><i class="fas fa-bullhorn" style="color:#7c3aed;margin-right:8px"></i>Strategie Marketing (5P)</div>
         </div>
         <div class="bp-section__body">
           ${marketing.produit ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-cube"></i> Produit</div>' + renderPara(marketing.produit) + '</div>' : ''}
@@ -9471,8 +9524,8 @@ function renderBusinessPlanModulePage(opts: {
       <!-- 6. MODELE ECONOMIQUE -->
       <div class="bp-section" id="bp-modele">
         <div class="bp-section__head">
-          <div class="bp-section__num" style="background:#4338ca">6</div>
-          <div class="bp-section__title"><i class="fas fa-diagram-project" style="color:#4338ca;margin-right:10px"></i>Modele Economique</div>
+          <div class="bp-section__num" style="background:#7c3aed">6</div>
+          <div class="bp-section__title"><i class="fas fa-diagram-project" style="color:#7c3aed;margin-right:8px"></i>Modele Economique</div>
         </div>
         <div class="bp-section__body">
           <div class="bp-cards">
@@ -9485,7 +9538,9 @@ function renderBusinessPlanModulePage(opts: {
               { icon: 'fa-cogs', title: 'Activites cles', value: modele.activites_cles },
               { icon: 'fa-people-group', title: 'Partenaires cles', value: modele.partenaires_cles },
               { icon: 'fa-money-bill-trend-up', title: 'Structure de couts', value: modele.structure_couts },
-            ].filter(c => c.value && c.value !== 'A completer').map(c => '<div class="bp-card-item"><div class="bp-card-item__title"><i class="fas ' + c.icon + '" style="color:var(--bp-violet-light);margin-right:8px;font-size:12px"></i>' + esc(c.title) + '</div><div class="bp-card-item__desc">' + nl2br(c.value) + '</div></div>').join('')}
+            ].filter(c => c.value && c.value !== 'A completer').map(c =>
+              '<div class="bp-card-item"><div class="bp-card-item__title"><i class="fas ' + c.icon + '" style="color:var(--bp-violet-light);margin-right:6px;font-size:12px"></i>' + esc(c.title) + '</div><div class="bp-card-item__desc">' + nl2br(c.value) + '</div></div>'
+            ).join('')}
           </div>
         </div>
       </div>
@@ -9493,11 +9548,13 @@ function renderBusinessPlanModulePage(opts: {
       <!-- 7. PLAN OPERATIONNEL -->
       <div class="bp-section" id="bp-operations">
         <div class="bp-section__head">
-          <div class="bp-section__num" style="background:#0d9488">7</div>
-          <div class="bp-section__title"><i class="fas fa-users-gear" style="color:#0d9488;margin-right:10px"></i>Plan Operationnel</div>
+          <div class="bp-section__num" style="background:#7c3aed">7</div>
+          <div class="bp-section__title"><i class="fas fa-users-gear" style="color:#7c3aed;margin-right:8px"></i>Plan Operationnel</div>
         </div>
         <div class="bp-section__body">
-          ${Array.isArray(operations.equipe_direction) && operations.equipe_direction.length > 0 ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-user-tie"></i> Equipe de direction</div><div class="bp-cards">' + operations.equipe_direction.map((m: any) => '<div class="bp-card-item"><div class="bp-card-item__title">' + esc(m.nom || '\u2014') + '</div><div class="bp-card-item__desc">' + esc(m.role || '') + (m.competences ? '<br>' + esc(m.competences) : '') + '</div></div>').join('') + '</div></div>' : ''}
+          ${Array.isArray(operations.equipe_direction) && operations.equipe_direction.length > 0 ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-user-tie"></i> Equipe de direction</div><div class="bp-cards">' +
+            operations.equipe_direction.map((m: any) => '<div class="bp-card-item"><div class="bp-card-item__title">' + esc(m.nom || '\u2014') + '</div><div class="bp-card-item__desc">' + esc(m.role || '') + (m.competences ? '<br>' + esc(m.competences) : '') + '</div></div>').join('') +
+            '</div></div>' : ''}
           ${operations.personnel ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-users"></i> Personnel</div>' + (typeof operations.personnel === 'object' ? renderKV(operations.personnel, { effectif: 'Effectif', qualifications: 'Qualifications', politique_rh: 'Politique RH' }) : renderPara(operations.personnel)) + '</div>' : ''}
           ${renderPara(operations.organigramme_description)}
           ${operations.conseil_administration && operations.conseil_administration !== 'A completer' ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-gavel"></i> Conseil d\'administration</div>' + renderPara(operations.conseil_administration) + '</div>' : ''}
@@ -9507,15 +9564,16 @@ function renderBusinessPlanModulePage(opts: {
       <!-- 8. IMPACT SOCIAL -->
       <div class="bp-section" id="bp-impact">
         <div class="bp-section__head">
-          <div class="bp-section__num" style="background:#e11d48">8</div>
-          <div class="bp-section__title"><i class="fas fa-hand-holding-heart" style="color:#e11d48;margin-right:10px"></i>Impact Social & Environnemental</div>
+          <div class="bp-section__num" style="background:#7c3aed">8</div>
+          <div class="bp-section__title"><i class="fas fa-hand-holding-heart" style="color:#7c3aed;margin-right:8px"></i>Impact Social & Environnemental</div>
         </div>
         <div class="bp-section__body">
           ${impact.impact_social ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-heart"></i> Impact social</div>' + renderPara(impact.impact_social) + '</div>' : ''}
           ${impact.impact_environnemental ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-leaf"></i> Impact environnemental</div>' + renderPara(impact.impact_environnemental) + '</div>' : ''}
           ${impact.impact_economique ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-chart-line"></i> Impact economique</div>' + renderPara(impact.impact_economique) + '</div>' : ''}
           ${impact.beneficiaires ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-people-arrows"></i> Beneficiaires</div>' + renderPara(impact.beneficiaires) + '</div>' : ''}
-          ${Array.isArray(impact.odd_cibles) && impact.odd_cibles.length > 0 ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-globe"></i> ODD cibles</div><div class="bp-badges">' + impact.odd_cibles.map((o: string) => '<span class="bp-odd"><i class="fas fa-bullseye"></i> ' + esc(o) + '</span>').join('') + '</div></div>' : ''}
+          ${Array.isArray(impact.odd_cibles) && impact.odd_cibles.length > 0 ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-globe"></i> ODD cibles</div><div class="bp-badges">' +
+            impact.odd_cibles.map((o: string) => '<span class="bp-odd"><i class="fas fa-bullseye"></i> ' + esc(o) + '</span>').join('') + '</div></div>' : ''}
           ${impact.indicateurs?.length ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-chart-column"></i> Indicateurs d\'impact</div>' + renderList(impact.indicateurs) + '</div>' : ''}
         </div>
       </div>
@@ -9523,14 +9581,14 @@ function renderBusinessPlanModulePage(opts: {
       <!-- 9. PLAN FINANCIER -->
       <div class="bp-section" id="bp-financier">
         <div class="bp-section__head">
-          <div class="bp-section__num">9</div>
-          <div class="bp-section__title"><i class="fas fa-chart-bar" style="color:var(--bp-violet);margin-right:10px"></i>Plan Financier</div>
+          <div class="bp-section__num" style="background:#7c3aed">9</div>
+          <div class="bp-section__title"><i class="fas fa-chart-bar" style="color:#7c3aed;margin-right:8px"></i>Plan Financier</div>
         </div>
         <div class="bp-section__body">
           ${financier.plan_investissement ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-money-check-dollar"></i> Plan d\'investissement</div>' + renderPara(financier.plan_investissement) + '</div>' : ''}
           ${financier.justification_financement && financier.justification_financement !== 'A completer' ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-file-invoice-dollar"></i> Justification du financement</div>' + renderPara(financier.justification_financement) + '</div>' : ''}
+          ${hasFinChart ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-chart-line"></i> Evolution financiere 3 ans</div><div class="bp-chart-container"><canvas id="bpFinChart"></canvas></div></div>' : ''}
           ${finTableHtml ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-table"></i> Plan financier 3 ans</div>' + finTableHtml + '</div>' : ''}
-          ${hasChartData ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-chart-area"></i> Projections financieres</div><div class="bp-chart-wrap"><canvas id="bpFinChart"></canvas></div></div>' : ''}
           ${financier.kpis && Object.keys(financier.kpis).length > 0 ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-gauge-high"></i> KPIs</div>' + renderKV(financier.kpis) + '</div>' : ''}
         </div>
       </div>
@@ -9538,23 +9596,24 @@ function renderBusinessPlanModulePage(opts: {
       <!-- 10. GOUVERNANCE -->
       <div class="bp-section" id="bp-gouvernance">
         <div class="bp-section__head">
-          <div class="bp-section__num" style="background:#1e3a5f">10</div>
-          <div class="bp-section__title"><i class="fas fa-landmark" style="color:#1e3a5f;margin-right:10px"></i>Gouvernance & Projet</div>
+          <div class="bp-section__num" style="background:#7c3aed">10</div>
+          <div class="bp-section__title"><i class="fas fa-landmark" style="color:#7c3aed;margin-right:8px"></i>Gouvernance & Projet</div>
         </div>
         <div class="bp-section__body">
           ${gouvernance.projet_description ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-rocket"></i> Description du projet</div>' + renderPara(gouvernance.projet_description) + '</div>' : ''}
           ${gouvernance.situation_actuelle && gouvernance.situation_actuelle !== 'A completer' ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-map-pin"></i> Situation actuelle</div>' + renderPara(gouvernance.situation_actuelle) + '</div>' : ''}
           ${gouvernance.duree_mise_en_oeuvre && gouvernance.duree_mise_en_oeuvre !== 'A completer' ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-calendar-days"></i> Duree de mise en oeuvre</div>' + renderPara(gouvernance.duree_mise_en_oeuvre) + '</div>' : ''}
           ${gouvernance.objectif_projet && gouvernance.objectif_projet !== 'A completer' ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-bullseye"></i> Objectif</div>' + renderPara(gouvernance.objectif_projet) + '</div>' : ''}
-          ${attentes.montant_demande || attentes.contribution_entrepreneur ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-handshake"></i> Attentes vis-a-vis d\'OVO</div>' + renderKV(attentes, { montant_demande: 'Montant demande', contribution_entrepreneur: 'Contribution entrepreneur', autres_investisseurs: 'Autres investisseurs', expertise_necessaire: 'Expertise necessaire', coaching_souhaite: 'Coaching souhaite' }) + '</div>' : ''}
+          ${attentes.montant_demande || attentes.contribution_entrepreneur ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-handshake"></i> Attentes vis-a-vis d\'OVO</div>' +
+            renderKV(attentes, { montant_demande: 'Montant demande', contribution_entrepreneur: 'Contribution entrepreneur', autres_investisseurs: 'Autres investisseurs', expertise_necessaire: 'Expertise necessaire', coaching_souhaite: 'Coaching souhaite' }) + '</div>' : ''}
         </div>
       </div>
 
       <!-- 11. RISQUES & MITIGATION -->
       <div class="bp-section" id="bp-risques">
         <div class="bp-section__head">
-          <div class="bp-section__num" style="background:#dc2626">11</div>
-          <div class="bp-section__title"><i class="fas fa-shield-halved" style="color:#dc2626;margin-right:10px"></i>Risques & Mitigation</div>
+          <div class="bp-section__num" style="background:#7c3aed">11</div>
+          <div class="bp-section__title"><i class="fas fa-shield-halved" style="color:#7c3aed;margin-right:8px"></i>Risques & Mitigation</div>
         </div>
         <div class="bp-section__body">
           ${riskTableHtml || '<p class="bp-empty">Aucun risque identifie</p>'}
@@ -9564,8 +9623,8 @@ function renderBusinessPlanModulePage(opts: {
       <!-- 12. ANNEXES -->
       <div class="bp-section" id="bp-annexes">
         <div class="bp-section__head">
-          <div class="bp-section__num" style="background:#64748b">12</div>
-          <div class="bp-section__title"><i class="fas fa-paperclip" style="color:#64748b;margin-right:10px"></i>Annexes</div>
+          <div class="bp-section__num" style="background:#7c3aed">12</div>
+          <div class="bp-section__title"><i class="fas fa-paperclip" style="color:#7c3aed;margin-right:8px"></i>Annexes</div>
         </div>
         <div class="bp-section__body">
           ${annexes.documents_joints?.length ? renderList(annexes.documents_joints) : '<p class="bp-empty">Aucune annexe disponible</p>'}
@@ -9573,18 +9632,22 @@ function renderBusinessPlanModulePage(opts: {
       </div>
 
       <!-- Regenerate -->
-      ${embedded ? '' : '<div style="text-align:center;margin-top:32px;padding:24px"><button class="gen-btn gen-btn--primary" onclick="generateBusinessPlan()"><i class="fas fa-rotate"></i> Regenerer le Business Plan</button><div id="generateStatus" style="margin-top:16px;display:none"></div></div>'}
+      ${embedded ? '' : `
+      <div style="text-align:center;margin-top:28px;padding:20px">
+        <button class="gen-btn gen-btn--primary" onclick="generateBusinessPlan()">
+          <i class="fas fa-rotate"></i> Regenerer le Business Plan
+        </button>
+        <div id="generateStatus" style="margin-top:16px;display:none"></div>
+      </div>`}
 
     ` : `
       <!-- PRE-GENERATION VIEW -->
       <div class="bp-pregen">
         <div class="bp-section">
           <div class="bp-section__body" style="text-align:center;padding:48px 28px">
-            <div style="width:80px;height:80px;border-radius:20px;background:var(--bp-violet-bg);display:flex;align-items:center;justify-content:center;margin:0 auto 20px">
-              <i class="fas fa-file-alt" style="font-size:36px;color:var(--bp-violet);opacity:0.7"></i>
-            </div>
+            <div style="width:72px;height:72px;border-radius:50%;background:var(--bp-violet-bg);display:inline-flex;align-items:center;justify-content:center;margin-bottom:20px"><i class="fas fa-file-alt" style="font-size:30px;color:var(--bp-violet)"></i></div>
             <h2 style="font-size:22px;font-weight:800;color:var(--bp-text);margin-bottom:10px">Generer votre Business Plan</h2>
-            <p style="font-size:14px;color:var(--bp-text-muted);max-width:480px;margin:0 auto 32px;line-height:1.7">
+            <p style="font-size:var(--bp-body-size);color:var(--bp-text-muted);max-width:480px;margin:0 auto 32px;line-height:1.7">
               Le Business Plan synthetise l'ensemble de vos livrables (BMC, SIC, Framework financier, Plan OVO, Diagnostic) en un dossier structure pret a presenter aux investisseurs.
             </p>
 
@@ -9596,13 +9659,18 @@ function renderBusinessPlanModulePage(opts: {
                 { has: hasFramework, icon: 'fa-chart-bar', label: 'Framework Analyse PME', req: true },
                 { has: hasDiag, icon: 'fa-stethoscope', label: 'Diagnostic Expert', req: false },
                 { has: hasOvo, icon: 'fa-file-excel', label: 'Plan Financier OVO', req: false },
-              ].map(s => '<div class="bp-source-row" style="background:' + (s.has ? 'rgba(5,150,105,0.06)' : 'rgba(220,38,38,0.04)') + ';border-color:' + (s.has ? 'rgba(5,150,105,0.2)' : 'rgba(220,38,38,0.15)') + '"><div class="bp-source-icon" style="background:' + (s.has ? 'rgba(5,150,105,0.15)' : 'rgba(220,38,38,0.1)') + ';color:' + (s.has ? '#6ee7b7' : '#fca5a5') + '"><i class="fas ' + (s.has ? 'fa-check' : 'fa-times') + '"></i></div><div style="flex:1"><div style="font-size:13px;font-weight:600;color:' + (s.has ? '#6ee7b7' : '#fca5a5') + '">' + s.label + '</div><div style="font-size:11px;color:var(--bp-text-dim)">' + (s.has ? 'Disponible' : 'Non disponible') + ' \u2022 ' + (s.req ? 'Recommande' : 'Optionnel') + '</div></div></div>').join('')}
+              ].map(s =>
+                '<div class="bp-source-row" style="background:' + (s.has ? 'rgba(5,150,105,.06)' : 'rgba(220,38,38,.04)') + ';border-color:' + (s.has ? 'rgba(5,150,105,.2)' : 'rgba(220,38,38,.15)') + '">' +
+                  '<div class="bp-source-icon" style="background:' + (s.has ? 'rgba(5,150,105,.15)' : 'rgba(220,38,38,.12)') + ';color:' + (s.has ? '#6ee7b7' : '#fca5a5') + '"><i class="fas ' + (s.has ? 'fa-check' : 'fa-times') + '"></i></div>' +
+                  '<div style="flex:1"><div style="font-size:13px;font-weight:600;color:' + (s.has ? '#6ee7b7' : '#fca5a5') + '">' + s.label + '</div>' +
+                  '<div style="font-size:11px;color:var(--bp-text-dim)">' + (s.has ? 'Disponible' : 'Non disponible') + ' \u2022 ' + (s.req ? 'Recommande' : 'Optionnel') + '</div></div></div>'
+              ).join('')}
             </div>
 
             <button id="btnGenerate" class="gen-btn gen-btn--primary" ${!canGenerate ? 'disabled' : ''} onclick="generateBusinessPlan()">
               <i class="fas fa-wand-magic-sparkles"></i> Generer le Business Plan
             </button>
-            ${!canGenerate ? '<p style="font-size:12px;color:#f87171;margin-top:14px">Au moins le Business Model Canvas ou le Framework d\'analyse financiere est requis.</p>' : ''}
+            ${!canGenerate ? '<p style="font-size:12px;color:#f87171;margin-top:12px">Au moins le Business Model Canvas ou le Framework d\'analyse financiere est requis.</p>' : ''}
             <div id="generateStatus" style="margin-top:16px;display:none"></div>
           </div>
         </div>
@@ -9610,25 +9678,23 @@ function renderBusinessPlanModulePage(opts: {
     `}
 
     <!-- Footer -->
-    <div style="text-align:center;padding:28px 0;margin-top:24px;border-top:1px solid var(--bp-border)">
+    <div style="text-align:center;padding:24px 0;margin-top:20px;border-top:1px solid var(--bp-border)">
       <div style="font-size:12px;color:var(--bp-text-dim)">Genere par ESONO${genDate ? ' \u2022 ' + genDate : ''} \u2022 Business Plan v${bpVersion || 0}</div>
     </div>
-    </div><!-- /.bp-content -->
+    </div>
   </main>
 </div>
 
 <!-- Share modal -->
 <div class="bp-share-modal" id="bpShareModal">
-  <div class="bp-share-modal__box" style="position:relative">
+  <div class="bp-share-modal__box">
     <button class="bp-share-modal__close" onclick="closeShareModal()"><i class="fas fa-times"></i></button>
-    <div class="bp-share-modal__title"><i class="fas fa-share-nodes" style="color:var(--bp-violet)"></i> Partager le Business Plan</div>
-    <p style="font-size:13px;color:var(--bp-text-muted);margin-bottom:16px">Copiez le lien ci-dessous pour partager ce Business Plan :</p>
-    <input class="bp-share-input" id="bpShareUrl" readonly value="" onclick="this.select()">
-    <div style="display:flex;gap:8px">
-      <button class="bp-dl-btn bp-dl-btn--primary" style="flex:1;justify-content:center" onclick="copyShareLink()"><i class="fas fa-copy"></i> Copier le lien</button>
-      <button class="bp-dl-btn bp-dl-btn--ghost" style="flex:1;justify-content:center" onclick="closeShareModal()">Fermer</button>
+    <div class="bp-share-modal__title"><i class="fas fa-share-nodes" style="color:var(--bp-violet);margin-right:8px"></i>Partager le Business Plan</div>
+    <div class="bp-share-modal__input">
+      <input class="bp-share-modal__url" id="bpShareUrl" readonly>
+      <button class="bp-share-modal__copy" onclick="copyShareLink()"><i class="fas fa-copy"></i> Copier</button>
     </div>
-    <div id="bpShareMsg" style="text-align:center;margin-top:10px;font-size:12px;color:#6ee7b7;display:none"><i class="fas fa-check"></i> Lien copie !</div>
+    <div class="bp-share-modal__msg" id="bpShareMsg"><i class="fas fa-check-circle"></i> Lien copie !</div>
   </div>
 </div>
 
@@ -9640,18 +9706,16 @@ function renderBusinessPlanModulePage(opts: {
 <script>
   function getCookie(n){return(document.cookie.match('(^|;)\\\\s*'+n+'=([^;]*)')||[])[2]||''}
 
-  // Sidebar toggle
+  // Sidebar
   function toggleSidebar(){
-    var sb=document.getElementById('bpSidebar');
-    var ov=document.getElementById('bpOverlay');
-    if(sb){sb.classList.toggle('bp-sidebar--open')}
-    if(ov){ov.classList.toggle('bp-overlay--visible')}
+    var s=document.getElementById('bpSidebar'),o=document.getElementById('bpOverlay');
+    if(s){s.classList.toggle('bp-sidebar--open');}
+    if(o){o.classList.toggle('bp-overlay--visible');}
   }
   function closeSidebar(){
-    var sb=document.getElementById('bpSidebar');
-    var ov=document.getElementById('bpOverlay');
-    if(sb){sb.classList.remove('bp-sidebar--open')}
-    if(ov){ov.classList.remove('bp-overlay--visible')}
+    var s=document.getElementById('bpSidebar'),o=document.getElementById('bpOverlay');
+    if(s){s.classList.remove('bp-sidebar--open');}
+    if(o){o.classList.remove('bp-overlay--visible');}
   }
 
   // Scroll to section
@@ -9660,28 +9724,26 @@ function renderBusinessPlanModulePage(opts: {
     if(el)el.scrollIntoView({behavior:'smooth',block:'start'});
   }
 
-  // Active nav tracking
+  // Active nav tracking + back-to-top
   var sections=document.querySelectorAll('.bp-section[id]');
-  var navLinks=document.querySelectorAll('.bp-nav-item[data-section]');
+  var navLinks=document.querySelectorAll('.bp-sidebar__link[data-section]');
   var toTopBtn=document.getElementById('bpToTop');
   function updateActiveNav(){
     var current='';
     sections.forEach(function(s){
-      var rect=s.getBoundingClientRect();
-      if(rect.top<=130)current=s.id.replace('bp-','');
+      if(s.getBoundingClientRect().top<=120)current=s.id.replace('bp-','');
     });
     navLinks.forEach(function(link){
-      link.classList.toggle('bp-nav-item--active',link.dataset.section===current);
+      link.classList.toggle('bp-sidebar__link--active',link.dataset.section===current);
     });
     if(toTopBtn)toTopBtn.classList.toggle('bp-totop--visible',window.scrollY>400);
   }
   window.addEventListener('scroll',updateActiveNav,{passive:true});
   updateActiveNav();
 
-  // Share modal
+  // Share
   function openShareModal(){
-    var m=document.getElementById('bpShareModal');
-    var u=document.getElementById('bpShareUrl');
+    var m=document.getElementById('bpShareModal'),u=document.getElementById('bpShareUrl');
     if(m)m.classList.add('bp-share-modal--open');
     if(u)u.value=window.location.href;
   }
@@ -9696,6 +9758,31 @@ function renderBusinessPlanModulePage(opts: {
     if(navigator.clipboard)navigator.clipboard.writeText(u.value);}
     if(msg){msg.style.display='block';setTimeout(function(){msg.style.display='none'},2000)}
   }
+
+  // Financial chart
+  ${hasFinChart ? `
+  (function(){
+    var ctx=document.getElementById('bpFinChart');
+    if(!ctx||typeof Chart==='undefined')return;
+    var labels=['Annee 1','Annee 2','Annee 3'];
+    new Chart(ctx,{
+      type:'bar',
+      data:{
+        labels:labels,
+        datasets:[
+          {label:"Chiffre d'affaires",data:${JSON.stringify(finChartData.ca)},backgroundColor:'rgba(124,58,237,0.6)',borderColor:'#7c3aed',borderWidth:2,borderRadius:6,barPercentage:0.35},
+          {label:'Resultat net',data:${JSON.stringify(finChartData.net)},backgroundColor:'rgba(5,150,105,0.5)',borderColor:'#059669',borderWidth:2,borderRadius:6,barPercentage:0.35},
+          {label:'Cash-flow',type:'line',data:${JSON.stringify(finChartData.cf)},borderColor:'#a78bfa',backgroundColor:'rgba(167,139,250,0.1)',borderWidth:3,pointRadius:5,pointBackgroundColor:'#a78bfa',fill:true,tension:0.3}
+        ]
+      },
+      options:{
+        responsive:true,maintainAspectRatio:false,
+        plugins:{legend:{labels:{color:'#94a3b8',font:{family:'Inter',size:12,weight:'600'},padding:16}},tooltip:{backgroundColor:'#1e293b',borderColor:'#334155',borderWidth:1,titleColor:'#e2e8f0',bodyColor:'#94a3b8',padding:12,cornerRadius:8,callbacks:{label:function(c){return c.dataset.label+': '+Number(c.raw).toLocaleString('fr-FR')+' FCFA'}}}},
+        scales:{x:{grid:{display:false},ticks:{color:'#64748b',font:{family:'Inter',size:11}}},y:{grid:{color:'rgba(51,65,85,0.3)'},ticks:{color:'#64748b',font:{family:'Inter',size:11},callback:function(v){if(Math.abs(v)>=1e6)return(v/1e6).toFixed(0)+'M';if(Math.abs(v)>=1e3)return(v/1e3).toFixed(0)+'k';return v}}}}
+      }
+    });
+  })();
+  ` : ''}
 
   // Generate Business Plan
   async function generateBusinessPlan(){
@@ -9724,35 +9811,10 @@ function renderBusinessPlanModulePage(opts: {
       if(btn){btn.disabled=false;btn.innerHTML='<i class="fas fa-wand-magic-sparkles"></i> Generer le Business Plan';}
     }
   }
-
-  // Financial chart
-  ${hasChartData ? `
-  (function(){
-    var ctx=document.getElementById('bpFinChart');
-    if(!ctx||typeof Chart==='undefined')return;
-    new Chart(ctx,{
-      type:'bar',
-      data:{
-        labels:['Annee 1','Annee 2','Annee 3'],
-        datasets:[
-          {label:"Chiffre d'affaires",data:[${caVals.join(',')}],backgroundColor:'rgba(124,58,237,0.7)',borderColor:'#7c3aed',borderWidth:2,borderRadius:6,barPercentage:0.7},
-          {label:'Resultat net',data:[${rnVals.join(',')}],backgroundColor:'rgba(5,150,105,0.6)',borderColor:'#059669',borderWidth:2,borderRadius:6,barPercentage:0.7},
-          {label:'Cash-flow',data:[${cfVals.join(',')}],backgroundColor:'rgba(37,99,235,0.5)',borderColor:'#2563eb',borderWidth:2,borderRadius:6,barPercentage:0.7}
-        ]
-      },
-      options:{
-        responsive:true,maintainAspectRatio:false,
-        plugins:{legend:{labels:{color:'#94a3b8',font:{family:'Inter',size:12,weight:'600'},padding:16,usePointStyle:true,pointStyle:'rectRounded'}},tooltip:{backgroundColor:'#1e293b',titleColor:'#e2e8f0',bodyColor:'#94a3b8',borderColor:'#334155',borderWidth:1,cornerRadius:10,padding:12,callbacks:{label:function(ctx){return ctx.dataset.label+': '+new Intl.NumberFormat('fr-FR').format(ctx.raw)+' FCFA'}}}},
-        scales:{x:{ticks:{color:'#64748b',font:{family:'Inter',size:12}},grid:{display:false}},y:{ticks:{color:'#64748b',font:{family:'Inter',size:11},callback:function(v){if(v>=1e6)return(v/1e6).toFixed(0)+'M';if(v>=1e3)return(v/1e3).toFixed(0)+'k';return v}},grid:{color:'rgba(51,65,85,0.3)'},border:{dash:[4,4]}}}
-      }
-    });
-  })();
-  ` : ''}
 <\/script>
 </body>
 </html>`
 }
-
 // POST /api/business-plan/generate
 app.post('/api/business-plan/generate', async (c) => {
   try {
