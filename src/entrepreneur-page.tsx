@@ -1013,6 +1013,16 @@ entrepreneurRoutes.post('/api/ai/generate-all', async (c) => {
         source = orchestration.source
         agentsUsed = orchestration.agentsUsed
         agentErrors = orchestration.errors
+        
+        // If orchestration produced partial results (e.g. orchestrator timeout → no business_plan),
+        // fill missing deliverables from the fallback generator
+        const fallbackFull = buildFallbackResult(hasBmc, hasSic, hasInputs, userName, uploadData.length)
+        for (const dt of DELIVERABLE_TYPES) {
+          if (!result.deliverables[dt.type] && fallbackFull.deliverables[dt.type as keyof typeof fallbackFull.deliverables]) {
+            result.deliverables[dt.type] = fallbackFull.deliverables[dt.type as keyof typeof fallbackFull.deliverables]
+            console.log(`[Generate-All] Filled missing ${dt.type} from fallback`)
+          }
+        }
       }
     } catch (err: any) {
       console.error('Orchestration error:', err.message)
@@ -1037,13 +1047,21 @@ entrepreneurRoutes.post('/api/ai/generate-all', async (c) => {
     let generatedCount = 0
     for (const dtype of generableTypes) {
       const delivData = result.deliverables?.[dtype]
-      if (!delivData) continue
-      const delivId = crypto.randomUUID()
-      await c.env.DB.prepare(`
-        INSERT INTO entrepreneur_deliverables (id, user_id, type, content, score, version, iteration_id, status, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'generated', datetime('now'))
-      `).bind(delivId, payload.userId, dtype, JSON.stringify(delivData), delivData.score || 0, newVersion, iterationId).run()
-      generatedCount++
+      if (!delivData) {
+        console.log(`[Generate-All] SKIP ${dtype}: no data in result.deliverables`)
+        continue
+      }
+      try {
+        const delivId = crypto.randomUUID()
+        await c.env.DB.prepare(`
+          INSERT INTO entrepreneur_deliverables (id, user_id, type, content, score, version, iteration_id, status, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 'generated', datetime('now'))
+        `).bind(delivId, payload.userId, dtype, JSON.stringify(delivData), delivData.score || 0, newVersion, iterationId).run()
+        generatedCount++
+        console.log(`[Generate-All] ✅ Stored ${dtype} (score=${delivData.score || 0})`)
+      } catch (insertErr: any) {
+        console.error(`[Generate-All] ❌ INSERT FAILED for ${dtype}: ${insertErr.message}`)
+      }
     }
 
     // ═══ GENERATE FULL BMC HTML DELIVERABLE (Claude AI + KB) ═══
@@ -3848,10 +3866,10 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
     let mainPlanOvoId: string | null = null
     let mainPlanOvoExtraction: any = null
     try {
-      const pmeId = `pme_${payload.userId}`
+      // Search with multiple statuses and pme_id variants
       const planRow = await c.env.DB.prepare(
-        "SELECT id, extraction_json FROM plan_ovo_analyses WHERE user_id = ? AND pme_id = ? AND status = 'filled' ORDER BY created_at DESC LIMIT 1"
-      ).bind(payload.userId, pmeId).first() as any
+        "SELECT id, extraction_json FROM plan_ovo_analyses WHERE user_id = ? AND status IN ('filled', 'generated', 'extracted') ORDER BY created_at DESC LIMIT 1"
+      ).bind(payload.userId).first() as any
       if (planRow?.id) {
         mainPlanOvoId = planRow.id
         if (planRow.extraction_json) {
@@ -4847,7 +4865,69 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
       // ═══ CHECK IF WE HAVE EXTRACTION DATA ═══
       const ext = PLAN_OVO_EXTRACTION;
       if (!ext || !ext.produits) {
-        html += '<div style="text-align:center;padding:40px;color:#6b7280"><i class="fas fa-chart-line" style="font-size:48px;color:#d1d5db;margin-bottom:16px;display:block"></i><p>Aperçu non disponible — lancez la génération du plan OVO.</p></div>';
+        // Fallback: display projections from the plan_ovo deliverable content
+        const proj = c.projections?.scenario_base;
+        if (proj) {
+          html += '<div style="padding:20px">';
+          html += '<h3 style="font-size:16px;font-weight:700;color:#1e3a5f;margin-bottom:16px"><i class="fas fa-chart-line"></i> Projections Financières (Scénario de Base)</h3>';
+          html += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">';
+          html += '<thead><tr style="background:#f0fdf4"><th style="padding:10px;text-align:left;border:1px solid #bbf7d0">Indicateur</th>';
+          const years = ['year_1','year_2','year_3','year_4','year_5'];
+          const yearLabels = ['Année 1','Année 2','Année 3','Année 4','Année 5'];
+          for (let i=0; i<5; i++) html += '<th style="padding:10px;text-align:right;border:1px solid #bbf7d0">' + yearLabels[i] + '</th>';
+          html += '</tr></thead><tbody>';
+          const fmt = (v) => v != null ? (v >= 1e6 ? (v/1e6).toFixed(1) + ' M' : v >= 1e3 ? (v/1e3).toFixed(0) + ' k' : v.toLocaleString()) : '—';
+          const rows = [
+            { label: "Chiffre d'Affaires", key: 'revenue_xof', color: '#059669' },
+            { label: 'Marge Brute (%)', key: 'gross_margin_pct', color: '#0284c7', suffix: '%' },
+            { label: 'EBITDA', key: 'ebitda_xof', color: '#d97706' },
+            { label: 'Résultat Net', key: 'net_income_xof', color: '#7c3aed' },
+            { label: 'Cash Flow', key: 'cash_flow_xof', color: '#059669' },
+          ];
+          for (const row of rows) {
+            html += '<tr>';
+            html += '<td style="padding:8px 10px;border:1px solid #e5e7eb;font-weight:600;color:' + row.color + '">' + row.label + '</td>';
+            for (const yr of years) {
+              const val = proj[yr]?.[row.key];
+              const display = row.suffix ? (val != null ? val + row.suffix : '—') : fmt(val);
+              const valColor = val != null && val < 0 ? '#dc2626' : '#1e3a5f';
+              html += '<td style="padding:8px 10px;border:1px solid #e5e7eb;text-align:right;color:' + valColor + '">' + display + '</td>';
+            }
+            html += '</tr>';
+          }
+          html += '</tbody></table></div>';
+          
+          // Scenarios comparison if available
+          if (c.projections?.scenario_optimiste || c.projections?.scenario_pessimiste) {
+            html += '<h4 style="font-size:14px;font-weight:600;color:#374151;margin-top:20px;margin-bottom:12px">Scénarios Comparés (Année 5)</h4>';
+            html += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">';
+            const scenarios = [
+              { key: 'scenario_pessimiste', label: 'Pessimiste', color: '#dc2626', bg: '#fef2f2', icon: 'fa-arrow-down' },
+              { key: 'scenario_base', label: 'Base', color: '#d97706', bg: '#fffbeb', icon: 'fa-minus' },
+              { key: 'scenario_optimiste', label: 'Optimiste', color: '#059669', bg: '#f0fdf4', icon: 'fa-arrow-up' },
+            ];
+            for (const s of scenarios) {
+              const y5 = c.projections?.[s.key]?.year_5;
+              if (y5) {
+                html += '<div style="padding:16px;background:' + s.bg + ';border-radius:10px;text-align:center">';
+                html += '<div style="font-size:12px;color:' + s.color + ';font-weight:600"><i class="fas ' + s.icon + '"></i> ' + s.label + '</div>';
+                html += '<div style="font-size:18px;font-weight:700;color:' + s.color + ';margin-top:6px">' + fmt(y5.revenue_xof) + ' CFA</div>';
+                html += '<div style="font-size:11px;color:#6b7280">Résultat: ' + fmt(y5.net_income_xof) + '</div>';
+                html += '</div>';
+              }
+            }
+            html += '</div>';
+          }
+          
+          html += '</div>';
+          
+          // Show link to full OVO module
+          html += '<div style="text-align:center;padding:16px;border-top:1px solid #e5e7eb;margin-top:16px">';
+          html += '<a href="/module/plan-ovo" style="color:#ea580c;font-weight:600;text-decoration:none;font-size:13px"><i class="fas fa-wand-magic-sparkles"></i> Accéder au module Plan OVO pour la version complète</a>';
+          html += '</div>';
+        } else {
+          html += '<div style="text-align:center;padding:40px;color:#6b7280"><i class="fas fa-chart-line" style="font-size:48px;color:#d1d5db;margin-bottom:16px;display:block"></i><p>Aperçu non disponible — lancez la génération du plan OVO via le module dédié.</p></div>';
+        }
         html += '</div>';
         return html;
       }
