@@ -3901,6 +3901,7 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
     .ev2-btn-sm { background: #ffffff; border: 1px solid #d1d5db; color: #374151; padding: 5px 12px; border-radius: 6px; font-size: 11px; cursor: pointer; transition: all 0.2s; font-family: inherit; text-decoration: none; display: inline-flex; align-items: center; gap: 4px; }
     .ev2-btn-sm:hover { border-color: #1e3a5f; color: #1e3a5f; background: #f3f4f6; text-decoration: none; }
     .ev2-btn-sm--danger:hover { border-color: #dc2626; color: #dc2626; background: #fee2e2; }
+    @media (max-width: 640px) { .ev2-hide-mobile { display: none; } }
     
     /* ── Score Banner COMPACT (always shown as thin strip) ── */
     .ev2-score { background: linear-gradient(135deg, #1e3a5f 0%, #2a4d7a 100%); padding: 8px 20px; display: flex; align-items: center; justify-content: center; gap: 16px; flex-shrink: 0; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
@@ -4075,6 +4076,7 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
     <a href="/entrepreneur" class="ev2-header__brand">ESONO</a>
     <div class="ev2-header__right">
       <span class="ev2-header__user"><strong>${user.name}</strong> · ${user.email}</span>
+      <a href="/select-role" class="ev2-btn-sm" style="background:rgba(124,58,237,0.1);color:#7c3aed;border-color:rgba(124,58,237,0.2)" title="Changer de rôle"><i class="fas fa-sync-alt"></i> <span class="ev2-hide-mobile">Changer de rôle</span></a>
       <a href="/formations" class="ev2-btn-sm" title="Micro-learning & formations"><i class="fas fa-book-open"></i> Formations</a>
       <button class="ev2-btn-sm ev2-btn-sm--danger" onclick="fetch('/api/logout',{method:'POST',credentials:'include'}).then(()=>location.href='/login')">
         <i class="fas fa-right-from-bracket"></i> Déconnexion

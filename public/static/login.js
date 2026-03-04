@@ -60,8 +60,20 @@
             } catch(e) {}
           }
           
-          // Redirect with token in URL as ultimate fallback
-          window.location.href = '/entrepreneur?token=' + encodeURIComponent(token);
+          // Redirect based on existing role or to role selection
+          var userRole = resp.result.user && resp.result.user.role;
+          if (userRole) {
+            // User already has a role — go directly
+            try { localStorage.setItem('esono_role', userRole); } catch(e) {}
+            if (userRole === 'coach') {
+              window.location.href = '/coach/dashboard';
+            } else {
+              window.location.href = '/entrepreneur?token=' + encodeURIComponent(token);
+            }
+          } else {
+            // No role yet — show role selection
+            window.location.href = '/select-role?token=' + encodeURIComponent(token);
+          }
         } else {
           if (errorMessage) {
             errorMessage.textContent = resp.result.error || 'Email ou mot de passe incorrect';

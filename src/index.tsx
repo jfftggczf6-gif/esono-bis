@@ -9,6 +9,7 @@ import { getCookieOptions } from './cookies'
 import { moduleRoutes, renderEsanoLayout } from './module-routes'
 import { entrepreneurRoutes } from './entrepreneur-page'
 import { kbRoutes } from './agents/kb-routes'
+import { coachRoutes } from './coach-routes'
 import {
   getGuidedQuestionsForModule,
   getLearningStageKeysForModule,
@@ -908,6 +909,9 @@ app.route('/', entrepreneurRoutes)
 // Mount Knowledge Base routes
 app.route('/', kbRoutes)
 
+// Mount Coach routes
+app.route('/', coachRoutes)
+
 // Landing Page - A1
 app.get('/', (c) => {
   return c.render(
@@ -1192,6 +1196,130 @@ app.get('/register', (c) => {
   )
 })
 
+// Role selection page (post-login)
+app.get('/select-role', async (c) => {
+  const token = getAuthToken(c)
+  if (!token) return c.redirect('/login')
+  const payload = await verifyToken(token)
+  if (!payload) return c.redirect('/login')
+
+  // Fetch user name
+  const user = await c.env.DB.prepare('SELECT name, role FROM users WHERE id = ?').bind(payload.userId).first()
+  const firstName = ((user?.name as string) || 'Utilisateur').split(' ')[0]
+
+  return c.render(
+    <div class="esono-auth">
+      <div class="esono-auth__shell" style="max-width: 720px;">
+        <header class="esono-auth__header" style="margin-bottom: 32px;">
+          <a href="/" class="esono-auth__brand">ES</a>
+          <h1 class="esono-auth__title" style="font-size: 22px;">
+            Bienvenue {firstName} ! Sélectionnez votre espace
+          </h1>
+          <p class="esono-auth__subtitle">
+            Vous pouvez changer de rôle à tout moment depuis le menu.
+          </p>
+        </header>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+          {/* CARTE ENTREPRENEUR */}
+          <button
+            id="role-entrepreneur"
+            class="esono-card"
+            style="cursor: pointer; border: 2px solid transparent; text-align: left; padding: 0; transition: all 0.2s; background: white;"
+          >
+            <div class="esono-card__body" style="padding: 28px 24px;">
+              <div style="font-size: 40px; margin-bottom: 16px;">🚀</div>
+              <h2 style="font-size: 18px; font-weight: 700; color: #1e293b; margin-bottom: 8px;">
+                Espace Entrepreneur
+              </h2>
+              <p style="font-size: 13px; color: #64748b; line-height: 1.6; margin: 0;">
+                Uploadez vos documents et générez vos livrables Investment Readiness
+              </p>
+            </div>
+          </button>
+
+          {/* CARTE COACH */}
+          <button
+            id="role-coach"
+            class="esono-card"
+            style="cursor: pointer; border: 2px solid transparent; text-align: left; padding: 0; transition: all 0.2s; background: white;"
+          >
+            <div class="esono-card__body" style="padding: 28px 24px;">
+              <div style="font-size: 40px; margin-bottom: 16px;">👨‍🏫</div>
+              <h2 style="font-size: 18px; font-weight: 700; color: #1e293b; margin-bottom: 8px;">
+                Espace Coach
+              </h2>
+              <p style="font-size: 13px; color: #64748b; line-height: 1.6; margin: 0;">
+                Gérez vos entrepreneurs, analysez leurs dossiers, générez les livrables
+              </p>
+            </div>
+          </button>
+        </div>
+
+        <div id="role-error" class="esono-alert esono-alert--danger" style="display: none; margin-top: 16px;" role="alert"></div>
+      </div>
+
+      <style>{`
+        #role-entrepreneur:hover, #role-coach:hover {
+          border-color: #7c3aed !important;
+          box-shadow: 0 4px 20px rgba(124,58,237,0.15);
+          transform: translateY(-2px);
+        }
+        #role-entrepreneur:hover h2, #role-coach:hover h2 {
+          color: #7c3aed;
+        }
+        @media (max-width: 600px) {
+          .esono-auth__shell { max-width: 100% !important; }
+          .esono-auth__shell > div:nth-child(2) {
+            grid-template-columns: 1fr !important;
+          }
+        }
+      `}</style>
+
+      <script dangerouslySetInnerHTML={{ __html: `
+        (function() {
+          function getCookie(name) {
+            var v = document.cookie.match('(^|;)\\\\s*' + name + '\\\\s*=\\\\s*([^;]+)');
+            return v ? v.pop() : '';
+          }
+          function getToken() {
+            return getCookie('auth_token') || localStorage.getItem('auth_token') || new URLSearchParams(window.location.search).get('token') || '';
+          }
+          function selectRole(role) {
+            var token = getToken();
+            fetch('/api/user/role', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+              credentials: 'include',
+              body: JSON.stringify({ role: role })
+            })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+              if (data.success) {
+                localStorage.setItem('esono_role', role);
+                if (role === 'coach') {
+                  window.location.href = '/coach/dashboard';
+                } else {
+                  window.location.href = '/entrepreneur';
+                }
+              } else {
+                document.getElementById('role-error').textContent = data.error || 'Erreur';
+                document.getElementById('role-error').style.display = 'block';
+              }
+            })
+            .catch(function(e) {
+              document.getElementById('role-error').textContent = 'Erreur réseau';
+              document.getElementById('role-error').style.display = 'block';
+            });
+          }
+          document.getElementById('role-entrepreneur').addEventListener('click', function() { selectRole('entrepreneur'); });
+          document.getElementById('role-coach').addEventListener('click', function() { selectRole('coach'); });
+        })();
+      `}} />
+    </div>
+  )
+})
+
 // Login Page
 app.get('/login', (c) => {
   return c.render(
@@ -1324,7 +1452,7 @@ app.post('/api/login', async (c) => {
 
     // Find user
     const user = await c.env.DB.prepare(`
-      SELECT id, email, password_hash, name, user_type
+      SELECT id, email, password_hash, name, user_type, role
       FROM users
       WHERE email = ?
     `).bind(email).first()
@@ -1355,7 +1483,8 @@ app.post('/api/login', async (c) => {
         id: user.id,
         name: user.name,
         email: user.email,
-        userType: user.user_type
+        userType: user.user_type,
+        role: user.role || null
       }
     })
   } catch (error) {
@@ -1389,7 +1518,7 @@ app.get('/api/user', async (c) => {
     }
 
     const user = await c.env.DB.prepare(`
-      SELECT id, email, name, country, user_type, status, created_at
+      SELECT id, email, name, country, user_type, status, role, created_at
       FROM users
       WHERE id = ?
     `).bind(payload.userId).first()
@@ -1401,6 +1530,29 @@ app.get('/api/user', async (c) => {
     return c.json({ user })
   } catch (error) {
     console.error('Get user error:', error)
+    return c.json({ error: 'Erreur serveur' }, 500)
+  }
+})
+
+// API: Set/update user role
+app.post('/api/user/role', async (c) => {
+  try {
+    const token = getAuthToken(c)
+    if (!token) return c.json({ error: 'Non authentifié' }, 401)
+    const payload = await verifyToken(token)
+    if (!payload) return c.json({ error: 'Token invalide' }, 401)
+
+    const { role } = await c.req.json()
+    if (!role || !['entrepreneur', 'coach'].includes(role)) {
+      return c.json({ error: 'Rôle invalide. Valeurs acceptées: entrepreneur, coach' }, 400)
+    }
+
+    await c.env.DB.prepare(`UPDATE users SET role = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+      .bind(role, payload.userId).run()
+
+    return c.json({ success: true, role })
+  } catch (error) {
+    console.error('Set role error:', error)
     return c.json({ error: 'Erreur serveur' }, 500)
   }
 })
@@ -1529,10 +1681,13 @@ app.get('/dashboard', async (c) => {
     const payload = await verifyToken(token)
     if (!payload) return c.redirect('/login')
 
-    // Redirect entrepreneurs to new V2 single-page (unless ?classic=1)
+    // Redirect based on role or userType
     const classic = c.req.query('classic')
-    if (!classic && payload.userType === 'entrepreneur') {
-      return c.redirect('/entrepreneur')
+    if (!classic) {
+      // Check stored role in DB
+      const roleRow = await c.env.DB.prepare('SELECT role FROM users WHERE id = ?').bind(payload.userId).first()
+      if (roleRow?.role === 'coach') return c.redirect('/coach/dashboard')
+      if (payload.userType === 'entrepreneur') return c.redirect('/entrepreneur')
     }
 
     const data = await getUserWithProgress(c.env.DB, payload.userId)
