@@ -1177,23 +1177,8 @@ app.get('/register', (c) => {
                 </select>
               </div>
 
-              {!isCoach && (
-                <div class="esono-form__group">
-                  <label for="status" class="esono-form__label">
-                    Statut <span class="esono-text-danger">*</span>
-                  </label>
-                  <select id="status" name="status" required class="esono-select">
-                    <option value="">Sélectionner un statut</option>
-                    <option value="student">Étudiant</option>
-                    <option value="entrepreneur">Entrepreneur</option>
-                    <option value="alumni">Alumni</option>
-                  </select>
-                </div>
-              )}
-
-              {isCoach && (
-                <input type="hidden" name="status" value="entrepreneur" />
-              )}
+              {/* Status is always "entrepreneur" - hidden field */}
+              <input type="hidden" name="status" value="entrepreneur" />
 
               <div class="esono-checkbox">
                 <input type="checkbox" id="terms" name="terms" required />

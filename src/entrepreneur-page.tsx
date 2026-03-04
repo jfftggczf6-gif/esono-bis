@@ -4258,8 +4258,6 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
       <div class="ev2-center__header">
         <div class="ev2-center__title" id="center-title"><i class="fas fa-stethoscope"></i> Diagnostic Expert</div>
         <div class="ev2-center__actions">
-          <button class="ev2-btn-sm" onclick="downloadDeliverable('html')"><i class="fas fa-file-code"></i> HTML</button>
-          <button class="ev2-btn-sm" onclick="downloadDeliverable('pdf')"><i class="fas fa-file-pdf"></i> PDF</button>
         </div>
       </div>
       <div class="ev2-center__content" id="center-content">
