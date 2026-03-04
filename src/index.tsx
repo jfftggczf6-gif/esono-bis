@@ -7049,8 +7049,8 @@ app.get('/module/sic/page', async (c) => {
 
     <!-- TEMPLATE + GENERATE -->
     <div class="flex flex-col sm:flex-row gap-3 items-center justify-center">
-      <a href="/templates/template-sic.docx" download class="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-sm font-medium shadow-sm transition">
-        <i class="fas fa-download text-emerald-600"></i> Télécharger le template SIC
+      <a href="/templates/Questionnaire_BMC_SIC.docx" download class="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-sm font-medium shadow-sm transition">
+        <i class="fas fa-download text-emerald-600"></i> Télécharger le questionnaire BMC & SIC
       </a>
 
       <button

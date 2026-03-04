@@ -972,8 +972,38 @@ coach.post('/api/coach/entrepreneur/:id/upload', async (c) => {
 
   if (!file) return c.json({ error: 'Aucun fichier fourni' }, 400)
 
-  const id = crypto.randomUUID()
   const text = await file.text().catch(() => '')
+
+  // Handle unified BMC & SIC document: create 2 entries (bmc + sic)
+  if (category === 'bmc_sic') {
+    // Delete existing bmc and sic uploads for this entrepreneur
+    await db.prepare('DELETE FROM coach_uploads WHERE entrepreneur_id = ? AND category IN (?, ?)').bind(entrepreneurId, 'bmc', 'sic').run()
+
+    const idBmc = crypto.randomUUID()
+    const idSic = crypto.randomUUID()
+    await db.prepare(
+      `INSERT INTO coach_uploads (id, coach_user_id, entrepreneur_id, category, filename, file_size, file_type, extracted_text)
+       VALUES (?, ?, ?, 'bmc', ?, ?, ?, ?)`
+    ).bind(idBmc, user.id, entrepreneurId, file.name, file.size, file.type, text.substring(0, 50000)).run()
+
+    await db.prepare(
+      `INSERT INTO coach_uploads (id, coach_user_id, entrepreneur_id, category, filename, file_size, file_type, extracted_text)
+       VALUES (?, ?, ?, 'sic', ?, ?, ?, ?)`
+    ).bind(idSic, user.id, entrepreneurId, file.name, file.size, file.type, text.substring(0, 50000)).run()
+
+    // Update entrepreneur last_activity
+    await db.prepare("UPDATE coach_entrepreneurs SET updated_at = datetime('now'), last_activity = datetime('now') WHERE id = ?")
+      .bind(entrepreneurId).run()
+
+    return c.json({ success: true, id: idBmc, filename: file.name })
+  }
+
+  // Replace existing for primary categories
+  if (category !== 'supplementary') {
+    await db.prepare('DELETE FROM coach_uploads WHERE entrepreneur_id = ? AND category = ?').bind(entrepreneurId, category).run()
+  }
+
+  const id = crypto.randomUUID()
 
   await db.prepare(
     `INSERT INTO coach_uploads (id, coach_user_id, entrepreneur_id, category, filename, file_size, file_type, extracted_text)
@@ -1313,7 +1343,9 @@ coach.get('/coach/entrepreneur/:id', async (c) => {
   // Build mirror deliverable map for V3 bottom icons
   const mirrorDelivMap: Record<string, any> = {}
   for (const d of mirrorDeliverables) { mirrorDelivMap[d.type] = d }
-  const mirrorUploadCount = uploadsByCategory.bmc.length + uploadsByCategory.sic.length + uploadsByCategory.inputs.length
+  const mirrorHasBmcSic = uploadsByCategory.bmc.length > 0 && uploadsByCategory.sic.length > 0
+  const mirrorUploadCount = (mirrorHasBmcSic ? 1 : 0) + (uploadsByCategory.inputs.length > 0 ? 1 : 0)
+  const mirrorUploadTotal = 2
   const hasMirrorGenerated = mirrorDeliverables.length > 0
 
   const content = `
@@ -1457,20 +1489,13 @@ coach.get('/coach/entrepreneur/:id', async (c) => {
       <div class="coach-content">
         <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:24px">
           <div class="upload-phase">
-            <div class="upload-phase__title"><i class="fas fa-fingerprint" style="color:#7c3aed"></i> Phase 1 — Identité</div>
-            <div class="upload-zone ${uploadsByCategory.bmc.length ? 'done' : ''}" onclick="document.getElementById('input-bmc').click()" ondragover="event.preventDefault();this.classList.add('active')" ondragleave="this.classList.remove('active')" ondrop="event.preventDefault();this.classList.remove('active');handleUpload(event.dataTransfer.files[0],'bmc')">
-              <div style="font-size:24px;color:${uploadsByCategory.bmc.length ? '#059669' : '#94a3b8'};margin-bottom:6px"><i class="fas ${uploadsByCategory.bmc.length ? 'fa-check-circle' : 'fa-file-word'}"></i></div>
-              <div style="font-size:13px;font-weight:600;color:#475569">Business Model Canvas (BMC)</div>
-              <div style="font-size:11px;color:#94a3b8;margin-top:2px">Word, PDF</div>
-              ${uploadsByCategory.bmc.map((f: any) => `<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;margin-top:8px;background:#f8fafc;border-radius:8px;text-align:left"><i class="fas fa-file" style="color:#2563eb"></i><span style="font-size:12px;font-weight:600;color:#1e293b;flex:1">${escapeHtml(f.filename)}</span><button onclick="event.stopPropagation();removeUpload('${f.id}','${id}')" style="border:none;background:#fee2e2;color:#dc2626;width:22px;height:22px;border-radius:6px;cursor:pointer;font-size:10px"><i class="fas fa-times"></i></button></div>`).join('')}
-              <input type="file" id="input-bmc" style="display:none" accept=".docx,.doc,.pdf" onchange="handleUpload(this.files[0],'bmc')">
-            </div>
-            <div class="upload-zone ${uploadsByCategory.sic.length ? 'done' : ''}" onclick="document.getElementById('input-sic').click()" ondragover="event.preventDefault();this.classList.add('active')" ondragleave="this.classList.remove('active')" ondrop="event.preventDefault();this.classList.remove('active');handleUpload(event.dataTransfer.files[0],'sic')">
-              <div style="font-size:24px;color:${uploadsByCategory.sic.length ? '#059669' : '#94a3b8'};margin-bottom:6px"><i class="fas ${uploadsByCategory.sic.length ? 'fa-check-circle' : 'fa-hand-holding-heart'}"></i></div>
-              <div style="font-size:13px;font-weight:600;color:#475569">Social Impact Canvas (SIC)</div>
-              <div style="font-size:11px;color:#94a3b8;margin-top:2px">Word, Excel, PDF</div>
-              ${uploadsByCategory.sic.map((f: any) => `<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;margin-top:8px;background:#f8fafc;border-radius:8px;text-align:left"><i class="fas fa-file" style="color:#7c3aed"></i><span style="font-size:12px;font-weight:600;color:#1e293b;flex:1">${escapeHtml(f.filename)}</span><button onclick="event.stopPropagation();removeUpload('${f.id}','${id}')" style="border:none;background:#fee2e2;color:#dc2626;width:22px;height:22px;border-radius:6px;cursor:pointer;font-size:10px"><i class="fas fa-times"></i></button></div>`).join('')}
-              <input type="file" id="input-sic" style="display:none" accept=".docx,.doc,.pdf,.xlsx,.xls" onchange="handleUpload(this.files[0],'sic')">
+            <div class="upload-phase__title"><i class="fas fa-fingerprint" style="color:#7c3aed"></i> Phase 1 — Identité & Impact</div>
+            <div class="upload-zone ${mirrorHasBmcSic ? 'done' : ''}" onclick="document.getElementById('input-bmc-sic').click()" ondragover="event.preventDefault();this.classList.add('active')" ondragleave="this.classList.remove('active')" ondrop="event.preventDefault();this.classList.remove('active');handleUpload(event.dataTransfer.files[0],'bmc_sic')">
+              <div style="font-size:24px;color:${mirrorHasBmcSic ? '#059669' : '#94a3b8'};margin-bottom:6px"><i class="fas ${mirrorHasBmcSic ? 'fa-check-circle' : 'fa-file-lines'}"></i></div>
+              <div style="font-size:13px;font-weight:600;color:#475569">Questionnaire BMC & Impact Social</div>
+              <div style="font-size:11px;color:#94a3b8;margin-top:2px">Word (.docx) — Document unifié</div>
+              ${mirrorHasBmcSic ? `<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;margin-top:8px;background:#f8fafc;border-radius:8px;text-align:left"><i class="fas fa-file" style="color:#059669"></i><span style="font-size:12px;font-weight:600;color:#1e293b;flex:1">${escapeHtml(uploadsByCategory.bmc[0]?.filename || 'BMC & SIC')}</span><button onclick="event.stopPropagation();removeBmcSicUpload('${id}')" style="border:none;background:#fee2e2;color:#dc2626;width:22px;height:22px;border-radius:6px;cursor:pointer;font-size:10px"><i class="fas fa-times"></i></button></div>` : ''}
+              <input type="file" id="input-bmc-sic" style="display:none" accept=".docx,.doc,.pdf" onchange="handleUpload(this.files[0],'bmc_sic')">
             </div>
           </div>
           <div class="upload-phase">
@@ -1536,35 +1561,23 @@ coach.get('/coach/entrepreneur/:id', async (c) => {
 
           <!-- Templates download -->
           <div class="cm-templates">
-            <a href="/coach/templates" class="cm-tpl-btn"><i class="fas fa-clipboard-list" style="color:#7c3aed"></i> Questionnaire BMC/SIC</a>
-            <a href="/coach/templates" class="cm-tpl-btn"><i class="fas fa-chart-bar" style="color:#059669"></i> Google Sheet Financier</a>
+            <a href="/coach/templates" class="cm-tpl-btn"><i class="fas fa-file-lines" style="color:#059669"></i> Questionnaire BMC & Impact Social</a>
+            <a href="/coach/templates" class="cm-tpl-btn"><i class="fas fa-calculator" style="color:#d97706"></i> Inputs Financiers</a>
           </div>
 
           <div class="cm-sidebar__uploads">
-            <div class="cm-sidebar__sources-title">Documents d'inputs (${mirrorUploadCount}/3)</div>
+            <div class="cm-sidebar__sources-title">Documents d'inputs (${mirrorUploadCount}/${mirrorUploadTotal})</div>
 
-            <!-- BMC -->
-            <div class="cm-upload-card ${uploadsByCategory.bmc.length ? 'cm-upload-card--done' : ''}" onclick="document.getElementById('mirror-bmc').click()">
-              <div class="cm-upload-card__icon" style="background:#dbeafe;color:#2563eb"><i class="fas fa-map"></i></div>
+            <!-- BMC & SIC Unified -->
+            <div class="cm-upload-card ${mirrorHasBmcSic ? 'cm-upload-card--done' : ''}" onclick="document.getElementById('mirror-bmc-sic').click()">
+              <div class="cm-upload-card__icon" style="background:linear-gradient(135deg,rgba(5,150,105,0.12),rgba(124,58,237,0.12));color:#059669"><i class="fas fa-file-lines"></i></div>
               <div class="cm-upload-card__info">
-                <div class="cm-upload-card__title">Business Model Canvas</div>
-                ${uploadsByCategory.bmc.length > 0
-                  ? uploadsByCategory.bmc.map((f: any) => `<div class="cm-upload-card__file"><i class="fas fa-check-circle" style="color:#059669"></i> ${escapeHtml(f.filename)}</div><button class="cm-upload-card__rm" onclick="event.stopPropagation();removeUploadMirror('${f.id}')" title="Supprimer"><i class="fas fa-trash"></i></button>`).join('')
-                  : '<div class="cm-upload-card__hint"><i class="fas fa-cloud-arrow-up"></i> .doc, .docx, .pdf</div>'}
+                <div class="cm-upload-card__title">BMC & Impact Social</div>
+                ${mirrorHasBmcSic
+                  ? `<div class="cm-upload-card__file"><i class="fas fa-check-circle" style="color:#059669"></i> ${escapeHtml(uploadsByCategory.bmc[0]?.filename || 'BMC & SIC')}</div><button class="cm-upload-card__rm" onclick="event.stopPropagation();removeBmcSicMirror()" title="Supprimer"><i class="fas fa-trash"></i></button>`
+                  : '<div class="cm-upload-card__hint"><i class="fas fa-cloud-arrow-up"></i> .docx (Questionnaire unifié)</div>'}
               </div>
-              <input type="file" id="mirror-bmc" style="display:none" accept=".doc,.docx,.pdf" onchange="handleMirrorUpload(this,'bmc')">
-            </div>
-
-            <!-- SIC -->
-            <div class="cm-upload-card ${uploadsByCategory.sic.length ? 'cm-upload-card--done' : ''}" onclick="document.getElementById('mirror-sic').click()">
-              <div class="cm-upload-card__icon" style="background:#d1fae5;color:#059669"><i class="fas fa-seedling"></i></div>
-              <div class="cm-upload-card__info">
-                <div class="cm-upload-card__title">Social Impact Canvas</div>
-                ${uploadsByCategory.sic.length > 0
-                  ? uploadsByCategory.sic.map((f: any) => `<div class="cm-upload-card__file"><i class="fas fa-check-circle" style="color:#059669"></i> ${escapeHtml(f.filename)}</div><button class="cm-upload-card__rm" onclick="event.stopPropagation();removeUploadMirror('${f.id}')" title="Supprimer"><i class="fas fa-trash"></i></button>`).join('')
-                  : '<div class="cm-upload-card__hint"><i class="fas fa-cloud-arrow-up"></i> .doc, .docx, .xls, .xlsx, .pdf</div>'}
-              </div>
-              <input type="file" id="mirror-sic" style="display:none" accept=".doc,.docx,.xls,.xlsx,.pdf" onchange="handleMirrorUpload(this,'sic')">
+              <input type="file" id="mirror-bmc-sic" style="display:none" accept=".doc,.docx,.pdf" onchange="handleMirrorUpload(this,'bmc_sic')">
             </div>
 
             <!-- Inputs Financiers -->
@@ -1602,7 +1615,7 @@ coach.get('/coach/entrepreneur/:id', async (c) => {
           <div class="cm-sidebar__gen">
             <button class="cm-gen-btn" id="btn-mirror-gen" ${mirrorUploadCount === 0 ? 'disabled' : ''} onclick="generateMirror()">
               <span><i class="fas fa-wand-magic-sparkles"></i> ${hasMirrorGenerated ? 'Reg\u00e9n\u00e9rer les livrables' : 'G\u00e9n\u00e9rer les livrables'}</span>
-              <span class="cm-gen-btn__sub">${mirrorUploadCount}/3 inputs</span>
+              <span class="cm-gen-btn__sub">${mirrorUploadCount}/${mirrorUploadTotal} inputs</span>
             </button>
           </div>
         </aside>
@@ -1693,6 +1706,20 @@ coach.get('/coach/entrepreneur/:id', async (c) => {
         if (!confirm('Supprimer ce fichier ?')) return;
         try { await fetch('/api/coach/entrepreneur/' + entId + '/upload/' + uploadId, { method: 'DELETE', credentials: 'include' }); window.location.reload(); } catch (e) { alert('Erreur: ' + e.message); }
       }
+      async function removeBmcSicUpload(entId) {
+        if (!confirm('Supprimer le document BMC & SIC ?')) return;
+        try {
+          var res = await fetch('/api/coach/entrepreneur/' + entId + '/uploads', { credentials: 'include' });
+          var data = await res.json();
+          var ups = data.uploads || [];
+          for (var u of ups) {
+            if (u.category === 'bmc' || u.category === 'sic') {
+              await fetch('/api/coach/entrepreneur/' + entId + '/upload/' + u.id, { method: 'DELETE', credentials: 'include' });
+            }
+          }
+          window.location.reload();
+        } catch (e) { alert('Erreur: ' + e.message); }
+      }
 
       // ─── Parcours Rapide: Generate ───
       async function generateDeliverables() {
@@ -1734,6 +1761,20 @@ coach.get('/coach/entrepreneur/:id', async (c) => {
       async function removeUploadMirror(uploadId) {
         if (!confirm('Supprimer ce fichier ?')) return;
         try { await fetch('/api/coach/entrepreneur/' + ENTREPRENEUR_ID + '/upload/' + uploadId, { method: 'DELETE', credentials: 'include' }); window.location.reload(); } catch (e) { alert('Erreur: ' + e.message); }
+      }
+      async function removeBmcSicMirror() {
+        if (!confirm('Supprimer le document BMC & SIC ?')) return;
+        try {
+          var res = await fetch('/api/coach/entrepreneur/' + ENTREPRENEUR_ID + '/uploads', { credentials: 'include' });
+          var data = await res.json();
+          var ups = data.uploads || [];
+          for (var u of ups) {
+            if (u.category === 'bmc' || u.category === 'sic') {
+              await fetch('/api/coach/entrepreneur/' + ENTREPRENEUR_ID + '/upload/' + u.id, { method: 'DELETE', credentials: 'include' });
+            }
+          }
+          window.location.reload();
+        } catch (e) { alert('Erreur: ' + e.message); }
       }
 
       // ─── Vue Miroir: Generate ───
@@ -1840,10 +1881,11 @@ coach.get('/coach/entrepreneur/:id', async (c) => {
 coach.get('/api/templates/:name', async (c) => {
   const name = c.req.param('name')
   const validTemplates: Record<string, { filename: string; mime: string }> = {
-    'bmc': { filename: 'Template_BMC.docx', mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
-    'sic': { filename: 'Template_SIC.docx', mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
+    'bmc-sic': { filename: 'Questionnaire_BMC_SIC.docx', mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
+    'bmc': { filename: 'Questionnaire_BMC_SIC.docx', mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
+    'sic': { filename: 'Questionnaire_BMC_SIC.docx', mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
     'inputs': { filename: 'Template_Inputs_Financiers.xlsx', mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
-    'plan-ovo': { filename: 'Plan_Financier_OVO.xlsm', mime: 'application/vnd.ms-excel.sheet.macroEnabled.12' },
+    'plan-ovo': { filename: 'plan_ovo_template.xlsm', mime: 'application/vnd.ms-excel.sheet.macroEnabled.12' },
   }
 
   const tpl = validTemplates[name]
@@ -1865,8 +1907,7 @@ coach.get('/coach/templates', async (c) => {
   const user = c.get('coachUser') as any
 
   const templates = [
-    { key: 'bmc', name: 'Business Model Canvas (BMC)', desc: 'Canevas de mod\u00e8le \u00e9conomique \u2014 Questionnaire complet pour analyser la proposition de valeur, segments clients, canaux et revenus.', icon: 'fa-map', color: '#059669', ext: '.docx' },
-    { key: 'sic', name: 'Social Impact Canvas (SIC)', desc: 'Canevas d\'impact social \u2014 Cadre d\'analyse des b\u00e9n\u00e9ficiaires, indicateurs ODD et th\u00e9orie du changement.', icon: 'fa-hand-holding-heart', color: '#2563eb', ext: '.docx' },
+    { key: 'bmc-sic', name: 'Questionnaire BMC & Impact Social', desc: 'Document unifi\u00e9 \u2014 Business Model Canvas + Social Impact Canvas. Questionnaire complet couvrant la proposition de valeur, segments clients, b\u00e9n\u00e9ficiaires, impact et ODD.', icon: 'fa-file-lines', color: '#059669', ext: '.docx' },
     { key: 'inputs', name: 'Inputs Financiers', desc: 'Fichier de saisie des donn\u00e9es financi\u00e8res \u2014 Chiffre d\'affaires, charges, investissements et hypoth\u00e8ses pr\u00e9visionnelles.', icon: 'fa-calculator', color: '#d97706', ext: '.xlsx' },
     { key: 'plan-ovo', name: 'Plan Financier OVO', desc: 'Mod\u00e8le financier macro-\u00e9nable \u2014 Projections cash-flow, bilan et compte de r\u00e9sultat sur 5 ans.', icon: 'fa-chart-line', color: '#7c3aed', ext: '.xlsm' },
   ]

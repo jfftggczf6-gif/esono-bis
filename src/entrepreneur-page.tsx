@@ -666,13 +666,14 @@ entrepreneurRoutes.post('/api/upload', async (c) => {
 
     if (!file || !category) return c.json({ error: 'Fichier et catégorie requis' }, 400)
 
-    const validCategories = ['bmc', 'sic', 'inputs', 'supplementary']
+    const validCategories = ['bmc', 'sic', 'inputs', 'supplementary', 'bmc_sic']
     if (!validCategories.includes(category)) return c.json({ error: 'Catégorie invalide' }, 400)
 
     const ext = file.name.split('.').pop()?.toLowerCase() || ''
     const allowedByCategory: Record<string, string[]> = {
       bmc: ['doc', 'docx', 'pdf'],
       sic: ['doc', 'docx', 'xls', 'xlsx', 'pdf'],
+      bmc_sic: ['doc', 'docx', 'pdf'],
       inputs: ['xls', 'xlsx', 'csv', 'pdf'],
       supplementary: ['doc', 'docx', 'xls', 'xlsx', 'pdf', 'csv', 'txt', 'png', 'jpg', 'jpeg']
     }
@@ -683,7 +684,10 @@ entrepreneurRoutes.post('/api/upload', async (c) => {
     if (file.size > 10 * 1024 * 1024) return c.json({ error: 'Fichier trop volumineux (max 10 Mo)' }, 400)
 
     // Replace existing for primary categories
-    if (category !== 'supplementary') {
+    if (category === 'bmc_sic') {
+      // Unified BMC & SIC doc: delete both existing bmc and sic uploads
+      await c.env.DB.prepare('DELETE FROM uploads WHERE user_id = ? AND category IN (?, ?)').bind(payload.userId, 'bmc', 'sic').run()
+    } else if (category !== 'supplementary') {
       const existing = await c.env.DB.prepare('SELECT id FROM uploads WHERE user_id = ? AND category = ?')
         .bind(payload.userId, category).first()
       if (existing) await c.env.DB.prepare('DELETE FROM uploads WHERE id = ?').bind(existing.id).run()
@@ -731,6 +735,23 @@ entrepreneurRoutes.post('/api/upload', async (c) => {
         console.error('[Upload] DOCX parse error (non-fatal):', err.message)
         // Keep base64 only as fallback
       }
+    }
+
+    // For bmc_sic: store as TWO entries (bmc + sic) so existing generation pipeline works
+    if (category === 'bmc_sic') {
+      const idBmc = crypto.randomUUID()
+      const idSic = crypto.randomUUID()
+      await c.env.DB.prepare(`
+        INSERT INTO uploads (id, user_id, category, filename, r2_key, file_type, file_size, extracted_text, uploaded_at)
+        VALUES (?, ?, 'bmc', ?, ?, ?, ?, ?, datetime('now'))
+      `).bind(idBmc, payload.userId, file.name, r2Key, file.type, file.size, extractedText).run()
+
+      await c.env.DB.prepare(`
+        INSERT INTO uploads (id, user_id, category, filename, r2_key, file_type, file_size, extracted_text, uploaded_at)
+        VALUES (?, ?, 'sic', ?, ?, ?, ?, ?, datetime('now'))
+      `).bind(idSic, payload.userId, file.name, r2Key, file.type, file.size, extractedText).run()
+
+      return c.json({ success: true, upload: { id: idBmc, category: 'bmc_sic', filename: file.name, file_type: file.type, file_size: file.size } })
     }
 
     await c.env.DB.prepare(`
@@ -3911,7 +3932,9 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
     const hasGenerated = !!latestIteration
     const scoresDim = latestIteration?.scores_dimensions ? JSON.parse(latestIteration.scores_dimensions) : null
 
-    const uploadCount = [uploadsByCategory.bmc, uploadsByCategory.sic, uploadsByCategory.inputs].filter(Boolean).length
+    const hasBmcSic = !!(uploadsByCategory.bmc && uploadsByCategory.sic)
+    const uploadCount = (hasBmcSic ? 1 : 0) + (uploadsByCategory.inputs ? 1 : 0)
+    const uploadTotal = 2  // BMC&SIC + Inputs
     const scoreColor = score >= 0 ? getScoreColor(score) : '#d1d5db'
 
     const updatedAt = latestIteration?.created_at
@@ -3927,16 +3950,16 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
     ])
     const generableCount = DELIVERABLE_TYPES.filter(dt => canGenerate(dt.deps, uploadedCategories)).length
     if (uploadCount === 0) {
-      btnLabel = 'COMMENCER → UPLOADER MES DOCUMENTS'; btnSub = '(0/3 — Uploadez au moins un document)'; btnClass = 'ev2-btn--disabled'; btnDisabled = true; btnTooltip = 'Uploadez au moins un document pour commencer'
-    } else if (uploadCount < 3) {
+      btnLabel = 'COMMENCER → UPLOADER MES DOCUMENTS'; btnSub = '(0/2 — Uploadez au moins un document)'; btnClass = 'ev2-btn--disabled'; btnDisabled = true; btnTooltip = 'Uploadez au moins un document pour commencer'
+    } else if (uploadCount < 2) {
       btnLabel = hasGenerated ? 'REGÉNÉRER LES LIVRABLES' : 'GÉNÉRER LES LIVRABLES'
-      btnSub = `(${uploadCount}/3 inputs — ${generableCount}/7 livrables générables)`
-      btnClass = uploadCount === 1 ? 'ev2-btn--orange' : 'ev2-btn--yellow'; btnDisabled = false
-      const missingLabels = ['bmc', 'sic', 'inputs'].filter(c => !uploadedCategories.has(c)).map(c => DEP_LABELS[c]).join(', ')
+      btnSub = `(${uploadCount}/2 inputs — ${generableCount}/7 livrables générables)`
+      btnClass = 'ev2-btn--orange'; btnDisabled = false
+      const missingLabels = (!hasBmcSic ? ['BMC & SIC'] : []).concat(!uploadsByCategory.inputs ? ['Inputs Financiers'] : []).join(', ')
       btnTooltip = `Génération partielle. Manque : ${missingLabels}`
     } else {
       btnLabel = hasGenerated ? 'REGÉNÉRER LES LIVRABLES' : 'GÉNÉRER LES LIVRABLES'
-      btnSub = '(3/3 inputs — 7/7 livrables · Analyse complète)'; btnClass = 'ev2-btn--green'; btnDisabled = false; btnTooltip = 'Tous les documents sont uploadés. Génération complète des 7 livrables.'
+      btnSub = '(2/2 inputs — 7/7 livrables · Analyse complète)'; btnClass = 'ev2-btn--green'; btnDisabled = false; btnTooltip = 'Tous les documents sont uploadés. Génération complète des 7 livrables.'
     }
 
     // ── Build uploaded sources list for sidebar ──
@@ -4184,32 +4207,19 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
 
       <!-- Upload cards (3 separate CTAs: BMC, SIC, Financier) -->
       <div class="ev2-sidebar__uploads" id="sources-list">
-        <div class="ev2-sidebar__sources-title">Documents d'inputs (${uploadCount}/3)</div>
+        <div class="ev2-sidebar__sources-title">Documents d'inputs (${uploadCount}/${uploadTotal})</div>
         
-        <!-- BMC Upload Card -->
-        <div class="ev2-upload-card ${uploadsByCategory.bmc ? 'ev2-upload-card--done' : ''}" onclick="document.getElementById('file-bmc').click()">
-          <div class="ev2-upload-card__icon ev2-upload-card__icon--bmc"><i class="fas fa-map"></i></div>
+        <!-- BMC & SIC Combined Upload Card -->
+        <div class="ev2-upload-card ${(uploadsByCategory.bmc && uploadsByCategory.sic) ? 'ev2-upload-card--done' : uploadsByCategory.bmc ? 'ev2-upload-card--partial' : ''}" onclick="document.getElementById('file-bmc-sic').click()">
+          <div class="ev2-upload-card__icon ev2-upload-card__icon--bmc" style="background:linear-gradient(135deg,rgba(5,150,105,0.12),rgba(124,58,237,0.12))"><i class="fas fa-file-lines"></i></div>
           <div class="ev2-upload-card__info">
-            <div class="ev2-upload-card__title">Business Model Canvas</div>
+            <div class="ev2-upload-card__title">BMC & Impact Social</div>
             ${uploadsByCategory.bmc 
-              ? `<div class="ev2-upload-card__file"><i class="fas fa-check-circle" style="color:#059669"></i> ${escapeHtml((uploadsByCategory.bmc as any).filename || 'BMC')}</div>
-                 <button class="ev2-upload-card__rm" onclick="event.stopPropagation();rmUpload('${(uploadsByCategory.bmc as any).id}')" title="Supprimer"><i class="fas fa-trash"></i></button>`
-              : `<div class="ev2-upload-card__hint"><i class="fas fa-cloud-arrow-up"></i> .doc, .docx, .pdf</div>`}
+              ? `<div class="ev2-upload-card__file"><i class="fas fa-check-circle" style="color:#059669"></i> ${escapeHtml((uploadsByCategory.bmc as any).filename || 'BMC & SIC')}</div>
+                 <button class="ev2-upload-card__rm" onclick="event.stopPropagation();rmBmcSic()" title="Supprimer"><i class="fas fa-trash"></i></button>`
+              : `<div class="ev2-upload-card__hint"><i class="fas fa-cloud-arrow-up"></i> .docx (Questionnaire unifié)</div>`}
           </div>
-          <input type="file" id="file-bmc" accept=".doc,.docx,.pdf" onchange="handleUpload(this,'bmc')" style="display:none">
-        </div>
-
-        <!-- SIC Upload Card -->
-        <div class="ev2-upload-card ${uploadsByCategory.sic ? 'ev2-upload-card--done' : ''}" onclick="document.getElementById('file-sic').click()">
-          <div class="ev2-upload-card__icon ev2-upload-card__icon--sic"><i class="fas fa-seedling"></i></div>
-          <div class="ev2-upload-card__info">
-            <div class="ev2-upload-card__title">Social Impact Canvas</div>
-            ${uploadsByCategory.sic 
-              ? `<div class="ev2-upload-card__file"><i class="fas fa-check-circle" style="color:#059669"></i> ${escapeHtml((uploadsByCategory.sic as any).filename || 'SIC')}</div>
-                 <button class="ev2-upload-card__rm" onclick="event.stopPropagation();rmUpload('${(uploadsByCategory.sic as any).id}')" title="Supprimer"><i class="fas fa-trash"></i></button>`
-              : `<div class="ev2-upload-card__hint"><i class="fas fa-cloud-arrow-up"></i> .doc, .docx, .xls, .xlsx, .pdf</div>`}
-          </div>
-          <input type="file" id="file-sic" accept=".doc,.docx,.xls,.xlsx,.pdf" onchange="handleUpload(this,'sic')" style="display:none">
+          <input type="file" id="file-bmc-sic" accept=".doc,.docx,.pdf" onchange="handleUpload(this,'bmc_sic')" style="display:none">
         </div>
 
         <!-- Inputs Financiers Upload Card -->
@@ -4248,7 +4258,7 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
       <div class="ev2-sidebar__gen">
         <button class="ev2-gen-btn" id="btn-gen" ${uploadCount === 0 ? 'disabled' : ''} onclick="generateAll()">
           <span><i class="fas fa-wand-magic-sparkles"></i> ${hasGenerated ? 'Regénérer les livrables' : 'Générer les livrables'}</span>
-          <span class="ev2-gen-btn__sub">${uploadCount}/3 inputs · ${generableCount}/7 livrables</span>
+          <span class="ev2-gen-btn__sub">${uploadCount}/${uploadTotal} inputs · ${generableCount}/7 livrables</span>
         </button>
       </div>
     </aside>
@@ -4363,6 +4373,21 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
     // ── Delete upload ──
     async function rmUpload(id) {
       try { await fetch('/api/upload/' + id, { method: 'DELETE', credentials: 'include' }); location.reload(); } catch (e) { alert('Erreur: ' + e.message); }
+    }
+
+    // Delete both BMC and SIC uploads (unified document)
+    async function rmBmcSic() {
+      try {
+        const res = await fetch('/api/uploads', { credentials: 'include' });
+        const data = await res.json();
+        const uploads = data.uploads || [];
+        for (const u of uploads) {
+          if (u.category === 'bmc' || u.category === 'sic') {
+            await fetch('/api/upload/' + u.id, { method: 'DELETE', credentials: 'include' });
+          }
+        }
+        location.reload();
+      } catch (e) { alert('Erreur: ' + e.message); }
     }
 
     // ── Generate ──
