@@ -3888,13 +3888,12 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { height: 100%; margin: 0; padding: 0; }
-    body { font-family: 'Inter', 'IBM Plex Sans', sans-serif; background: white; color: #374151; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+    body { font-family: 'Inter', 'IBM Plex Sans', sans-serif; background: white; color: #374151; margin: 0; padding: 0; min-height: 100vh; overflow-x: hidden; }
     a { color: #1e3a5f; text-decoration: none; }
     a:hover { text-decoration: underline; color: #2a4d7a; }
     
     /* ── App Header ── */
-    .ev2-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 20px; background: #ffffff; border-bottom: 1px solid #e5e7eb; z-index: 100; box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05); flex-shrink: 0; }
+    .ev2-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 20px; background: #ffffff; border-bottom: 1px solid #e5e7eb; position: sticky; top: 0; z-index: 100; box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05); flex-shrink: 0; }
     .ev2-header__brand { font-size: 18px; font-weight: 800; color: #1e3a5f; letter-spacing: 1px; text-decoration: none; }
     .ev2-header__right { display: flex; align-items: center; gap: 14px; }
     .ev2-header__user { font-size: 12px; color: #6b7280; }
@@ -3914,7 +3913,7 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
     .ev2-score__meta span { margin: 0 6px; }
     
     /* ═══ MAIN LAYOUT: Sidebar + Center + Bottom ═══ */
-    .ev2-main { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+    .ev2-main { display: flex; height: calc(100vh - 90px); overflow: hidden; }
     
     /* ── LEFT SIDEBAR (NotebookLM style) ── */
     .ev2-sidebar { width: 320px; min-width: 320px; background: #f9fafb; border-right: 1px solid #e5e7eb; display: flex; flex-direction: column; overflow: hidden; }
@@ -3972,14 +3971,14 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
     .ev2-gen-btn__sub { font-size: 10px; font-weight: 400; opacity: 0.8; }
     
     /* ── CENTER CONTENT AREA ── */
-    .ev2-content { flex: 1; display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+    .ev2-content { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
     .ev2-center__header { display: flex; align-items: center; justify-content: space-between; padding: 10px 20px; background: #ffffff; border-bottom: 1px solid #e5e7eb; flex-shrink: 0; }
     .ev2-center__title { font-size: 14px; font-weight: 700; color: #1e3a5f; display: flex; align-items: center; gap: 8px; }
     .ev2-center__actions { display: flex; gap: 6px; }
     .ev2-center__content { flex: 1; overflow-y: auto; padding: 16px 20px; min-height: 0; background: #f9fafb; }
     
     /* ── BOTTOM DELIVERABLE ICONS (7-column grid) ── */
-    .ev2-bottom { background: #ffffff; border-top: 1px solid #e5e7eb; padding: 14px 20px; flex-shrink: 0; position: relative; z-index: 10; pointer-events: auto; }
+    .ev2-bottom { background: #ffffff; border-top: 1px solid #e5e7eb; padding: 14px 20px; flex: 0 0 auto; position: relative; z-index: 10; }
     .ev2-bottom__grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 10px; }
     .ev2-deliv-icon { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 12px 6px; border-radius: 12px; cursor: pointer; transition: all 0.2s; border: 2px solid transparent; text-align: center; position: relative; }
     .ev2-deliv-icon:hover { background: #f3f4f6; }
@@ -4040,13 +4039,12 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
     
     /* ── Responsive ── */
     @media (max-width: 768px) {
-      body { height: 100vh; overflow: hidden; }
-      .ev2-main { flex-direction: column; }
+      .ev2-main { flex-direction: column; height: auto; min-height: calc(100vh - 90px); }
       .ev2-sidebar { display: none; position: fixed; top: 0; left: 0; bottom: 0; width: 300px; z-index: 91; box-shadow: 4px 0 20px rgba(0,0,0,0.15); }
       .ev2-sidebar--open { display: flex; }
       .ev2-sidebar-overlay--open { display: block; }
       .ev2-sidebar-toggle { display: flex; }
-      .ev2-content { flex: 1; min-height: 0; }
+      .ev2-content { min-height: 60vh; }
       .ev2-bottom__grid { grid-template-columns: repeat(4, 1fr); gap: 6px; }
       .ev2-deliv-icon__label { font-size: 9px; }
       .ev2-deliv-icon__circle { width: 36px; height: 36px; font-size: 15px; }
