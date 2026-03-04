@@ -1954,395 +1954,11 @@ app.get('/dashboard', async (c) => {
 })
 
 // ═══════════════════════════════════════════════════════════════
-// Helper: Render Plan OVO Module Page HTML
+// [REMOVED] renderPlanOvoModulePage — Plan OVO module page removed.
+// Dashboard handles all OVO display/download. The OVO module page
+// was causing bugs (auto-fill, pme_id mismatch, duplicates).
+// API routes /api/plan-ovo/* are kept for dashboard use.
 // ═══════════════════════════════════════════════════════════════
-function renderPlanOvoModulePage(opts: {
-  hasFramework: boolean; hasBmc: boolean; hasSic: boolean; hasDiagnostic: boolean;
-  hasPlan: boolean; planStatus: string; planScore: number | null; planVersion: number; hasHtmlPreview: boolean;
-  framework: any; bmc: any; sic: any; diagnostic: any; user: any;
-}): string {
-  const { hasFramework, hasBmc, hasSic, hasDiagnostic, hasPlan, planStatus, planScore, planVersion, hasHtmlPreview, framework, bmc, sic, diagnostic, user } = opts
-  return `<!DOCTYPE html>
-<html lang="fr">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Plan Financier OVO — Format Bailleurs | GOTCHE</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
-  <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
-    * { font-family: 'Inter', sans-serif; }
-    body { background: white; margin: 0; }
-    .ovo-header { background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); color: white; padding: 24px 32px; }
-    .ovo-header__back { color: #94a3b8; text-decoration: none; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; margin-bottom: 16px; transition: color 0.2s; }
-    .ovo-header__back:hover { color: white; }
-    .ovo-header__title { font-size: 28px; font-weight: 800; display: flex; align-items: center; gap: 14px; }
-    .ovo-header__sub { color: #94a3b8; font-size: 14px; margin-top: 6px; }
-    .ovo-container { max-width: 1100px; margin: 0 auto; padding: 24px 20px 60px; }
-    .ovo-card { background: white; border-radius: 16px; border: 1px solid #e2e8f0; padding: 24px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
-    .ovo-card__title { font-size: 16px; font-weight: 700; color: #1e293b; margin-bottom: 12px; display: flex; align-items: center; gap: 10px; }
-    .ovo-source { display: flex; align-items: center; gap: 14px; padding: 14px 16px; background: #f8fafc; border-radius: 12px; margin-bottom: 8px; border: 1px solid #e2e8f0; }
-    .ovo-source--ok { background: #f0fdf4; border-color: #bbf7d0; }
-    .ovo-source--missing { background: #fef2f2; border-color: #fecaca; }
-    .ovo-source--optional { background: #fffbeb; border-color: #fde68a; }
-    .ovo-source__icon { width: 40px; height: 40px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 16px; flex-shrink: 0; }
-    .ovo-source__label { font-size: 14px; font-weight: 600; color: #1e293b; }
-    .ovo-source__status { font-size: 12px; margin-top: 2px; }
-    .ovo-btn { display: inline-flex; align-items: center; gap: 10px; padding: 14px 28px; border-radius: 12px; font-size: 15px; font-weight: 700; border: none; cursor: pointer; transition: all 0.2s; }
-    .ovo-btn--primary { background: linear-gradient(135deg, #ea580c, #c2410c); color: white; box-shadow: 0 4px 14px rgba(234,88,12,0.3); }
-    .ovo-btn--primary:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(234,88,12,0.4); }
-    .ovo-btn--primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
-    .ovo-btn--download { background: #059669; color: white; box-shadow: 0 4px 14px rgba(5,150,105,0.3); }
-    .ovo-btn--download:hover { background: #047857; }
-    .ovo-btn--download:disabled { opacity: 0.4; cursor: not-allowed; }
-    .ovo-btn--fill { background: #2563eb; color: white; box-shadow: 0 4px 14px rgba(37,99,235,0.3); }
-    .ovo-btn--fill:hover { background: #1d4ed8; }
-    .ovo-btn--fill:disabled { opacity: 0.4; cursor: not-allowed; }
-    .ovo-badge--filled { background: #d1fae5; color: #065f46; }
-    .ovo-preview { background: #f1f5f9; border-radius: 16px; border: 2px dashed #cbd5e1; padding: 60px 20px; text-align: center; color: #64748b; }
-    .ovo-preview--ready { border-style: solid; border-color: #059669; background: #f0fdf4; }
-    .ovo-badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; }
-    .ovo-badge--pending { background: #fef3c7; color: #92400e; }
-    .ovo-badge--generating { background: #dbeafe; color: #1e40af; }
-    .ovo-badge--generated { background: #d1fae5; color: #065f46; }
-    .ovo-badge--error { background: #fee2e2; color: #991b1b; }
-    .ovo-badge--none { background: #f1f5f9; color: #64748b; }
-    .ovo-sheets { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; margin-top: 14px; }
-    .ovo-sheet { padding: 12px; background: #f8fafc; border-radius: 10px; border: 1px solid #e2e8f0; text-align: center; }
-    .ovo-sheet__name { font-size: 13px; font-weight: 600; color: #334155; }
-    .ovo-sheet__desc { font-size: 11px; color: #94a3b8; margin-top: 2px; }
-    @keyframes spin { to { transform: rotate(360deg); } }
-    .ovo-spin { animation: spin 1s linear infinite; }
-  </style>
-</head>
-<body>
-  <div class="ovo-header">
-    <a href="/entrepreneur" class="ovo-header__back"><i class="fas fa-arrow-left"></i> Retour au tableau de bord</a>
-    <div class="ovo-header__title">
-      \u{1F4B0} Plan Financier OVO \u2014 Format Bailleurs
-    </div>
-    <div class="ovo-header__sub">
-      Phase 3 \u00B7 Dossier Investisseur \u2014 Module 6 \u00B7 Projections financi\u00E8res 5 ans (InputsData, RevenueData, FinanceData)
-    </div>
-  </div>
-
-  <div class="ovo-container">
-
-    <!-- Description -->
-    <div class="ovo-card">
-      <div class="ovo-card__title"><i class="fas fa-info-circle" style="color:#0284c7"></i> \u00C0 propos</div>
-      <p style="font-size:14px;color:#475569;line-height:1.7;margin:0">
-        Le <strong>Plan Financier OVO</strong> est le document financier au format bailleurs (OVO - Outil de Valorisation des Opportunit\u00E9s). 
-        Il est g\u00E9n\u00E9r\u00E9 automatiquement \u00E0 partir de vos donn\u00E9es Framework (obligatoire) et enrichi avec les informations de votre BMC, SIC et Diagnostic.
-        Le r\u00E9sultat est un fichier <strong>Excel (.xlsm)</strong> contenant vos projections financi\u00E8res sur 5 ans : 
-        revenus par produit/service, P&amp;L, cash-flow, et plan de financement.
-      </p>
-    </div>
-
-    <!-- Sources disponibles -->
-    <div class="ovo-card">
-      <div class="ovo-card__title"><i class="fas fa-database" style="color:#7c3aed"></i> Sources de donn\u00E9es</div>
-      
-      <div class="ovo-source ${hasFramework ? 'ovo-source--ok' : 'ovo-source--missing'}">
-        <div class="ovo-source__icon" style="background:${hasFramework ? '#d1fae5' : '#fee2e2'};color:${hasFramework ? '#059669' : '#dc2626'}">
-          <i class="fas fa-chart-pie"></i>
-        </div>
-        <div style="flex:1">
-          <div class="ovo-source__label">Plan Financier Interm\u00E9diaire (Framework)</div>
-          <div class="ovo-source__status" style="color:${hasFramework ? '#059669' : '#dc2626'}">
-            ${hasFramework 
-              ? `<i class="fas fa-check-circle"></i> Disponible \u2014 Score: ${framework?.score || '\u2014'}/100`
-              : '<i class="fas fa-exclamation-triangle"></i> <strong>REQUIS</strong> \u2014 G\u00E9n\u00E9rez d\'abord vos livrables depuis le tableau de bord'}
-          </div>
-        </div>
-        <span class="ovo-badge ${hasFramework ? 'ovo-badge--generated' : 'ovo-badge--error'}">
-          ${hasFramework ? '<i class="fas fa-check"></i> OK' : '<i class="fas fa-times"></i> Manquant'}
-        </span>
-      </div>
-
-      <div class="ovo-source ${hasBmc ? 'ovo-source--ok' : 'ovo-source--optional'}">
-        <div class="ovo-source__icon" style="background:${hasBmc ? '#d1fae5' : '#fef3c7'};color:${hasBmc ? '#059669' : '#d97706'}">
-          <i class="fas fa-th"></i>
-        </div>
-        <div style="flex:1">
-          <div class="ovo-source__label">Business Model Canvas (BMC)</div>
-          <div class="ovo-source__status" style="color:${hasBmc ? '#059669' : '#d97706'}">
-            ${hasBmc 
-              ? `<i class="fas fa-check-circle"></i> Disponible \u2014 Score: ${bmc?.score || '\u2014'}/100`
-              : '<i class="fas fa-info-circle"></i> Optionnel \u2014 enrichit la description des activit\u00E9s'}
-          </div>
-        </div>
-        <span class="ovo-badge ${hasBmc ? 'ovo-badge--generated' : 'ovo-badge--pending'}">
-          ${hasBmc ? '<i class="fas fa-check"></i> OK' : '<i class="fas fa-minus"></i> Optionnel'}
-        </span>
-      </div>
-
-      <div class="ovo-source ${hasSic ? 'ovo-source--ok' : 'ovo-source--optional'}">
-        <div class="ovo-source__icon" style="background:${hasSic ? '#d1fae5' : '#fef3c7'};color:${hasSic ? '#059669' : '#d97706'}">
-          <i class="fas fa-hand-holding-heart"></i>
-        </div>
-        <div style="flex:1">
-          <div class="ovo-source__label">Social Impact Canvas (SIC)</div>
-          <div class="ovo-source__status" style="color:${hasSic ? '#059669' : '#d97706'}">
-            ${hasSic 
-              ? `<i class="fas fa-check-circle"></i> Disponible \u2014 Score: ${sic?.score || '\u2014'}/100`
-              : '<i class="fas fa-info-circle"></i> Optionnel \u2014 enrichit les indicateurs d\'impact'}
-          </div>
-        </div>
-        <span class="ovo-badge ${hasSic ? 'ovo-badge--generated' : 'ovo-badge--pending'}">
-          ${hasSic ? '<i class="fas fa-check"></i> OK' : '<i class="fas fa-minus"></i> Optionnel'}
-        </span>
-      </div>
-
-      <div class="ovo-source ${hasDiagnostic ? 'ovo-source--ok' : 'ovo-source--optional'}">
-        <div class="ovo-source__icon" style="background:${hasDiagnostic ? '#d1fae5' : '#fef3c7'};color:${hasDiagnostic ? '#059669' : '#d97706'}">
-          <i class="fas fa-stethoscope"></i>
-        </div>
-        <div style="flex:1">
-          <div class="ovo-source__label">Diagnostic Expert</div>
-          <div class="ovo-source__status" style="color:${hasDiagnostic ? '#059669' : '#d97706'}">
-            ${hasDiagnostic 
-              ? `<i class="fas fa-check-circle"></i> Disponible \u2014 Score: ${diagnostic?.score || '\u2014'}/100`
-              : '<i class="fas fa-info-circle"></i> Optionnel \u2014 enrichit l\'analyse des risques'}
-          </div>
-        </div>
-        <span class="ovo-badge ${hasDiagnostic ? 'ovo-badge--generated' : 'ovo-badge--pending'}">
-          ${hasDiagnostic ? '<i class="fas fa-check"></i> OK' : '<i class="fas fa-minus"></i> Optionnel'}
-        </span>
-      </div>
-    </div>
-
-    <!-- G\u00E9n\u00E9ration -->
-    <div class="ovo-card">
-      <div class="ovo-card__title">
-        <i class="fas fa-cog" style="color:#ea580c"></i> G\u00E9n\u00E9ration du Plan OVO
-        ${hasPlan ? `<span class="ovo-badge ovo-badge--${planStatus}">${
-          planStatus === 'pending' ? '<i class="fas fa-clock"></i> En attente' :
-          planStatus === 'generating' ? '<i class="fas fa-spinner ovo-spin"></i> En cours' :
-          planStatus === 'generated' ? '<i class="fas fa-check-circle"></i> G\u00E9n\u00E9r\u00E9' :
-          planStatus === 'filling' ? '<i class="fas fa-spinner ovo-spin"></i> Remplissage' :
-          planStatus === 'filled' ? '<i class="fas fa-file-excel"></i> Excel pr\u00EAt' :
-          planStatus === 'error' ? '<i class="fas fa-exclamation-circle"></i> Erreur' :
-          '<i class="fas fa-minus"></i> Inconnu'
-        }</span>` : '<span class="ovo-badge ovo-badge--none"><i class="fas fa-minus"></i> Non g\u00E9n\u00E9r\u00E9</span>'}
-        ${planVersion > 0 ? `<span style="font-size:12px;color:#94a3b8;font-weight:400">v${planVersion}</span>` : ''}
-      </div>
-
-      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px">
-        <button class="ovo-btn ovo-btn--primary" id="btn-generate" 
-          ${!hasFramework ? 'disabled title="Framework requis"' : ''}
-          onclick="generatePlanOVO()">
-          <i class="fas fa-wand-magic-sparkles"></i>
-          ${hasPlan ? 'Reg\u00E9n\u00E9rer le Plan OVO' : '\u{1F4B0} G\u00E9n\u00E9rer le Plan Financier OVO'}
-        </button>
-
-        <button class="ovo-btn ovo-btn--download" id="btn-download" 
-          ${!hasPlan || (planStatus !== 'generated' && planStatus !== 'filled') ? 'disabled title="Plan non encore g\u00E9n\u00E9r\u00E9"' : ''}
-          onclick="downloadPlanOVO()">
-          <i class="fas fa-download"></i>
-          T\u00E9l\u00E9charger Excel (.xlsm)
-        </button>
-
-        ${hasPlan && planStatus === 'generated' ? `
-        <button class="ovo-btn ovo-btn--fill" id="btn-fill" onclick="fillPlanOVO()">
-          <i class="fas fa-file-excel"></i>
-          Remplir le Template Excel
-        </button>` : ''}
-      </div>
-
-      ${!hasFramework ? `
-      <div style="padding:16px;background:#fef2f2;border:1px solid #fecaca;border-radius:12px;margin-bottom:16px">
-        <div style="display:flex;align-items:center;gap:10px;color:#991b1b;font-size:14px;font-weight:600">
-          <i class="fas fa-exclamation-triangle"></i> Framework requis
-        </div>
-        <p style="font-size:13px;color:#7f1d1d;margin:8px 0 0;line-height:1.6">
-          Le Plan Financier Interm\u00E9diaire (Framework) doit \u00EAtre g\u00E9n\u00E9r\u00E9 avant de cr\u00E9er le Plan OVO.
-          <a href="/entrepreneur" style="color:#2563eb;text-decoration:underline">Retourner au tableau de bord</a> pour g\u00E9n\u00E9rer vos livrables.
-        </p>
-      </div>` : ''}
-
-      <!-- Aper\u00E7u HTML central -->
-      <div id="preview-area" class="ovo-preview ${hasHtmlPreview ? 'ovo-preview--ready' : ''}">
-        ${hasHtmlPreview ? '<p style="color:#059669;font-weight:600"><i class="fas fa-eye"></i> Aper\u00E7u disponible</p>' :
-          hasPlan && planStatus === 'pending' ? '<div><i class="fas fa-hourglass-half" style="font-size:40px;color:#d97706;margin-bottom:14px"></i><p style="font-weight:600;color:#92400e">Plan OVO en attente de traitement IA</p><p style="font-size:13px;color:#a16207">Le remplissage automatique du template Excel sera disponible prochainement.</p></div>' :
-          '<div><i class="fas fa-file-excel" style="font-size:48px;color:#cbd5e1;margin-bottom:14px"></i><p style="font-weight:600;color:#64748b">Aucun aper\u00E7u disponible</p><p style="font-size:13px;color:#94a3b8">Cliquez sur "G\u00E9n\u00E9rer le Plan Financier OVO" pour commencer</p></div>'
-        }
-      </div>
-    </div>
-
-    <!-- Template info -->
-    <div class="ovo-card">
-      <div class="ovo-card__title"><i class="fas fa-file-excel" style="color:#059669"></i> Structure du Template OVO</div>
-      <p style="font-size:13px;color:#64748b;margin:0 0 14px">
-        Le template <strong>Plan Financier OVO</strong> contient 10 feuilles Excel structur\u00E9es pour le format bailleurs :
-      </p>
-      <div class="ovo-sheets">
-        <div class="ovo-sheet"><i class="fas fa-keyboard" style="color:#2563eb;font-size:18px;margin-bottom:6px"></i><div class="ovo-sheet__name">InputsData</div><div class="ovo-sheet__desc">Donn\u00E9es de l'entreprise</div></div>
-        <div class="ovo-sheet"><i class="fas fa-chart-bar" style="color:#059669;font-size:18px;margin-bottom:6px"></i><div class="ovo-sheet__name">RevenueData</div><div class="ovo-sheet__desc">Revenus par produit</div></div>
-        <div class="ovo-sheet"><i class="fas fa-calculator" style="color:#7c3aed;font-size:18px;margin-bottom:6px"></i><div class="ovo-sheet__name">FinanceData</div><div class="ovo-sheet__desc">P&amp;L, Cash flow, Bilan</div></div>
-        <div class="ovo-sheet"><i class="fas fa-table" style="color:#d97706;font-size:18px;margin-bottom:6px"></i><div class="ovo-sheet__name">RevenuePivot</div><div class="ovo-sheet__desc">Tableau crois\u00E9 revenus</div></div>
-        <div class="ovo-sheet"><i class="fas fa-table-cells" style="color:#dc2626;font-size:18px;margin-bottom:6px"></i><div class="ovo-sheet__name">FinancePivot</div><div class="ovo-sheet__desc">Tableau crois\u00E9 finances</div></div>
-        <div class="ovo-sheet"><i class="fas fa-chart-line" style="color:#0891b2;font-size:18px;margin-bottom:6px"></i><div class="ovo-sheet__name">RevenueChart</div><div class="ovo-sheet__desc">Graphiques revenus</div></div>
-        <div class="ovo-sheet"><i class="fas fa-chart-area" style="color:#4f46e5;font-size:18px;margin-bottom:6px"></i><div class="ovo-sheet__name">FinanceChart</div><div class="ovo-sheet__desc">Graphiques finances</div></div>
-        <div class="ovo-sheet"><i class="fas fa-euro-sign" style="color:#0d9488;font-size:18px;margin-bottom:6px"></i><div class="ovo-sheet__name">FinanceEUR</div><div class="ovo-sheet__desc">Conversion EUR</div></div>
-        <div class="ovo-sheet"><i class="fas fa-book" style="color:#94a3b8;font-size:18px;margin-bottom:6px"></i><div class="ovo-sheet__name">Instructions</div><div class="ovo-sheet__desc">Guide d'utilisation</div></div>
-        <div class="ovo-sheet"><i class="fas fa-info" style="color:#94a3b8;font-size:18px;margin-bottom:6px"></i><div class="ovo-sheet__name">ReadMe</div><div class="ovo-sheet__desc">M\u00E9tadonn\u00E9es</div></div>
-      </div>
-    </div>
-
-  </div>
-
-  <script>
-    function getToken() {
-      const cookies = document.cookie.split(';');
-      for (const c of cookies) {
-        const [k, v] = c.trim().split('=');
-        if (k === 'auth_token') return v;
-      }
-      return localStorage.getItem('auth_token') || '';
-    }
-
-    async function generatePlanOVO() {
-      const btn = document.getElementById('btn-generate');
-      const prev = btn.innerHTML;
-      btn.disabled = true;
-      btn.innerHTML = '<i class="fas fa-spinner ovo-spin"></i> G\u00E9n\u00E9ration en cours...';
-      
-      try {
-        const res = await fetch('/api/plan-ovo/generate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
-          body: JSON.stringify({ pmeId: 'pme_current' })
-        });
-        const data = await res.json();
-        
-        if (data.success) {
-          document.getElementById('preview-area').innerHTML = '<div style="text-align:center;padding:40px">' +
-            '<i class="fas fa-check-circle" style="font-size:48px;color:#059669;margin-bottom:14px"></i>' +
-            '<p style="font-weight:700;color:#065f46;font-size:16px">Plan OVO cr\u00E9\u00E9 (v' + (data.version || 1) + ')</p>' +
-            '<p style="font-size:13px;color:#047857">Sources : Framework ' + (data.sources?.framework ? '\u2705' : '\u274C') +
-            ' \u00B7 BMC ' + (data.sources?.bmc ? '\u2705' : '\u2796') +
-            ' \u00B7 SIC ' + (data.sources?.sic ? '\u2705' : '\u2796') +
-            ' \u00B7 Diagnostic ' + (data.sources?.diagnostic ? '\u2705' : '\u2796') + '</p>' +
-            '<p style="font-size:12px;color:#a16207;margin-top:12px"><i class="fas fa-hourglass-half"></i> ' + data.message + '</p>' +
-            '</div>';
-          btn.innerHTML = '<i class="fas fa-check"></i> Plan OVO cr\u00E9\u00E9 !';
-          setTimeout(function() { btn.innerHTML = '<i class="fas fa-wand-magic-sparkles"></i> Reg\u00E9n\u00E9rer le Plan OVO'; btn.disabled = false; }, 3000);
-        } else {
-          alert(data.message || data.error || 'Erreur lors de la g\u00E9n\u00E9ration');
-          btn.innerHTML = prev;
-          btn.disabled = false;
-        }
-      } catch (err) {
-        alert('Erreur r\u00E9seau : ' + err.message);
-        btn.innerHTML = prev;
-        btn.disabled = false;
-      }
-    }
-
-    async function fillPlanOVO() {
-      const btn = document.getElementById('btn-fill');
-      if (!btn) return;
-      const prev = btn.innerHTML;
-      btn.disabled = true;
-      btn.innerHTML = '<i class="fas fa-spinner ovo-spin"></i> Remplissage en cours...';
-      try {
-        const latestRes = await fetch('/api/plan-ovo/latest/pme_current', {
-          headers: { 'Authorization': 'Bearer ' + getToken() }
-        });
-        const latestData = await latestRes.json();
-        const planId = latestData?.data?.id;
-        if (!planId) { alert('Plan non trouv\u00E9'); btn.innerHTML = prev; btn.disabled = false; return; }
-        const res = await fetch('/api/plan-ovo/fill', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
-          body: JSON.stringify({ planId: planId })
-        });
-        const data = await res.json();
-        if (data.success) {
-          btn.innerHTML = '<i class="fas fa-check"></i> Excel rempli !';
-          document.getElementById('btn-download').disabled = false;
-          setTimeout(function() { location.reload(); }, 2000);
-        } else {
-          alert(data.error || 'Erreur remplissage');
-          btn.innerHTML = prev; btn.disabled = false;
-        }
-      } catch (err) {
-        alert('Erreur: ' + err.message);
-        btn.innerHTML = prev; btn.disabled = false;
-      }
-    }
-
-    async function downloadPlanOVO() {
-      const btn = document.getElementById('btn-download');
-      const prev = btn.innerHTML;
-      btn.disabled = true;
-      btn.innerHTML = '<i class="fas fa-spinner ovo-spin"></i> Pr\u00E9paration...';
-      try {
-        // Get plan ID
-        const latestRes = await fetch('/api/plan-ovo/latest/pme_current', {
-          headers: { 'Authorization': 'Bearer ' + getToken() }
-        });
-        const latestData = await latestRes.json();
-        const planId = latestData?.data?.id;
-        if (!planId) { alert('Aucun plan trouv\u00E9'); btn.innerHTML = prev; btn.disabled = false; return; }
-
-        // If status is 'generated' but not 'filled', fill first
-        if (latestData?.data?.status === 'generated' && !latestData?.data?.hasExcel) {
-          btn.innerHTML = '<i class="fas fa-spinner ovo-spin"></i> Remplissage Excel...';
-          const fillRes = await fetch('/api/plan-ovo/fill', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
-            body: JSON.stringify({ planId: planId })
-          });
-          const fillData = await fillRes.json();
-          if (!fillData.success) {
-            alert('Erreur remplissage: ' + (fillData.error || 'Inconnu'));
-            btn.innerHTML = prev; btn.disabled = false;
-            return;
-          }
-        }
-
-        // Download the file
-        btn.innerHTML = '<i class="fas fa-spinner ovo-spin"></i> T\u00E9l\u00E9chargement...';
-        const resp = await fetch('/api/plan-ovo/download/' + planId, {
-          headers: { 'Authorization': 'Bearer ' + getToken() }
-        });
-        if (!resp.ok) {
-          const errData = await resp.json().catch(() => ({}));
-          alert(errData.error || errData.message || 'Erreur t\u00E9l\u00E9chargement');
-          btn.innerHTML = prev; btn.disabled = false;
-          return;
-        }
-        // Get filename from Content-Disposition header
-        const cd = resp.headers.get('Content-Disposition') || '';
-        const fnMatch = cd.match(/filename="([^"]+)"/);
-        const filename = fnMatch ? fnMatch[1] : 'Plan_OVO.xlsm';
-
-        // Create download link
-        const blob = await resp.blob();
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-
-        btn.innerHTML = '<i class="fas fa-check"></i> T\u00E9l\u00E9charg\u00E9 !';
-        setTimeout(function() { btn.innerHTML = prev; btn.disabled = false; }, 3000);
-      } catch (err) {
-        alert('Erreur: ' + err.message);
-        btn.innerHTML = prev;
-        btn.disabled = false;
-      }
-    }
-  </script>
-</body>
-</html>`
-}
 
 // ═══════════════════════════════════════════════════════════════
 // Helper: Render Diagnostic Expert Module Page HTML
@@ -3009,7 +2625,7 @@ function renderDiagnosticModulePage(opts: {
 }
 
 // Module entry point
-// IMPORTANT: Specific routes (/module/plan-ovo, /module/diagnostic) must be registered BEFORE the :code catch-all
+// IMPORTANT: Specific routes (/module/diagnostic, /module/business-plan) must be registered BEFORE the :code catch-all
 // Otherwise Hono matches :code first and creates redirect loops
 
 // Diagnostic Expert dedicated module page — registered before :code catch-all
@@ -3080,75 +2696,9 @@ app.get('/module/diagnostic', async (c) => {
   }
 })
 
-// Plan OVO dedicated module page — registered before :code catch-all
-app.get('/module/plan-ovo', async (c) => {
-  try {
-    const token = getAuthToken(c) || getCookie(c, 'auth_token')
-    if (!token) return c.redirect('/login')
-    const payload = await verifyToken(token)
-    if (!payload) return c.redirect('/login')
-
-    const db = c.env.DB
-
-    // 1. Check if framework (required) is available
-    const framework = await db.prepare(`
-      SELECT id, content, score FROM entrepreneur_deliverables
-      WHERE user_id = ? AND type = 'framework'
-      ORDER BY created_at DESC LIMIT 1
-    `).bind(payload.userId).first()
-
-    // 2. Check optional deliverables
-    const bmc = await db.prepare(`
-      SELECT id, score FROM entrepreneur_deliverables
-      WHERE user_id = ? AND type = 'bmc_analysis'
-      ORDER BY created_at DESC LIMIT 1
-    `).bind(payload.userId).first()
-
-    const sic = await db.prepare(`
-      SELECT id, score FROM entrepreneur_deliverables
-      WHERE user_id = ? AND type = 'sic_analysis'
-      ORDER BY created_at DESC LIMIT 1
-    `).bind(payload.userId).first()
-
-    const diagnostic = await db.prepare(`
-      SELECT id, score FROM entrepreneur_deliverables
-      WHERE user_id = ? AND type = 'diagnostic'
-      ORDER BY created_at DESC LIMIT 1
-    `).bind(payload.userId).first()
-
-    // 3. Check latest plan_ovo_analyses entry (don't filter by pme_id to handle legacy entries with 'pme_current')
-    const planOvo = await db.prepare(`
-      SELECT id, status, score, extraction_json, analysis_json, version, created_at
-      FROM plan_ovo_analyses
-      WHERE user_id = ?
-      ORDER BY created_at DESC LIMIT 1
-    `).bind(payload.userId).first()
-
-    const hasFramework = !!framework
-    const hasBmc = !!bmc
-    const hasSic = !!sic
-    const hasDiagnostic = !!diagnostic
-    const hasPlan = !!planOvo
-    const planStatus = planOvo ? (planOvo.status as string) : 'none'
-    const planScore = planOvo?.score ? Number(planOvo.score) : null
-    const planVersion = planOvo?.version ? Number(planOvo.version) : 0
-
-    // 4. No HTML preview yet (will be added when IA agent is implemented)
-    const hasHtmlPreview = false
-
-    // Get user info
-    const user = await db.prepare('SELECT name, email FROM users WHERE id = ?').bind(payload.userId).first()
-
-    return c.html(safeScriptBlocks(renderPlanOvoModulePage({
-      hasFramework, hasBmc, hasSic, hasDiagnostic,
-      hasPlan, planStatus, planScore, planVersion, hasHtmlPreview,
-      framework, bmc, sic, diagnostic, user
-    })))
-  } catch (error: any) {
-    console.error('[Plan OVO Module] Error:', error)
-    return c.text('Erreur: ' + error.message, 500)
-  }
-})
+// [REMOVED] /module/plan-ovo page — redirects to dashboard.
+// Dashboard handles all OVO display/download functionality.
+app.get('/module/plan-ovo', (c) => c.redirect('/entrepreneur'))
 
 // ═══ Business Plan module page — registered before :code catch-all ═══
 app.get('/module/business-plan', async (c) => {
@@ -3215,7 +2765,7 @@ app.get('/module/:code', (c) => {
   const code = c.req.param('code')
   if (code === 'sic') return c.redirect('/module/sic/page')
   if (code === 'mod5_diagnostic' || code === 'mod_05_diagnostic') return c.redirect('/module/diagnostic')
-  if (code === 'mod6_ovo') return c.redirect('/module/plan-ovo')
+  if (code === 'mod6_ovo') return c.redirect('/entrepreneur')
   if (code === 'business-plan' || code === 'business_plan') return c.redirect('/module/business-plan')
   return c.redirect(`/module/${code}/download`)
 })
@@ -7452,6 +7002,42 @@ app.post('/api/sic/generate', async (c) => {
 
     console.log(`[SIC Generate] Saved: score=${analysisResult.score_global}/100, palier=${analysisResult.palier}, source=${source}`)
 
+    // C2 sync: also write to entrepreneur_deliverables so dashboard sees latest data
+    try {
+      // Generate SIC HTML for dashboard display
+      const extractMeta = extractionData?.metadata || {}
+      const projectRow = await c.env.DB.prepare(
+        'SELECT name FROM projects WHERE user_id = ? ORDER BY created_at DESC LIMIT 1'
+      ).bind(payload.userId).first() as any
+      const userRow = await c.env.DB.prepare('SELECT name FROM users WHERE id = ?').bind(payload.userId).first() as any
+      
+      const sicHtml = renderSicDeliverableFromAnalyst({
+        companyName: extractMeta.nom_entreprise || (projectRow?.name as string) || 'Mon Projet',
+        entrepreneurName: (userRow?.name as string) || 'Entrepreneur',
+        sector: extractMeta.secteur || '',
+        location: extractMeta.zone_geographique || '',
+        country: "Côte d'Ivoire",
+        analysis: analysisResult,
+        extractionJson: extractionData
+      })
+
+      // Sync sic_html
+      await c.env.DB.prepare("DELETE FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'sic_html'").bind(payload.userId).run()
+      await c.env.DB.prepare(
+        "INSERT INTO entrepreneur_deliverables (id, user_id, type, content, score, status, created_at) VALUES (?, ?, 'sic_html', ?, ?, 'generated', datetime('now'))"
+      ).bind(crypto.randomUUID(), payload.userId, sicHtml, analysisResult.score_global).run()
+
+      // Sync sic_analysis JSON
+      await c.env.DB.prepare("DELETE FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'sic_analysis'").bind(payload.userId).run()
+      await c.env.DB.prepare(
+        "INSERT INTO entrepreneur_deliverables (id, user_id, type, content, score, status, created_at) VALUES (?, ?, 'sic_analysis', ?, ?, 'generated', datetime('now'))"
+      ).bind(crypto.randomUUID(), payload.userId, analysisJson, analysisResult.score_global).run()
+
+      console.log(`[SIC Generate] C2 sync → entrepreneur_deliverables (html=${sicHtml.length} chars, json, score=${analysisResult.score_global})`)
+    } catch (syncErr: any) {
+      console.error('[SIC Generate] C2 sync error (non-fatal):', syncErr.message)
+    }
+
     // 5. Retourner le JSON complet au frontend
     return c.json({
       success: true,
@@ -8506,6 +8092,14 @@ app.post('/api/diagnostic/generate', async (c) => {
         JSON.stringify(fallbackResult), fallbackHtml, fallbackResult.score_global, JSON.stringify(kbContext), kbUsed ? 1 : 0, diagId
       ).run()
       
+      // C1 sync: also write to entrepreneur_deliverables (fallback path)
+      try {
+        await db.prepare("DELETE FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'diagnostic_html'").bind(payload.userId).run()
+        await db.prepare("INSERT INTO entrepreneur_deliverables (id, user_id, type, content, score, version, status, created_at) VALUES (?, ?, 'diagnostic_html', ?, ?, ?, 'generated', datetime('now'))").bind(crypto.randomUUID(), payload.userId, fallbackHtml, fallbackResult.score_global, newVersion).run()
+        await db.prepare("DELETE FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'diagnostic'").bind(payload.userId).run()
+        await db.prepare("INSERT INTO entrepreneur_deliverables (id, user_id, type, content, score, version, status, created_at) VALUES (?, ?, 'diagnostic', ?, ?, ?, 'generated', datetime('now'))").bind(crypto.randomUUID(), payload.userId, JSON.stringify(fallbackResult), fallbackResult.score_global, newVersion).run()
+      } catch { /* non-fatal */ }
+
       return c.json({ 
         success: true, message: 'Diagnostic Expert généré (mode déterministe).', 
         diagId, version: newVersion, status: 'analyzed', 
@@ -8816,13 +8410,24 @@ Produis le diagnostic complet en JSON. Sois bienveillant et pédagogique. Score 
       diagId
     ).run()
 
-    // Also store in entrepreneur_deliverables for cross-module access
+    // Also store in entrepreneur_deliverables for cross-module access (C1 sync)
     try {
+      // Sync diagnostic_html
+      await db.prepare("DELETE FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'diagnostic_html'").bind(payload.userId).run()
       await db.prepare(`
-        INSERT INTO entrepreneur_deliverables (user_id, type, content, score, version, created_at)
-        VALUES (?, 'diagnostic_html', ?, ?, ?, datetime('now'))
-      `).bind(payload.userId, diagHtml, scoreGlobal, newVersion).run()
-    } catch { /* non-fatal: deliverable table might already have this */ }
+        INSERT INTO entrepreneur_deliverables (id, user_id, type, content, score, version, status, created_at)
+        VALUES (?, ?, 'diagnostic_html', ?, ?, ?, 'generated', datetime('now'))
+      `).bind(crypto.randomUUID(), payload.userId, diagHtml, scoreGlobal, newVersion).run()
+      // Sync diagnostic JSON
+      await db.prepare("DELETE FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'diagnostic'").bind(payload.userId).run()
+      await db.prepare(`
+        INSERT INTO entrepreneur_deliverables (id, user_id, type, content, score, version, status, created_at)
+        VALUES (?, ?, 'diagnostic', ?, ?, ?, 'generated', datetime('now'))
+      `).bind(crypto.randomUUID(), payload.userId, JSON.stringify(claudeResult), scoreGlobal, newVersion).run()
+      console.log(`[Diagnostic] C1 sync → entrepreneur_deliverables (html + json, score=${scoreGlobal})`)
+    } catch (syncErr: any) {
+      console.error('[Diagnostic] C1 sync error (non-fatal):', syncErr.message)
+    }
 
     console.log(`[Diagnostic] ÉTAPE C — Saved: score=${scoreGlobal}, palier=${claudeResult.palier}, status=${finalStatus}, kb_used=${kbUsed}, dims=${Object.keys(claudeResult.scores_dimensions || {}).length}, html=${diagHtml.length} chars, fallback=${!!claudeResult._fallback}`)
 

@@ -1365,16 +1365,10 @@ entrepreneurRoutes.post('/api/ai/generate-all', async (c) => {
             }
           }
 
-          // ═══ PRIORITY 2: Text-based parsing (no AI, regex only) ═══
-          if (!usedStructuredParser && !usedAIExtraction && hasInputs && documentTexts.inputs && documentTexts.inputs !== `[Fichier binaire: ${uploadData.find(u => u.category === 'inputs')?.filename}]`) {
-            console.log('[Generate-All] No structured/AI parser applicable, using text-based parsing')
-            pmeData = buildPmeInputDataFromText(documentTexts.inputs, companyName, userCountry || "Côte d'Ivoire")
-            console.log(`[Generate-All] Text parsing: CA=[${pmeData!.historique.caTotal.join(',')}]`)
-          }
-          // ═══ PRIORITY 3: AI extraction from text (no XLSX available) ═══
-          // Entrepreneur uploaded a non-Excel file or text is all we have
-          else if (!usedStructuredParser && !usedAIExtraction && hasInputs && documentTexts.inputs) {
-            console.log('[Generate-All] ⚡ No XLSX → trying AI extraction from text...')
+          // ═══ FALLBACK: No XLSX or structured parser failed + AI failed ═══
+          // Try AI extraction from text, then text-based regex as last resort
+          if (!usedStructuredParser && !usedAIExtraction && hasInputs && documentTexts.inputs) {
+            console.log('[Generate-All] No structured/AI XLSX parser succeeded → trying AI text extraction...')
             try {
               const enriched = await buildPmeInputWithAI(
                 documentTexts.inputs,
@@ -1390,13 +1384,13 @@ entrepreneurRoutes.post('/api/ai/generate-all', async (c) => {
                 console.log(`[Generate-All] ✅ AI text extraction SUCCESS: CA=[${pmeData.historique.caTotal.join(',')}]`)
               }
             } catch (aiErr: any) {
-              console.error(`[Generate-All] AI text extraction failed: ${aiErr.message}`)
-              pmeData = buildPmeInputDataFromText(documentTexts.inputs, companyName, userCountry || "Côte d'Ivoire")
+              console.error(`[Generate-All] AI text extraction failed, using regex fallback: ${aiErr.message}`)
             }
-          }
-          // ═══ PRIORITY 4: Fallback to orchestration result ═══
-          else if (!usedStructuredParser && !usedAIExtraction) {
-            pmeData = _buildPmeInputDataFromDeliverable(result?.deliverables?.framework || {}, companyName, userCountry || "Côte d'Ivoire")
+            // Final fallback: regex-only parsing (low quality but better than nothing)
+            if (!usedAIExtraction) {
+              pmeData = buildPmeInputDataFromText(documentTexts.inputs, companyName, userCountry || "Côte d'Ivoire")
+              console.log(`[Generate-All] Regex fallback: CA=[${pmeData!.historique.caTotal.join(',')}]`)
+            }
           }
           
           const parserSource = usedStructuredParser ? 'structured' : usedAIExtraction ? 'ai_extraction' : 'text_fallback'
@@ -1554,6 +1548,29 @@ entrepreneurRoutes.post('/api/ai/generate-all', async (c) => {
 
           console.log(`[Generate-All] Diagnostic Expert stored: ${diagHtml.length} chars, score=${diagResult.scoreGlobal}/100, source=${diagResult.aiSource}`)
           agentsUsed.push(`diagnostic_expert:${diagResult.aiSource}`)
+
+          // C3 sync: also write to diagnostic_analyses so /module/diagnostic sees it
+          try {
+            const pmeIdSync = `pme_${payload.userId}`
+            const diagSyncId = crypto.randomUUID()
+            // Check existing version
+            const existingDiag = await c.env.DB.prepare(
+              'SELECT version FROM diagnostic_analyses WHERE user_id = ? AND pme_id = ? ORDER BY version DESC LIMIT 1'
+            ).bind(payload.userId, pmeIdSync).first() as any
+            const diagVersion = existingDiag ? Number(existingDiag.version) + 1 : newVersion
+
+            await c.env.DB.prepare(`
+              INSERT INTO diagnostic_analyses (id, pme_id, user_id, version, analysis_json, html_content, score, status, sources_used, created_at, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, 'analyzed', ?, datetime('now'), datetime('now'))
+            `).bind(
+              diagSyncId, pmeIdSync, payload.userId, diagVersion,
+              JSON.stringify(diagResult), diagHtml, diagResult.scoreGlobal,
+              JSON.stringify({ source: 'generate_all' })
+            ).run()
+            console.log(`[Generate-All] C3 sync → diagnostic_analyses (id=${diagSyncId}, v${diagVersion}, score=${diagResult.scoreGlobal})`)
+          } catch (c3Err: any) {
+            console.error('[Generate-All] C3 sync error (non-fatal):', c3Err.message)
+          }
         } catch (err: any) {
           console.error('[Generate-All] Diagnostic Expert error (non-fatal):', err.message)
           agentErrors.push(`diagnostic_html: ${err.message}`)
@@ -3844,7 +3861,9 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
     const frameworkClaudeHtml = fwHtmlRow?.content || ''
 
     // Load pre-stored Diagnostic Expert HTML from database (instant display)
-    // Priority: 1) entrepreneur_deliverables.diagnostic_html  2) diagnostic_analyses.html_content  3) empty
+    // With C1/C3 sync, entrepreneur_deliverables is always up-to-date.
+    // Primary: diagnostic_html from entrepreneur_deliverables
+    // Fallback: diagnostic_analyses (for cases where sync hasn't run yet)
     let diagnosticClaudeHtml = ''
     let diagnosticAnalysisJson: any = null
     const diagHtmlRow = await c.env.DB.prepare(
@@ -3854,23 +3873,30 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
       diagnosticClaudeHtml = diagHtmlRow.content
     }
 
-    // ALWAYS load analysis_json from diagnostic_analyses (needed for new-format rendering + fallback HTML)
-    try {
-      const pmeId = `pme_${payload.userId}`
-      const diagAnalysisRow = await c.env.DB.prepare(
-        "SELECT html_content, analysis_json, score, version FROM diagnostic_analyses WHERE user_id = ? AND pme_id = ? AND status IN ('analyzed','generated','partial') ORDER BY created_at DESC LIMIT 1"
-      ).bind(payload.userId, pmeId).first() as any
-      // If no diagnostic_html from deliverables, try html_content from diagnostic_analyses
-      if (!diagnosticClaudeHtml && diagAnalysisRow?.html_content && diagAnalysisRow.html_content.length > 200) {
-        diagnosticClaudeHtml = diagAnalysisRow.html_content
-        console.log('[Entrepreneur Page] Loaded Diagnostic HTML from diagnostic_analyses (' + diagAnalysisRow.html_content.length + ' chars, score=' + diagAnalysisRow.score + ')')
+    // Load analysis_json: first from entrepreneur_deliverables, fallback to diagnostic_analyses
+    const diagJsonRow = await c.env.DB.prepare(
+      "SELECT content FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'diagnostic' ORDER BY version DESC LIMIT 1"
+    ).bind(payload.userId).first() as any
+    if (diagJsonRow?.content) {
+      try { diagnosticAnalysisJson = JSON.parse(diagJsonRow.content) } catch { /* ignore */ }
+    }
+    // Fallback: if no data in entrepreneur_deliverables, check diagnostic_analyses
+    if (!diagnosticClaudeHtml || !diagnosticAnalysisJson) {
+      try {
+        const pmeId = `pme_${payload.userId}`
+        const diagAnalysisRow = await c.env.DB.prepare(
+          "SELECT html_content, analysis_json, score, version FROM diagnostic_analyses WHERE user_id = ? AND pme_id = ? AND status IN ('analyzed','generated','partial') ORDER BY created_at DESC LIMIT 1"
+        ).bind(payload.userId, pmeId).first() as any
+        if (!diagnosticClaudeHtml && diagAnalysisRow?.html_content && diagAnalysisRow.html_content.length > 200) {
+          diagnosticClaudeHtml = diagAnalysisRow.html_content
+          console.log('[Entrepreneur Page] Diagnostic HTML fallback from diagnostic_analyses')
+        }
+        if (!diagnosticAnalysisJson && diagAnalysisRow?.analysis_json) {
+          try { diagnosticAnalysisJson = JSON.parse(diagAnalysisRow.analysis_json) } catch { /* ignore */ }
+        }
+      } catch (e) {
+        console.error('[Entrepreneur Page] Error loading diagnostic fallback:', e)
       }
-      // Always load analysis_json for new-format client rendering
-      if (diagAnalysisRow?.analysis_json) {
-        try { diagnosticAnalysisJson = JSON.parse(diagAnalysisRow.analysis_json) } catch { /* ignore */ }
-      }
-    } catch (e) {
-      console.error('[Entrepreneur Page] Error loading diagnostic_analyses:', e)
     }
 
     // Load pre-stored SIC HTML from database (instant display)
