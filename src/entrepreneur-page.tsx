@@ -1566,6 +1566,65 @@ entrepreneurRoutes.post('/api/ai/generate-all', async (c) => {
     await Promise.allSettled(htmlGenerationPromises)
     console.log('[Generate-All] All HTML deliverable generations completed.')
 
+    // ═══ SYNC MODULE TABLES ═══
+    // Populate business_plan_analyses and plan_ovo_analyses so that module pages
+    // (/module/business-plan, /module/plan-ovo) can find the generated data.
+    // Without this, generate-all only stores in entrepreneur_deliverables but
+    // the module pages query their own dedicated tables.
+    const pmeIdForModules = `pme_${payload.userId}`
+
+    // 1) Business Plan → business_plan_analyses
+    if (result.deliverables?.business_plan) {
+      try {
+        const bpContent = result.deliverables.business_plan
+        const bpJson = typeof bpContent === 'string' ? bpContent : JSON.stringify(bpContent)
+        const bpId = crypto.randomUUID()
+        // Delete any existing entries for this user/pme to avoid duplicates
+        await c.env.DB.prepare(
+          'DELETE FROM business_plan_analyses WHERE user_id = ? AND pme_id = ?'
+        ).bind(payload.userId, pmeIdForModules).run()
+        await c.env.DB.prepare(`
+          INSERT INTO business_plan_analyses (id, user_id, pme_id, version, status, business_plan_json, pays, created_at, updated_at)
+          VALUES (?, ?, ?, ?, 'completed', ?, ?, datetime('now'), datetime('now'))
+        `).bind(bpId, payload.userId, pmeIdForModules, newVersion, bpJson, userCountry || "Côte d'Ivoire").run()
+        console.log(`[Generate-All] ✅ Synced business_plan_analyses (id=${bpId})`)
+      } catch (bpSyncErr: any) {
+        console.error(`[Generate-All] ⚠️ business_plan_analyses sync failed: ${bpSyncErr.message}`)
+      }
+    }
+
+    // 2) Plan OVO → plan_ovo_analyses (update pme_id if wrong, or create entry)
+    if (result.deliverables?.plan_ovo) {
+      try {
+        // Check if there's already a plan_ovo_analyses entry for this user
+        const existingOvo = await c.env.DB.prepare(
+          "SELECT id, pme_id FROM plan_ovo_analyses WHERE user_id = ? ORDER BY created_at DESC LIMIT 1"
+        ).bind(payload.userId).first() as any
+        
+        if (existingOvo) {
+          // Fix pme_id if it doesn't match the expected format
+          if (existingOvo.pme_id !== pmeIdForModules) {
+            await c.env.DB.prepare(
+              'UPDATE plan_ovo_analyses SET pme_id = ?, updated_at = datetime(\'now\') WHERE id = ?'
+            ).bind(pmeIdForModules, existingOvo.id).run()
+            console.log(`[Generate-All] ✅ Fixed plan_ovo_analyses pme_id: ${existingOvo.pme_id} → ${pmeIdForModules}`)
+          }
+        } else {
+          // No entry exists — create one with the deliverable content as extraction_json
+          const ovoId = crypto.randomUUID()
+          const ovoContent = result.deliverables.plan_ovo
+          const ovoJson = typeof ovoContent === 'string' ? ovoContent : JSON.stringify(ovoContent)
+          await c.env.DB.prepare(`
+            INSERT INTO plan_ovo_analyses (id, pme_id, user_id, version, extraction_json, status, source, pays, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, 'generated', 'generate_all', ?, datetime('now'), datetime('now'))
+          `).bind(ovoId, pmeIdForModules, payload.userId, newVersion, ovoJson, userCountry || "Côte d'Ivoire").run()
+          console.log(`[Generate-All] ✅ Created plan_ovo_analyses entry (id=${ovoId})`)
+        }
+      } catch (ovoSyncErr: any) {
+        console.error(`[Generate-All] ⚠️ plan_ovo_analyses sync failed: ${ovoSyncErr.message}`)
+      }
+    }
+
     return c.json({
       success: true,
       iteration: { id: iterationId, version: newVersion, score_global: result.score_global },
@@ -3868,13 +3927,24 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
     try {
       // Search with multiple statuses and pme_id variants
       const planRow = await c.env.DB.prepare(
-        "SELECT id, extraction_json FROM plan_ovo_analyses WHERE user_id = ? AND status IN ('filled', 'generated', 'extracted') ORDER BY created_at DESC LIMIT 1"
+        "SELECT id, extraction_json FROM plan_ovo_analyses WHERE user_id = ? AND status IN ('filled', 'generated', 'extracted', 'filling', 'generating') ORDER BY created_at DESC LIMIT 1"
       ).bind(payload.userId).first() as any
       if (planRow?.id) {
         mainPlanOvoId = planRow.id
         if (planRow.extraction_json) {
           try { mainPlanOvoExtraction = JSON.parse(planRow.extraction_json) } catch { /* ignore */ }
         }
+      }
+    } catch { /* ignore */ }
+
+    // ═══ Fetch Business Plan Analysis ID for Word download ═══
+    let mainBpAnalysisId: string | null = null
+    try {
+      const bpRow = await c.env.DB.prepare(
+        "SELECT id FROM business_plan_analyses WHERE user_id = ? AND status IN ('completed', 'generated', 'analyzed') ORDER BY created_at DESC LIMIT 1"
+      ).bind(payload.userId).first() as any
+      if (bpRow?.id) {
+        mainBpAnalysisId = bpRow.id
       }
     } catch { /* ignore */ }
 
@@ -4296,6 +4366,7 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
     const sources = ${safeJSON(allUploads.map((u: any) => ({ id: u.id, filename: u.filename, category: u.category })))};
     const PLAN_OVO_ID = ${safeJSON(mainPlanOvoId)};
     const PLAN_OVO_EXTRACTION = ${safeJSON(mainPlanOvoExtraction)};
+    const BP_ANALYSIS_ID = ${safeJSON(mainBpAnalysisId)};
 
     // ── Mobile sidebar toggle ──
     function toggleSidebar() {
@@ -4488,17 +4559,23 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
         el.innerHTML = renderOVOHTML(content, score, sColor);
         if (window.__ovoChartInit) setTimeout(window.__ovoChartInit, 300);
       } else if (type === 'business_plan') {
-        // ── BUSINESS PLAN: embed /module/business-plan in iframe ──
+        // ── BUSINESS PLAN: embed /module/business-plan in iframe with Word/PDF download ──
         el.innerHTML = '';
         var bpBar = document.createElement('div');
         bpBar.style.cssText = 'display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;padding:16px 20px;background:linear-gradient(135deg,#f0f4ff,#e8edfb);border:1px solid #6366f1;border-radius:12px;margin-bottom:16px';
-        bpBar.innerHTML = '<div style="display:flex;align-items:center;gap:10px"><i class="fas fa-building" style="font-size:24px;color:#4338ca"></i><div><div style="font-size:14px;font-weight:700;color:#1e3a5f">Business Plan</div><div style="font-size:12px;color:#4b6584">Document complet pour investisseurs</div></div></div>' +
-          '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
-          '<a href="/module/business-plan" style="display:inline-flex;align-items:center;gap:6px;padding:10px 16px;border-radius:10px;background:white;color:#4338ca;border:1px solid #a3b8d8;font-size:12px;font-weight:600;text-decoration:none;cursor:pointer" onmouseover="this.style.background=&apos;#f0f4ff&apos;" onmouseout="this.style.background=&apos;white&apos;"><i class="fas fa-expand"></i> Pleine page</a>' +
-          '</div>';
+        var bpBtns = '<div style="display:flex;gap:8px;flex-wrap:wrap">';
+        if (BP_ANALYSIS_ID) {
+          bpBtns += '<a href="/api/business-plan/download/' + BP_ANALYSIS_ID + '?format=docx" style="display:inline-flex;align-items:center;gap:8px;padding:10px 20px;border-radius:10px;background:#4338ca;color:white;border:none;font-size:13px;font-weight:600;text-decoration:none;cursor:pointer;transition:all 0.2s;box-shadow:0 2px 8px rgba(67,56,202,0.3)" onmouseover="this.style.opacity=0.9" onmouseout="this.style.opacity=1"><i class="fas fa-file-word"></i> Word (.docx)</a>';
+        } else {
+          bpBtns += '<button data-download="docx" style="display:inline-flex;align-items:center;gap:8px;padding:10px 20px;border-radius:10px;background:#4338ca;color:white;border:none;font-size:13px;font-weight:600;cursor:pointer;transition:all 0.2s;box-shadow:0 2px 8px rgba(67,56,202,0.3)" onmouseover="this.style.opacity=0.9" onmouseout="this.style.opacity=1"><i class="fas fa-file-word"></i> Word (.docx)</button>';
+        }
+        bpBtns += '<button data-download="pdf" style="display:inline-flex;align-items:center;gap:8px;padding:10px 16px;border-radius:10px;background:#7c2d12;color:white;border:none;font-size:13px;font-weight:600;cursor:pointer;transition:all 0.2s;box-shadow:0 2px 8px rgba(124,45,18,0.3)" onmouseover="this.style.opacity=0.9" onmouseout="this.style.opacity=1"><i class="fas fa-file-pdf"></i> PDF</button>';
+        bpBtns += '<a href="/module/business-plan" style="display:inline-flex;align-items:center;gap:6px;padding:10px 16px;border-radius:10px;background:white;color:#4338ca;border:1px solid #a3b8d8;font-size:12px;font-weight:600;text-decoration:none;cursor:pointer" onmouseover="this.style.background=&apos;#f0f4ff&apos;" onmouseout="this.style.background=&apos;white&apos;"><i class="fas fa-expand"></i> Pleine page</a>';
+        bpBtns += '</div>';
+        bpBar.innerHTML = '<div style="display:flex;align-items:center;gap:10px"><i class="fas fa-building" style="font-size:24px;color:#4338ca"></i><div><div style="font-size:14px;font-weight:700;color:#1e3a5f">Business Plan</div><div style="font-size:12px;color:#4b6584">Document complet pour investisseurs — Score: ' + score + '/100</div></div></div>' + bpBtns;
         el.appendChild(bpBar);
         var bpIframe = document.createElement('iframe');
-        bpIframe.style.cssText = 'width:100%;height:600px;border:none;border-radius:12px;background:#0f172a';
+        bpIframe.style.cssText = 'width:100%;height:600px;border:none;border-radius:12px;background:#f8fafc';
         bpIframe.src = '/module/business-plan?embedded=1';
         el.appendChild(bpIframe);
       } else if (type === 'framework' && FRAMEWORK_HTML_TEMPLATE && FRAMEWORK_HTML_TEMPLATE.length > 100) {
@@ -5483,10 +5560,33 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
       try {
         const token = document.cookie.split(';').map(c => c.trim()).find(c => c.startsWith('auth_token='));
         const tokenVal = token ? token.split('=').slice(1).join('=') : '';
-        const resp = await fetch('/api/plan-ovo/download/' + PLAN_OVO_ID, {
-          headers: tokenVal ? { 'Authorization': 'Bearer ' + tokenVal } : {},
+        const headers = tokenVal ? { 'Authorization': 'Bearer ' + tokenVal } : {};
+        let resp = await fetch('/api/plan-ovo/download/' + PLAN_OVO_ID, {
+          headers: headers,
           credentials: 'include'
         });
+        
+        // If 422 = Excel not yet filled, auto-trigger fill then retry download
+        if (resp.status === 422) {
+          if (btn) { btn.innerHTML = '<i class="fas fa-cog fa-spin"></i> Préparation Excel...'; }
+          const fillResp = await fetch('/api/plan-ovo/fill', {
+            method: 'POST',
+            headers: { ...headers, 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ planId: PLAN_OVO_ID })
+          });
+          if (!fillResp.ok) {
+            const fillErr = await fillResp.json().catch(() => ({ error: 'Erreur fill' }));
+            throw new Error('Préparation échouée: ' + (fillErr.error || fillErr.message));
+          }
+          // Retry download after successful fill
+          if (btn) { btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Téléchargement...'; }
+          resp = await fetch('/api/plan-ovo/download/' + PLAN_OVO_ID, {
+            headers: headers,
+            credentials: 'include'
+          });
+        }
+        
         if (!resp.ok) {
           const err = await resp.json().catch(() => ({ error: 'Erreur ' + resp.status }));
           throw new Error(err.error || err.message || 'Erreur ' + resp.status);

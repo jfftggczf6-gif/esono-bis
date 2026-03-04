@@ -3029,7 +3029,7 @@ app.get('/module/diagnostic', async (c) => {
       db.prepare(`SELECT id FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'sic_analysis' ORDER BY created_at DESC LIMIT 1`).bind(payload.userId).first(),
       db.prepare(`SELECT id FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'framework' ORDER BY created_at DESC LIMIT 1`).bind(payload.userId).first(),
       db.prepare(`SELECT id FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'framework_pme_data' ORDER BY created_at DESC LIMIT 1`).bind(payload.userId).first(),
-      db.prepare(`SELECT id, status FROM plan_ovo_analyses WHERE user_id = ? AND pme_id = ? ORDER BY created_at DESC LIMIT 1`).bind(payload.userId, pmeId).first(),
+      db.prepare(`SELECT id, status FROM plan_ovo_analyses WHERE user_id = ? ORDER BY created_at DESC LIMIT 1`).bind(payload.userId).first(),
       db.prepare(`SELECT id, version, score, status, sources_used, analysis_json, created_at FROM diagnostic_analyses WHERE user_id = ? AND pme_id = ? ORDER BY created_at DESC LIMIT 1`).bind(payload.userId, pmeId).first(),
       db.prepare('SELECT name, email, country FROM users WHERE id = ?').bind(payload.userId).first(),
       db.prepare('SELECT score_global, scores_dimensions, version, created_at FROM iterations WHERE user_id = ? ORDER BY version DESC LIMIT 1').bind(payload.userId).first(),
@@ -3116,14 +3116,13 @@ app.get('/module/plan-ovo', async (c) => {
       ORDER BY created_at DESC LIMIT 1
     `).bind(payload.userId).first()
 
-    // 3. Check latest plan_ovo_analyses entry
-    const pmeId = `pme_${payload.userId}`
+    // 3. Check latest plan_ovo_analyses entry (don't filter by pme_id to handle legacy entries with 'pme_current')
     const planOvo = await db.prepare(`
       SELECT id, status, score, extraction_json, analysis_json, version, created_at
       FROM plan_ovo_analyses
-      WHERE user_id = ? AND pme_id = ?
+      WHERE user_id = ?
       ORDER BY created_at DESC LIMIT 1
-    `).bind(payload.userId, pmeId).first()
+    `).bind(payload.userId).first()
 
     const hasFramework = !!framework
     const hasBmc = !!bmc
@@ -3162,28 +3161,45 @@ app.get('/module/business-plan', async (c) => {
     const db = c.env.DB
     const pmeId = `pme_${payload.userId}`
 
-    const [bpRow, bmcRow, sicRow, fwRow, diagRow, ovoRow, userRow] = await Promise.all([
+    const [bpRow, bmcRow, sicRow, fwRow, diagRow, ovoRow, userRow, bpDelivRow] = await Promise.all([
       db.prepare(`SELECT id, version, status, business_plan_json, created_at FROM business_plan_analyses WHERE user_id = ? AND pme_id = ? AND status IN ('completed','generated','analyzed') ORDER BY created_at DESC LIMIT 1`).bind(payload.userId, pmeId).first(),
       db.prepare(`SELECT id FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'bmc_analysis' ORDER BY created_at DESC LIMIT 1`).bind(payload.userId).first(),
       db.prepare(`SELECT id FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'sic_analysis' ORDER BY created_at DESC LIMIT 1`).bind(payload.userId).first(),
       db.prepare(`SELECT id FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'framework' ORDER BY created_at DESC LIMIT 1`).bind(payload.userId).first(),
       db.prepare(`SELECT id FROM diagnostic_analyses WHERE user_id = ? AND pme_id = ? AND status IN ('analyzed','generated','partial') ORDER BY created_at DESC LIMIT 1`).bind(payload.userId, pmeId).first(),
-      db.prepare(`SELECT id FROM plan_ovo_analyses WHERE user_id = ? AND pme_id = ? AND status = 'generated' ORDER BY created_at DESC LIMIT 1`).bind(payload.userId, pmeId).first(),
+      db.prepare(`SELECT id FROM plan_ovo_analyses WHERE user_id = ? ORDER BY created_at DESC LIMIT 1`).bind(payload.userId).first(),
       db.prepare('SELECT name FROM users WHERE id = ?').bind(payload.userId).first(),
+      // Fallback: also check entrepreneur_deliverables for business_plan content
+      db.prepare(`SELECT id, content, score, version FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'business_plan' ORDER BY version DESC LIMIT 1`).bind(payload.userId).first(),
     ])
 
     const hasBmc = !!bmcRow, hasSic = !!sicRow, hasFramework = !!fwRow, hasDiag = !!diagRow, hasOvo = !!ovoRow
     const canGenerate = hasBmc || hasFramework
-    const hasBp = !!(bpRow && (bpRow.status === 'completed' || bpRow.status === 'generated' || bpRow.status === 'analyzed'))
-    const bpVersion = bpRow?.version ? Number(bpRow.version) : 0
-    const bpId = bpRow?.id as string || null
-    const bpStatus = bpRow?.status as string || 'none'
+    
+    // Use business_plan_analyses first, fallback to entrepreneur_deliverables
+    let hasBp = !!(bpRow && (bpRow.status === 'completed' || bpRow.status === 'generated' || bpRow.status === 'analyzed'))
+    let bpVersion = bpRow?.version ? Number(bpRow.version) : 0
+    let bpId = bpRow?.id as string || null
+    let bpStatus = bpRow?.status as string || 'none'
     const userName = (userRow?.name as string) || 'Entrepreneur'
     const availableCount = [hasBmc, hasSic, hasFramework, hasDiag, hasOvo].filter(Boolean).length
     const embedded = c.req.query('embedded') === '1'
     let bpData: any = null
+    
     if (bpRow?.business_plan_json) {
       try { bpData = JSON.parse(bpRow.business_plan_json as string) } catch {}
+    }
+    
+    // Fallback: if business_plan_analyses is empty, use entrepreneur_deliverables data
+    if (!bpData && bpDelivRow?.content) {
+      try { 
+        bpData = JSON.parse(bpDelivRow.content as string)
+        hasBp = true
+        bpVersion = bpDelivRow.version ? Number(bpDelivRow.version) : 1
+        bpId = bpDelivRow.id as string
+        bpStatus = 'completed'
+        console.log('[Business Plan Module] Using fallback data from entrepreneur_deliverables')
+      } catch {}
     }
 
     return c.html(safeScriptBlocks(renderBusinessPlanModulePage({ hasBmc, hasSic, hasFramework, hasDiag, hasOvo, canGenerate, hasBp, bpVersion, bpId, bpStatus, userName, availableCount, embedded, bpData })))
@@ -8289,7 +8305,7 @@ app.post('/api/diagnostic/generate', async (c) => {
       db.prepare(`SELECT id, content, score FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'sic_analysis' ORDER BY created_at DESC LIMIT 1`).bind(payload.userId).first(),
       db.prepare(`SELECT id, content, score FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'framework' ORDER BY created_at DESC LIMIT 1`).bind(payload.userId).first(),
       db.prepare(`SELECT id, content, score FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'framework_pme_data' ORDER BY created_at DESC LIMIT 1`).bind(payload.userId).first(),
-      db.prepare(`SELECT id, extraction_json, score, status FROM plan_ovo_analyses WHERE user_id = ? AND pme_id = ? ORDER BY created_at DESC LIMIT 1`).bind(payload.userId, pmeId).first(),
+      db.prepare(`SELECT id, extraction_json, score, status FROM plan_ovo_analyses WHERE user_id = ? ORDER BY created_at DESC LIMIT 1`).bind(payload.userId).first(),
       db.prepare(`SELECT id, content, score FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'business_plan' ORDER BY created_at DESC LIMIT 1`).bind(payload.userId).first(),
       db.prepare(`SELECT id, content, score FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'odd' ORDER BY created_at DESC LIMIT 1`).bind(payload.userId).first(),
     ])
@@ -9989,8 +10005,8 @@ app.post('/api/business-plan/generate', async (c) => {
       db.prepare(`SELECT id, content, score FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'framework' ORDER BY created_at DESC LIMIT 1`).bind(payload.userId).first(),
       // GET /api/diagnostic/latest/:pmeId equivalent (optional)
       db.prepare(`SELECT id, score, analysis_json FROM diagnostic_analyses WHERE user_id = ? AND pme_id = ? AND status IN ('analyzed','generated','partial') ORDER BY created_at DESC LIMIT 1`).bind(payload.userId, requestPmeId).first(),
-      // GET /api/plan-ovo/latest/:pmeId equivalent (optional)
-      db.prepare(`SELECT id, analysis_json, score FROM plan_ovo_analyses WHERE user_id = ? AND pme_id = ? AND status = 'generated' ORDER BY created_at DESC LIMIT 1`).bind(payload.userId, requestPmeId).first(),
+      // GET /api/plan-ovo/latest/:pmeId equivalent (optional) — don't filter by pme_id for consistency
+      db.prepare(`SELECT id, analysis_json, score FROM plan_ovo_analyses WHERE user_id = ? AND status = 'generated' ORDER BY created_at DESC LIMIT 1`).bind(payload.userId).first(),
       // User info
       db.prepare('SELECT name, email, country FROM users WHERE id = ?').bind(payload.userId).first(),
       // PME structured data
