@@ -145,12 +145,21 @@ coach.post('/api/coach/entrepreneurs', async (c) => {
   const id = crypto.randomUUID()
   const now = new Date().toISOString()
 
-  await db.prepare(
-    `INSERT INTO coach_entrepreneurs (id, coach_user_id, entrepreneur_name, enterprise_name, email, phone, sector, phase, score_ir, created_at, updated_at, last_activity)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'identite', 0, ?, ?, ?)`
-  ).bind(id, user.id, entrepreneur_name, enterprise_name || null, email || null, phone || null, sector || null, now, now, now).run()
+  // Auto-link: if email matches an existing user account, link automatically
+  let linkedUserId: number | null = null
+  if (email) {
+    const existingUser = await db.prepare(
+      'SELECT id FROM users WHERE email = ?'
+    ).bind(email.trim().toLowerCase()).first<any>()
+    if (existingUser) linkedUserId = existingUser.id
+  }
 
-  return c.json({ success: true, id, message: 'Entrepreneur ajouté avec succès' })
+  await db.prepare(
+    `INSERT INTO coach_entrepreneurs (id, coach_user_id, entrepreneur_name, enterprise_name, email, phone, sector, phase, score_ir, linked_user_id, created_at, updated_at, last_activity)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'identite', 0, ?, ?, ?, ?)`
+  ).bind(id, user.id, entrepreneur_name, enterprise_name || null, email || null, phone || null, sector || null, linkedUserId, now, now, now).run()
+
+  return c.json({ success: true, id, linked_user_id: linkedUserId, message: linkedUserId ? 'Entrepreneur ajouté et lié au compte existant' : 'Entrepreneur ajouté avec succès' })
 })
 
 // PUT /api/coach/entrepreneurs/:id
@@ -167,7 +176,7 @@ coach.put('/api/coach/entrepreneurs/:id', async (c) => {
 
   const fields: string[] = []
   const values: any[] = []
-  const allowed = ['entrepreneur_name', 'enterprise_name', 'email', 'phone', 'sector', 'phase', 'score_ir', 'modules_validated', 'deliverables_count', 'notes']
+  const allowed = ['entrepreneur_name', 'enterprise_name', 'email', 'phone', 'sector', 'phase', 'score_ir', 'modules_validated', 'deliverables_count', 'notes', 'linked_user_id']
 
   for (const key of allowed) {
     if (body[key] !== undefined) {
@@ -198,21 +207,100 @@ coach.delete('/api/coach/entrepreneurs/:id', async (c) => {
   return c.json({ success: true })
 })
 
-// ═══════════════════════════════════════════════════════════════
-// COACH LAYOUT
-// ═══════════════════════════════════════════════════════════════
+// POST /api/coach/entrepreneurs/:id/link — Link entrepreneur to a user account
+coach.post('/api/coach/entrepreneurs/:id/link', async (c) => {
+  const user = c.get('coachUser') as any
+  const db = c.env.DB
+  const entrepreneurId = c.req.param('id')
+  const { email } = await c.req.json()
+
+  if (!email) return c.json({ error: 'Email requis' }, 400)
+
+  // Verify coach owns this entrepreneur
+  const ent = await db.prepare(
+    'SELECT id, linked_user_id FROM coach_entrepreneurs WHERE id = ? AND coach_user_id = ?'
+  ).bind(entrepreneurId, user.id).first<any>()
+  if (!ent) return c.json({ error: 'Entrepreneur non trouvé' }, 404)
+
+  // Find user by email
+  const targetUser = await db.prepare(
+    'SELECT id, name, email FROM users WHERE email = ?'
+  ).bind(email.trim().toLowerCase()).first<any>()
+  if (!targetUser) return c.json({ error: 'Aucun compte utilisateur trouvé avec cet email' }, 404)
+
+  // Link
+  await db.prepare(
+    "UPDATE coach_entrepreneurs SET linked_user_id = ?, updated_at = datetime('now') WHERE id = ? AND coach_user_id = ?"
+  ).bind(targetUser.id, entrepreneurId, user.id).run()
+
+  return c.json({
+    success: true,
+    linked_user: { id: targetUser.id, name: targetUser.name, email: targetUser.email },
+    message: `Compte lié à ${targetUser.name} (${targetUser.email})`
+  })
+})
+
+// DELETE /api/coach/entrepreneurs/:id/link — Unlink entrepreneur from user account
+coach.delete('/api/coach/entrepreneurs/:id/link', async (c) => {
+  const user = c.get('coachUser') as any
+  const db = c.env.DB
+  const entrepreneurId = c.req.param('id')
+
+  const ent = await db.prepare(
+    'SELECT id FROM coach_entrepreneurs WHERE id = ? AND coach_user_id = ?'
+  ).bind(entrepreneurId, user.id).first()
+  if (!ent) return c.json({ error: 'Entrepreneur non trouvé' }, 404)
+
+  await db.prepare(
+    "UPDATE coach_entrepreneurs SET linked_user_id = NULL, updated_at = datetime('now') WHERE id = ? AND coach_user_id = ?"
+  ).bind(entrepreneurId, user.id).run()
+
+  return c.json({ success: true, message: 'Liaison supprimée' })
+})
+
+// GET /api/coach/entrepreneurs/:id/link — Get link status
+coach.get('/api/coach/entrepreneurs/:id/link', async (c) => {
+  const user = c.get('coachUser') as any
+  const db = c.env.DB
+  const entrepreneurId = c.req.param('id')
+
+  const ent = await db.prepare(
+    'SELECT ce.id, ce.linked_user_id, u.name as linked_name, u.email as linked_email FROM coach_entrepreneurs ce LEFT JOIN users u ON ce.linked_user_id = u.id WHERE ce.id = ? AND ce.coach_user_id = ?'
+  ).bind(entrepreneurId, user.id).first<any>()
+  if (!ent) return c.json({ error: 'Entrepreneur non trouvé' }, 404)
+
+  return c.json({
+    linked: !!ent.linked_user_id,
+    linked_user_id: ent.linked_user_id,
+    linked_name: ent.linked_name,
+    linked_email: ent.linked_email
+  })
+})
+
+// GET /api/coach/search-users — Search user accounts by email (for linking)
+coach.get('/api/coach/search-users', async (c) => {
+  const db = c.env.DB
+  const q = c.req.query('q') || ''
+  if (q.length < 3) return c.json({ users: [] })
+
+  const results = await db.prepare(
+    "SELECT id, name, email FROM users WHERE email LIKE ? OR name LIKE ? LIMIT 10"
+  ).bind(`%${q}%`, `%${q}%`).all()
+
+  return c.json({ users: results.results || [] })
+})
 function coachLayout(activePage: string, userName: string, content: string): string {
   const nav = [
     { code: 'dashboard', icon: 'fas fa-chart-line', label: 'Dashboard', href: '/coach/dashboard' },
     { code: 'entrepreneurs', icon: 'fas fa-users', label: 'Mes Entrepreneurs', href: '/coach/entrepreneurs' },
-    { code: 'templates', icon: 'fas fa-file-download', label: 'Templates Vierges', href: '/coach/templates' },
+    { code: 'templates', icon: 'fas fa-file-download', label: 'Templates', href: '/coach/templates' },
     { code: 'settings', icon: 'fas fa-cog', label: 'Paramètres', href: '/coach/settings' },
   ]
 
   const navHtml = nav.map(n => {
     const active = n.code === activePage
-    return `<a href="${n.href}" class="coach-nav__link ${active ? 'coach-nav__link--active' : ''}">
-      <i class="${n.icon}"></i><span class="coach-nav__label">${n.label}</span>
+    return `<a href="${n.href}" class="coach-topnav__link ${active ? 'coach-topnav__link--active' : ''}">
+      <i class="${n.icon}"></i><span>${n.label}</span>
     </a>`
   }).join('')
 
@@ -228,55 +316,63 @@ function coachLayout(activePage: string, userName: string, content: string): str
     * { margin:0; padding:0; box-sizing:border-box; }
     body { font-family:'Inter',system-ui,sans-serif; background:#f8fafc; color:#1e293b; min-height:100vh; }
 
-    /* ===== SIDEBAR ===== */
-    .coach-sidebar {
-      width: 240px; position: fixed; top:0; left:0; bottom:0;
-      background: #111827; display:flex; flex-direction:column; z-index:100;
-      transition: width 0.2s ease;
+    /* ===== TOP NAVBAR ===== */
+    .coach-topbar {
+      position: sticky; top:0; z-index:100;
+      background: #111827; color:white;
+      display:flex; align-items:center; justify-content:space-between;
+      padding:0 24px; height:56px;
+      box-shadow:0 2px 8px rgba(0,0,0,0.15);
     }
-    .coach-sidebar__brand {
-      padding: 20px; border-bottom: 1px solid rgba(255,255,255,0.08);
-      display:flex; align-items:center; gap:12px;
+    .coach-topbar__left { display:flex; align-items:center; gap:24px; }
+    .coach-topbar__brand {
+      display:flex; align-items:center; gap:10px; text-decoration:none;
     }
-    .coach-sidebar__logo {
-      width:36px; height:36px; border-radius:10px;
+    .coach-topbar__logo {
+      width:32px; height:32px; border-radius:8px;
       background:linear-gradient(135deg,#7c3aed,#a78bfa);
       display:flex; align-items:center; justify-content:center;
-      font-size:14px; font-weight:800; color:white; flex-shrink:0;
+      font-size:12px; font-weight:800; color:white; flex-shrink:0;
     }
-    .coach-sidebar__brand-text { display:flex; flex-direction:column; }
-    .coach-sidebar__brand-name { font-size:15px; font-weight:700; color:white; letter-spacing:0.5px; }
-    .coach-sidebar__brand-sub { font-size:11px; color:#9ca3af; margin-top:2px; }
-
-    .coach-nav { flex:1; padding:16px 10px; display:flex; flex-direction:column; gap:4px; }
-    .coach-nav__link {
-      display:flex; align-items:center; gap:12px;
-      padding:10px 14px; border-radius:8px;
+    .coach-topbar__brand-name { font-size:15px; font-weight:700; color:white; letter-spacing:0.5px; }
+    .coach-topbar__brand-sub { font-size:10px; color:#9ca3af; margin-left:4px; font-weight:500; }
+    .coach-topnav { display:flex; align-items:center; gap:2px; margin-left:8px; }
+    .coach-topnav__link {
+      display:flex; align-items:center; gap:7px;
+      padding:8px 14px; border-radius:8px;
       font-size:13px; font-weight:500; color:#9ca3af;
       text-decoration:none; transition:all 0.15s;
-      border-left:3px solid transparent;
+      white-space:nowrap;
     }
-    .coach-nav__link:hover { background:#1e293b; color:#e2e8f0; }
-    .coach-nav__link--active { background:#1e293b; color:white; font-weight:600; border-left-color:#7c3aed; }
-    .coach-nav__link i { width:18px; text-align:center; font-size:14px; }
-
-    .coach-sidebar__footer { padding:12px 10px; border-top:1px solid rgba(255,255,255,0.08); display:flex; flex-direction:column; gap:8px; }
-    .coach-switch-btn {
-      display:flex; align-items:center; gap:10px;
-      padding:10px 14px; border-radius:8px;
+    .coach-topnav__link:hover { background:rgba(255,255,255,0.08); color:#e2e8f0; }
+    .coach-topnav__link--active { background:rgba(124,58,237,0.25); color:white; font-weight:600; }
+    .coach-topnav__link i { font-size:13px; }
+    .coach-topbar__right { display:flex; align-items:center; gap:12px; }
+    .coach-topbar__switch {
+      display:flex; align-items:center; gap:7px;
+      padding:6px 14px; border-radius:8px;
       font-size:12px; font-weight:600; color:#a78bfa;
-      text-decoration:none; background:rgba(124,58,237,0.1);
-      transition:all 0.15s; border:none; cursor:pointer; width:100%; text-align:left;
+      text-decoration:none; background:rgba(124,58,237,0.15);
+      transition:all 0.15s; border:none; cursor:pointer;
     }
-    .coach-switch-btn:hover { background:rgba(124,58,237,0.2); color:#c4b5fd; }
-    .coach-sidebar__user { padding:8px 14px; font-size:11px; color:#6b7280; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .coach-topbar__switch:hover { background:rgba(124,58,237,0.25); color:#c4b5fd; }
+    .coach-topbar__user {
+      font-size:12px; color:#9ca3af; display:flex; align-items:center; gap:6px;
+    }
+    .coach-topbar__user i { color:#7c3aed; }
+
+    /* ===== MOBILE NAV ===== */
+    .coach-mobile-toggle {
+      display:none; background:none; border:none; color:white; font-size:18px; cursor:pointer; padding:4px;
+    }
+    .coach-topnav--mobile { display:none; }
 
     /* ===== MAIN CONTENT ===== */
-    .coach-main { margin-left:240px; min-height:100vh; }
+    .coach-main { min-height:calc(100vh - 56px); }
     .coach-header {
       padding:20px 32px; border-bottom:1px solid #e2e8f0;
       display:flex; align-items:center; justify-content:space-between;
-      background:white; position:sticky; top:0; z-index:50;
+      background:white; position:sticky; top:56px; z-index:50;
     }
     .coach-header__title { font-size:20px; font-weight:700; color:#1e293b; display:flex; align-items:center; gap:10px; }
     .coach-header__actions { display:flex; align-items:center; gap:12px; }
@@ -417,62 +513,61 @@ function coachLayout(activePage: string, userName: string, content: string): str
     .coach-modal__btn--submit:hover { background:#6d28d9; }
     .coach-modal__btn--submit:disabled { opacity:0.6; cursor:default; }
 
-    /* ===== MOBILE ===== */
-    .coach-mobile-toggle {
-      display:none; position:fixed; top:12px; left:12px; z-index:200;
-      width:40px; height:40px; border-radius:10px;
-      background:#111827; color:white; border:none;
-      font-size:16px; cursor:pointer;
-    }
     @media (max-width:1024px) {
-      .coach-sidebar { width:64px; }
-      .coach-nav__label, .coach-sidebar__brand-text,
-      .coach-switch-btn span, .coach-sidebar__user { display:none; }
-      .coach-sidebar__brand { justify-content:center; padding:16px 8px; }
-      .coach-nav__link { justify-content:center; padding:12px 8px; border-left:none; border-bottom:3px solid transparent; }
-      .coach-nav__link--active { border-left:none; border-bottom-color:#7c3aed; }
-      .coach-switch-btn { justify-content:center; padding:10px; }
-      .coach-main { margin-left:64px; }
       .coach-stats { grid-template-columns:repeat(2,1fr); }
+      .coach-topnav__link span { display:none; }
+      .coach-topnav__link { padding:8px 10px; }
     }
-    @media (max-width:640px) {
-      .coach-sidebar { transform:translateX(-100%); width:240px; }
-      .coach-sidebar.open { transform:translateX(0); }
-      .coach-mobile-toggle { display:flex; align-items:center; justify-content:center; }
-      .coach-main { margin-left:0; }
-      .coach-nav__label, .coach-sidebar__brand-text,
-      .coach-switch-btn span, .coach-sidebar__user { display:block; }
-      .coach-nav__link { justify-content:flex-start; }
-      .coach-sidebar__brand { justify-content:flex-start; padding:20px; }
-      .coach-switch-btn { justify-content:flex-start; }
+    @media (max-width:768px) {
+      .coach-topnav { display:none; }
+      .coach-mobile-toggle { display:block; }
+      .coach-topnav--mobile {
+        position:absolute; top:56px; left:0; right:0;
+        background:#111827; padding:12px; z-index:99;
+        display:none; flex-direction:column; gap:4px;
+        border-top:1px solid rgba(255,255,255,0.08);
+        box-shadow:0 8px 16px rgba(0,0,0,0.2);
+      }
+      .coach-topnav--mobile.open { display:flex; }
+      .coach-topnav--mobile a {
+        display:flex; align-items:center; gap:10px;
+        padding:10px 16px; border-radius:8px;
+        font-size:13px; font-weight:500; color:#9ca3af;
+        text-decoration:none;
+      }
+      .coach-topnav--mobile a:hover { background:rgba(255,255,255,0.08); color:#e2e8f0; }
+      .coach-topnav--mobile a.active { background:rgba(124,58,237,0.25); color:white; }
       .coach-stats { grid-template-columns:1fr; }
       .coach-content { padding:16px; }
+      .coach-header { padding:16px; top:56px; }
       .coach-actions { flex-direction:column; }
+      .coach-topbar__brand-sub { display:none; }
     }
   </style>
 </head>
 <body>
-  <button class="coach-mobile-toggle" onclick="document.querySelector('.coach-sidebar').classList.toggle('open')">
-    <i class="fas fa-bars"></i>
-  </button>
-
-  <aside class="coach-sidebar">
-    <div class="coach-sidebar__brand">
-      <div class="coach-sidebar__logo">ES</div>
-      <div class="coach-sidebar__brand-text">
-        <span class="coach-sidebar__brand-name">ESONO</span>
-        <span class="coach-sidebar__brand-sub">Espace Coach</span>
-      </div>
-    </div>
-    <nav class="coach-nav">${navHtml}</nav>
-    <div class="coach-sidebar__footer">
-      <a href="/entrepreneur" class="coach-switch-btn">
-        <i class="fas fa-sync-alt"></i>
-        <span>Mode Entrepreneur</span>
+  <!-- TOP NAVBAR -->
+  <header class="coach-topbar">
+    <div class="coach-topbar__left">
+      <a href="/coach/dashboard" class="coach-topbar__brand">
+        <div class="coach-topbar__logo">ES</div>
+        <span class="coach-topbar__brand-name">ESONO</span>
+        <span class="coach-topbar__brand-sub">Coach</span>
       </a>
-      <div class="coach-sidebar__user"><i class="fas fa-user-circle"></i> ${escapeHtml(userName)}</div>
+      <nav class="coach-topnav">${navHtml}</nav>
+      <button class="coach-mobile-toggle" onclick="document.querySelector('.coach-topnav--mobile').classList.toggle('open')">
+        <i class="fas fa-bars"></i>
+      </button>
     </div>
-  </aside>
+    <div class="coach-topbar__right">
+      <a href="/entrepreneur" class="coach-topbar__switch">
+        <i class="fas fa-sync-alt"></i> Mode Entrepreneur
+      </a>
+      <div class="coach-topbar__user"><i class="fas fa-user-circle"></i> ${escapeHtml(userName)}</div>
+    </div>
+  </header>
+  <!-- Mobile nav dropdown -->
+  <nav class="coach-topnav--mobile">${navHtml}</nav>
 
   <div class="coach-main">${content}</div>
 </body>
@@ -522,7 +617,7 @@ coach.get('/coach/dashboard', async (c) => {
     const lastAct = e.last_activity ? new Date(e.last_activity).toLocaleDateString('fr-FR') : '—'
     return `<tr>
       <td style="font-weight:600;color:#1e293b">${escapeHtml(e.enterprise_name || '—')}</td>
-      <td>${escapeHtml(e.entrepreneur_name)}</td>
+      <td>${escapeHtml(e.entrepreneur_name)} ${e.linked_user_id ? '<i class="fas fa-link" style="color:#059669;font-size:10px" title="Compte lié"></i>' : ''}</td>
       <td style="color:#64748b">${escapeHtml(e.sector || '—')}</td>
       <td>${getScoreBadge(e.score_ir || 0)}</td>
       <td>
@@ -591,9 +686,6 @@ coach.get('/coach/dashboard', async (c) => {
       <div class="coach-actions">
         <button class="coach-action-btn coach-action-btn--primary" onclick="openAddModal()">
           <i class="fas fa-user-plus"></i> Ajouter un entrepreneur
-        </button>
-        <button class="coach-action-btn coach-action-btn--secondary" onclick="openUploadModal()">
-          <i class="fas fa-cloud-upload-alt"></i> Upload rapide
         </button>
         <a href="/coach/templates" class="coach-action-btn coach-action-btn--secondary">
           <i class="fas fa-file-download"></i> Templates vierges
@@ -704,62 +796,15 @@ coach.get('/coach/dashboard', async (c) => {
       </div>
     </div>
 
-    <!-- MODAL: Upload rapide -->
-    <div class="coach-modal-overlay" id="modal-upload">
-      <div class="coach-modal">
-        <div class="coach-modal__header">
-          <div class="coach-modal__title"><i class="fas fa-cloud-upload-alt" style="color:#2563eb"></i> Upload rapide</div>
-          <button class="coach-modal__close" onclick="closeModal('modal-upload')"><i class="fas fa-times"></i></button>
-        </div>
-        <div class="coach-modal__body">
-          <div class="coach-modal__field">
-            <label>Sélectionner l'entrepreneur</label>
-            <select id="upload-entrepreneur-select">
-              <option value="">— Choisir un entrepreneur —</option>
-              ${entrepreneurs.map((e: any) => `<option value="${e.id}">${escapeHtml(e.entrepreneur_name)} ${e.enterprise_name ? '— ' + escapeHtml(e.enterprise_name) : ''}</option>`).join('')}
-            </select>
-          </div>
-          <div class="coach-modal__field">
-            <label>Type de document</label>
-            <select id="upload-category">
-              <option value="bmc">Business Model Canvas (BMC)</option>
-              <option value="sic">Social Impact Canvas (SIC)</option>
-              <option value="inputs">Inputs Financiers</option>
-              <option value="supplementary">Document complémentaire</option>
-            </select>
-          </div>
-          <div style="border:2px dashed #e2e8f0;border-radius:12px;padding:32px;text-align:center;cursor:pointer;transition:all 0.15s" 
-               onclick="document.getElementById('upload-file-input').click()"
-               ondragover="event.preventDefault();this.style.borderColor='#7c3aed';this.style.background='#faf5ff'"
-               ondragleave="this.style.borderColor='#e2e8f0';this.style.background='white'"
-               ondrop="event.preventDefault();handleDrop(event)">
-            <i class="fas fa-cloud-upload-alt" style="font-size:28px;color:#94a3b8;margin-bottom:8px;display:block"></i>
-            <div style="font-size:13px;font-weight:600;color:#475569">Glissez un fichier ici ou cliquez</div>
-            <div style="font-size:11px;color:#94a3b8;margin-top:4px">.xlsx, .docx, .pdf, .csv</div>
-            <input type="file" id="upload-file-input" style="display:none" accept=".xlsx,.xls,.docx,.pdf,.csv" onchange="handleFileSelect(this)">
-          </div>
-          <div id="upload-status" style="display:none;padding:12px;border-radius:8px;font-size:13px;font-weight:600"></div>
-        </div>
-        <div class="coach-modal__footer">
-          <button type="button" class="coach-modal__btn coach-modal__btn--cancel" onclick="closeModal('modal-upload')">Fermer</button>
-          <button type="button" class="coach-modal__btn coach-modal__btn--submit" id="btn-upload-submit" onclick="submitUpload()" disabled>
-            <i class="fas fa-upload"></i> Envoyer
-          </button>
-        </div>
-      </div>
-    </div>
-
     <script>
       // ─── State ───
       let currentPage = 1;
       let currentSort = 'created_at';
       let currentOrder = 'desc';
       let searchTimeout = null;
-      let selectedFile = null;
 
       // ─── Modals ───
       function openAddModal() { document.getElementById('modal-add').classList.add('active'); }
-      function openUploadModal() { document.getElementById('modal-upload').classList.add('active'); }
       function closeModal(id) { document.getElementById(id).classList.remove('active'); }
 
       // Close modals on overlay click
@@ -907,56 +952,6 @@ coach.get('/coach/dashboard', async (c) => {
           btnPrev.disabled = pagination.page <= 1;
           btnNext.disabled = pagination.page >= pagination.pages;
         }
-      }
-
-      // ─── Upload ───
-      function handleFileSelect(input) {
-        selectedFile = input.files[0];
-        if (selectedFile) {
-          document.getElementById('btn-upload-submit').disabled = false;
-          var status = document.getElementById('upload-status');
-          status.style.display = 'block';
-          status.style.background = '#f0fdf4';
-          status.style.color = '#059669';
-          status.innerHTML = '<i class="fas fa-file"></i> ' + selectedFile.name + ' (' + (selectedFile.size / 1024).toFixed(1) + ' Ko)';
-        }
-      }
-
-      function handleDrop(e) {
-        var file = e.dataTransfer.files[0];
-        if (file) {
-          var input = document.getElementById('upload-file-input');
-          var dt = new DataTransfer();
-          dt.items.add(file);
-          input.files = dt.files;
-          handleFileSelect(input);
-        }
-      }
-
-      async function submitUpload() {
-        var entrepreneurId = document.getElementById('upload-entrepreneur-select').value;
-        if (!entrepreneurId) { alert('Sélectionnez un entrepreneur'); return; }
-        if (!selectedFile) { alert('Sélectionnez un fichier'); return; }
-
-        var btn = document.getElementById('btn-upload-submit');
-        btn.disabled = true;
-        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Envoi...';
-
-        var status = document.getElementById('upload-status');
-        status.style.display = 'block';
-        status.style.background = '#eff6ff';
-        status.style.color = '#2563eb';
-        status.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Upload en cours...';
-
-        // Note: this is a placeholder — actual upload would go to the entrepreneur's upload endpoint
-        setTimeout(function() {
-          status.style.background = '#f0fdf4';
-          status.style.color = '#059669';
-          status.innerHTML = '<i class="fas fa-check"></i> Fichier enregistré avec succès !';
-          btn.disabled = false;
-          btn.innerHTML = '<i class="fas fa-upload"></i> Envoyer';
-          selectedFile = null;
-        }, 1500);
       }
 
       function openEditModal(id) {
@@ -1279,6 +1274,14 @@ coach.get('/coach/entrepreneur/:id', async (c) => {
   ).bind(user.id).all()
   const mirrorDeliverables = (mirrorDelivResult.results || []) as any[]
 
+  // Get linked user account info
+  let linkedUser: any = null
+  if (entrepreneur.linked_user_id) {
+    linkedUser = await db.prepare(
+      'SELECT id, name, email FROM users WHERE id = ?'
+    ).bind(entrepreneur.linked_user_id).first<any>()
+  }
+
   const phase = getPhaseLabel(entrepreneur.phase)
   const scoreColor = getScoreColor(entrepreneur.score_ir || 0)
 
@@ -1450,6 +1453,10 @@ coach.get('/coach/entrepreneur/:id', async (c) => {
         <a href="/coach/dashboard" style="color:#94a3b8;text-decoration:none;font-size:14px;margin-right:4px"><i class="fas fa-arrow-left"></i></a>
         ${escapeHtml(entrepreneur.enterprise_name || entrepreneur.entrepreneur_name)}
         <span style="margin-left:8px">${getScoreBadge(entrepreneur.score_ir || 0)}</span>
+        ${linkedUser 
+          ? `<span style="margin-left:12px;display:inline-flex;align-items:center;gap:5px;padding:4px 12px;border-radius:20px;font-size:11px;font-weight:600;color:#059669;background:#ecfdf5;border:1px solid #bbf7d0" title="Compte li\u00e9 : ${escapeHtml(linkedUser.email)}"><i class="fas fa-link"></i> Li\u00e9 \u00e0 ${escapeHtml(linkedUser.name)}</span>`
+          : `<button onclick="openLinkModal()" style="margin-left:12px;display:inline-flex;align-items:center;gap:5px;padding:4px 12px;border-radius:20px;font-size:11px;font-weight:600;color:#d97706;background:#fffbeb;border:1px solid #fde68a;cursor:pointer;font-family:inherit" title="Aucun compte utilisateur li\u00e9"><i class="fas fa-unlink"></i> Non li\u00e9</button>`
+        }
       </h1>
       <div class="coach-header__actions">
         <span style="font-size:12px;color:#64748b"><i class="fas ${phase.icon}" style="color:${phase.color}"></i> ${phase.label}</span>
@@ -1776,7 +1783,120 @@ coach.get('/coach/entrepreneur/:id', async (c) => {
         if (titleEl) titleEl.innerHTML = '<i class="fas ' + (icons[type] || 'fa-file') + '"><\\/i> ' + (titles[type] || type);
       }
       function downloadMirrorDeliv(format) { alert('T\\u00e9l\\u00e9chargement en ' + format); }
+
+      // ─── Linking entrepreneur to user account ───
+      function openLinkModal() {
+        var overlay = document.getElementById('modal-link');
+        if (overlay) overlay.classList.add('active');
+      }
+      function closeLinkModal() {
+        var overlay = document.getElementById('modal-link');
+        if (overlay) overlay.classList.remove('active');
+      }
+      var linkSearchTimeout = null;
+      function searchUsersForLink(q) {
+        clearTimeout(linkSearchTimeout);
+        var results = document.getElementById('link-search-results');
+        if (q.length < 3) { results.innerHTML = '<div style="padding:12px;color:#94a3b8;font-size:12px">Tapez au moins 3 caract\\u00e8res...</div>'; return; }
+        linkSearchTimeout = setTimeout(async function() {
+          try {
+            var res = await fetch('/api/coach/search-users?q=' + encodeURIComponent(q), { credentials:'include' });
+            var data = await res.json();
+            if (!data.users || data.users.length === 0) {
+              results.innerHTML = '<div style="padding:12px;color:#94a3b8;font-size:12px"><i class="fas fa-info-circle"><\\/i> Aucun compte trouv\\u00e9</div>';
+              return;
+            }
+            results.innerHTML = data.users.map(function(u) {
+              return '<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid #f1f5f9;cursor:pointer;transition:all 0.1s" onmouseover="this.style.background=\\'#f8fafc\\'" onmouseout="this.style.background=\\'white\\'" onclick="linkByUserId(' + u.id + ')">'
+                + '<div><div style="font-size:13px;font-weight:600;color:#1e293b">' + u.name + '<\\/div><div style="font-size:11px;color:#94a3b8">' + u.email + '<\\/div><\\/div>'
+                + '<button style="padding:5px 12px;border-radius:6px;border:1px solid #ddd6fe;background:#faf5ff;color:#7c3aed;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit"><i class="fas fa-link"><\\/i> Lier<\\/button>'
+                + '<\\/div>';
+            }).join('');
+          } catch(e) { results.innerHTML = '<div style="padding:12px;color:#dc2626;font-size:12px">Erreur: ' + e.message + '<\\/div>'; }
+        }, 400);
+      }
+      async function linkByUserId(userId) {
+        if (!confirm('Lier cet entrepreneur au compte s\\u00e9lectionn\\u00e9 ?')) return;
+        try {
+          var emailInput = document.getElementById('link-email-input');
+          // Find the user email from the search results
+          var res = await fetch('/api/coach/search-users?q=' + userId, { credentials:'include' });
+          var data = await res.json();
+          var userEmail = data.users && data.users.find(function(u) { return u.id === userId; });
+          if (userEmail) {
+            await linkByEmailDirect(userEmail.email);
+          }
+        } catch(e) { alert('Erreur: ' + e.message); }
+      }
+      async function linkByEmail() {
+        var email = document.getElementById('link-email-input').value;
+        if (!email) { alert('Entrez un email'); return; }
+        await linkByEmailDirect(email);
+      }
+      async function linkByEmailDirect(email) {
+        try {
+          var res = await fetch('/api/coach/entrepreneurs/${id}/link', {
+            method:'POST', credentials:'include',
+            headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({ email: email })
+          });
+          var data = await res.json();
+          if (data.success) { alert(data.message); window.location.reload(); }
+          else { alert(data.error || 'Erreur'); }
+        } catch(e) { alert('Erreur: ' + e.message); }
+      }
+      async function unlinkUser() {
+        if (!confirm('Supprimer la liaison avec le compte entrepreneur ?')) return;
+        try {
+          var res = await fetch('/api/coach/entrepreneurs/${id}/link', { method:'DELETE', credentials:'include' });
+          var data = await res.json();
+          if (data.success) { alert('Liaison supprim\\u00e9e'); window.location.reload(); }
+          else { alert(data.error || 'Erreur'); }
+        } catch(e) { alert('Erreur: ' + e.message); }
+      }
     </script>
+
+    <!-- MODAL: Link entrepreneur to user account -->
+    <div class="coach-modal-overlay" id="modal-link" onclick="if(event.target===this) closeLinkModal()">
+      <div class="coach-modal">
+        <div class="coach-modal__header">
+          <div class="coach-modal__title"><i class="fas fa-link" style="color:#7c3aed"></i> Lier un compte utilisateur</div>
+          <button class="coach-modal__close" onclick="closeLinkModal()"><i class="fas fa-times"></i></button>
+        </div>
+        <div class="coach-modal__body">
+          <div style="padding:12px 16px;background:#eff6ff;border-radius:10px;border:1px solid #bfdbfe;margin-bottom:8px">
+            <div style="font-size:12px;font-weight:600;color:#1e40af;margin-bottom:4px"><i class="fas fa-info-circle"></i> Pourquoi lier un compte ?</div>
+            <div style="font-size:11px;color:#1e40af;line-height:1.5">
+              La liaison permet \\u00e0 l'entrepreneur de voir automatiquement les livrables partag\\u00e9s via la Vue Miroir dans son espace personnel.
+            </div>
+          </div>
+          ${linkedUser ? `
+            <div style="padding:16px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;display:flex;align-items:center;justify-content:space-between">
+              <div>
+                <div style="font-size:13px;font-weight:700;color:#059669"><i class="fas fa-check-circle"></i> Compte li\\u00e9</div>
+                <div style="font-size:13px;font-weight:600;color:#1e293b;margin-top:4px">${escapeHtml(linkedUser.name)}</div>
+                <div style="font-size:11px;color:#64748b">${escapeHtml(linkedUser.email)}</div>
+              </div>
+              <button onclick="unlinkUser()" style="padding:8px 16px;border-radius:8px;border:1px solid #fecaca;background:#fef2f2;color:#dc2626;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit"><i class="fas fa-unlink"></i> D\\u00e9lier</button>
+            </div>
+          ` : `
+            <div class="coach-modal__field">
+              <label>Rechercher par email</label>
+              <div style="display:flex;gap:8px">
+                <input type="email" id="link-email-input" placeholder="email@entrepreneur.com" style="flex:1;padding:10px 14px;border:1px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none" oninput="searchUsersForLink(this.value)">
+                <button onclick="linkByEmail()" style="padding:8px 18px;border-radius:8px;border:none;background:#7c3aed;color:white;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;white-space:nowrap"><i class="fas fa-link"></i> Lier</button>
+              </div>
+            </div>
+            <div id="link-search-results" style="max-height:200px;overflow-y:auto;border:1px solid #e2e8f0;border-radius:8px;background:white">
+              <div style="padding:12px;color:#94a3b8;font-size:12px;text-align:center">Recherchez un utilisateur par email ci-dessus</div>
+            </div>
+          `}
+        </div>
+        <div class="coach-modal__footer">
+          <button type="button" class="coach-modal__btn coach-modal__btn--cancel" onclick="closeLinkModal()">Fermer</button>
+        </div>
+      </div>
+    </div>
   `
 
   return c.html(safeScriptBlocks(coachLayout('entrepreneurs', user.name, content)))

@@ -810,14 +810,37 @@ entrepreneurRoutes.get('/api/deliverables', async (c) => {
     const payload = await verifyToken(token)
     if (!payload) return c.json({ error: 'Token invalide' }, 401)
 
-    const deliverables = await c.env.DB.prepare(`
-      SELECT ed.* FROM entrepreneur_deliverables ed
-      INNER JOIN (SELECT type, MAX(version) as max_version FROM entrepreneur_deliverables 
-        WHERE user_id = ? AND NOT (generated_by IN ('coach','coach_mirror') AND visibility = 'private')
-        GROUP BY type) latest 
-      ON ed.type = latest.type AND ed.version = latest.max_version
-      WHERE ed.user_id = ? AND NOT (ed.generated_by IN ('coach','coach_mirror') AND ed.visibility = 'private')
-    `).bind(payload.userId, payload.userId).all()
+    // Check if entrepreneur is linked to a coach via coach_entrepreneurs
+    const coachLink = await c.env.DB.prepare(
+      'SELECT coach_user_id FROM coach_entrepreneurs WHERE linked_user_id = ? LIMIT 1'
+    ).bind(payload.userId).first<any>()
+    const coachUserId = coachLink?.coach_user_id || null
+
+    let deliverables: any
+    if (coachUserId) {
+      // Include own deliverables + shared coach/mirror deliverables from linked coach
+      deliverables = await c.env.DB.prepare(`
+        SELECT ed.* FROM entrepreneur_deliverables ed
+        INNER JOIN (
+          SELECT type, MAX(version) as max_version FROM entrepreneur_deliverables 
+          WHERE (user_id = ? AND NOT (generated_by IN ('coach','coach_mirror') AND visibility = 'private'))
+             OR (coach_user_id = ? AND visibility = 'shared')
+          GROUP BY type
+        ) latest 
+        ON ed.type = latest.type AND ed.version = latest.max_version
+        WHERE (ed.user_id = ? AND NOT (ed.generated_by IN ('coach','coach_mirror') AND ed.visibility = 'private'))
+           OR (ed.coach_user_id = ? AND ed.visibility = 'shared')
+      `).bind(payload.userId, coachUserId, payload.userId, coachUserId).all()
+    } else {
+      deliverables = await c.env.DB.prepare(`
+        SELECT ed.* FROM entrepreneur_deliverables ed
+        INNER JOIN (SELECT type, MAX(version) as max_version FROM entrepreneur_deliverables 
+          WHERE user_id = ? AND NOT (generated_by IN ('coach','coach_mirror') AND visibility = 'private')
+          GROUP BY type) latest 
+        ON ed.type = latest.type AND ed.version = latest.max_version
+        WHERE ed.user_id = ? AND NOT (ed.generated_by IN ('coach','coach_mirror') AND ed.visibility = 'private')
+      `).bind(payload.userId, payload.userId).all()
+    }
     return c.json({ success: true, deliverables: deliverables.results || [] })
   } catch (error) {
     console.error('Get deliverables error:', error)
@@ -3703,14 +3726,36 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
     ).bind(payload.userId).all()
 
     // Fetch deliverables (exclude coach private — only show entrepreneur's own + shared coach deliverables)
-    const deliverables = await c.env.DB.prepare(`
-      SELECT ed.* FROM entrepreneur_deliverables ed
-      INNER JOIN (SELECT type, MAX(version) as max_version FROM entrepreneur_deliverables 
-        WHERE user_id = ? AND NOT (generated_by IN ('coach','coach_mirror') AND visibility = 'private')
-        GROUP BY type) latest 
-      ON ed.type = latest.type AND ed.version = latest.max_version 
-      WHERE ed.user_id = ? AND NOT (ed.generated_by IN ('coach','coach_mirror') AND ed.visibility = 'private')
-    `).bind(payload.userId, payload.userId).all()
+    // Also include shared deliverables from linked coach
+    const coachLink = await c.env.DB.prepare(
+      'SELECT coach_user_id FROM coach_entrepreneurs WHERE linked_user_id = ? LIMIT 1'
+    ).bind(payload.userId).first<any>()
+    const linkedCoachId = coachLink?.coach_user_id || null
+
+    let deliverables: any
+    if (linkedCoachId) {
+      deliverables = await c.env.DB.prepare(`
+        SELECT ed.* FROM entrepreneur_deliverables ed
+        INNER JOIN (
+          SELECT type, MAX(version) as max_version FROM entrepreneur_deliverables 
+          WHERE (user_id = ? AND NOT (generated_by IN ('coach','coach_mirror') AND visibility = 'private'))
+             OR (coach_user_id = ? AND visibility = 'shared')
+          GROUP BY type
+        ) latest 
+        ON ed.type = latest.type AND ed.version = latest.max_version 
+        WHERE (ed.user_id = ? AND NOT (ed.generated_by IN ('coach','coach_mirror') AND ed.visibility = 'private'))
+           OR (ed.coach_user_id = ? AND ed.visibility = 'shared')
+      `).bind(payload.userId, linkedCoachId, payload.userId, linkedCoachId).all()
+    } else {
+      deliverables = await c.env.DB.prepare(`
+        SELECT ed.* FROM entrepreneur_deliverables ed
+        INNER JOIN (SELECT type, MAX(version) as max_version FROM entrepreneur_deliverables 
+          WHERE user_id = ? AND NOT (generated_by IN ('coach','coach_mirror') AND visibility = 'private')
+          GROUP BY type) latest 
+        ON ed.type = latest.type AND ed.version = latest.max_version 
+        WHERE ed.user_id = ? AND NOT (ed.generated_by IN ('coach','coach_mirror') AND ed.visibility = 'private')
+      `).bind(payload.userId, payload.userId).all()
+    }
 
     const delivMap: Record<string, any> = {}
     for (const d of (deliverables.results || []) as any[]) {
