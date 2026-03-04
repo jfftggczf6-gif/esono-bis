@@ -1180,7 +1180,7 @@ entrepreneurRoutes.post('/api/ai/generate-all', async (c) => {
             // Build a minimal SicAnalysisResult — the engine will enrich it via Claude AI
             const minimalSicAnalysis = {
               sections: [], scoreGlobal: 0, scoreCoherenceBmc: 0,
-              impactMatrix: { directBeneficiaries: 0, indirectBeneficiaries: 0, totalBeneficiaries: 0, geoScope: '', timeHorizon: '' },
+              impactMatrix: { intentionnel: [] as string[], mesure: [] as string[], prouve: [] as string[] },
               oddMappings: [], impactWashingRisk: 'moyen' as const, impactWashingSignals: [],
               smartCheck: { isSpecific: false, isMeasurable: false, isAttainable: false, isRelevant: false, isTimeBound: false, score: 0, feedback: '' },
               bmcCoherenceIssues: [], recommendations: [], verdict: '', timestamp: new Date().toISOString()

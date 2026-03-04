@@ -531,6 +531,19 @@ export function generateFullSicDeliverableFallback(data: SicDeliverableData): st
 
 function _renderSicDeliverable(data: SicDeliverableData, source: 'claude' | 'fallback'): string {
   const { companyName, entrepreneurName, sector, location, country, analysis, answers } = data
+  
+  // Defensive: ensure impactMatrix has required arrays
+  if (!analysis.impactMatrix || !Array.isArray(analysis.impactMatrix.intentionnel)) {
+    analysis.impactMatrix = { intentionnel: [], mesure: [], prouve: [] }
+  }
+  if (!Array.isArray(analysis.impactMatrix.mesure)) analysis.impactMatrix.mesure = []
+  if (!Array.isArray(analysis.impactMatrix.prouve)) analysis.impactMatrix.prouve = []
+  if (!Array.isArray(analysis.sections)) analysis.sections = []
+  if (!Array.isArray(analysis.oddMappings)) analysis.oddMappings = []
+  if (!Array.isArray(analysis.impactWashingSignals)) analysis.impactWashingSignals = []
+  if (!Array.isArray(analysis.bmcCoherenceIssues)) analysis.bmcCoherenceIssues = []
+  if (!Array.isArray(analysis.recommendations)) analysis.recommendations = []
+  
   const sicData = extractSicData(answers)
   const benefNumbers = parseBeneficiaryNumbers(sicData.nombreBeneficiaires)
   const theoryOfChange = buildTheoryOfChange(sicData)
