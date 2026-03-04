@@ -1980,8 +1980,8 @@ function renderDiagnosticModulePage(opts: {
   const barColor = (s: number) => s > 75 ? '#22c55e' : s >= 60 ? '#eab308' : s >= 40 ? '#f97316' : '#ef4444'
   const niveauBg = (n: string) => n === 'critique' || n === 'elevee' || n === 'eleve' ? '#fef2f2' : n === 'moyen' || n === 'moyenne' ? '#fffbeb' : '#f8fafc'
   const niveauColor = (n: string) => n === 'critique' || n === 'elevee' || n === 'eleve' ? '#dc2626' : n === 'moyen' || n === 'moyenne' ? '#d97706' : '#64748b'
-  const urgencyBadge = (u: string) => { const ul = (u||'').toLowerCase(); if (ul.includes('imm') || ul.includes('critique') || ul.includes('court')) return '\u{1F534} Critique'; if (ul.includes('important') || ul.includes('moyen')) return '\u{1F7E0} Important'; return '\u{1F7E1} Recommandé' }
-  const urgencyBorder = (u: string) => { const ul = (u||'').toLowerCase(); if (ul.includes('imm') || ul.includes('critique') || ul.includes('court')) return '#ef4444'; if (ul.includes('important') || ul.includes('moyen')) return '#f97316'; return '#eab308' }
+  const urgencyBadge = (u: any) => { const ul = String(u||'').toLowerCase(); if (ul.includes('imm') || ul.includes('critique') || ul.includes('court')) return '\u{1F534} Critique'; if (ul.includes('important') || ul.includes('moyen')) return '\u{1F7E0} Important'; return '\u{1F7E1} Recommandé' }
+  const urgencyBorder = (u: any) => { const ul = String(u||'').toLowerCase(); if (ul.includes('imm') || ul.includes('critique') || ul.includes('court')) return '#ef4444'; if (ul.includes('important') || ul.includes('moyen')) return '#f97316'; return '#eab308' }
 
   // Extract data from analysis — supports BOTH old format (dimensions[], scoreGlobal) and new format (scores_dimensions, score_global)
   const a = analysis || {} as any
@@ -2004,7 +2004,7 @@ function renderDiagnosticModulePage(opts: {
       'marche_positionnement': 'capacite_remboursement',
     }
     for (const dim of a.dimensions) {
-      const key = codeMapping[dim.code] || dim.code || dim.name?.toLowerCase().replace(/[^a-z]/g, '_')
+      const key = codeMapping[dim.code] || dim.code || String(dim.name||'').toLowerCase().replace(/[^a-z]/g, '_')
       sd[key] = {
         score: dim.score || 0,
         label: dim.name || key,
@@ -2191,7 +2191,7 @@ function renderDiagnosticModulePage(opts: {
         </thead>
         <tbody>
           ${vigilance.map((v: any) => {
-            const niv = (v.niveau || 'moyen').toLowerCase()
+            const niv = String(v.niveau || 'moyen').toLowerCase()
             const rowBg = niv === 'critique' || niv === 'elevee' || niv === 'eleve' ? '#fef2f2' : niv === 'moyen' || niv === 'moyenne' ? '#fffbeb' : '#f8fafc'
             const rowColor = niv === 'critique' || niv === 'elevee' || niv === 'eleve' ? '#991b1b' : niv === 'moyen' || niv === 'moyenne' ? '#92400e' : '#475569'
             return `<tr style="background:${rowBg};border-bottom:1px solid #e2e8f0">
@@ -2273,7 +2273,7 @@ function renderDiagnosticModulePage(opts: {
         <tbody>
           ${benchmarkKeys.filter(k => benchmarks[k]).map(k => {
             const b = benchmarks[k]
-            const vCol = (b.verdict || '').toLowerCase().includes('excell') || (b.verdict || '').toLowerCase().includes('bon') || (b.verdict || '').toLowerCase().includes('sup') ? '#059669' : (b.verdict || '').toLowerCase().includes('bas') || (b.verdict || '').toLowerCase().includes('insuff') ? '#dc2626' : '#d97706'
+            const vCol = String(b.verdict||'').toLowerCase().includes('excell') || String(b.verdict||'').toLowerCase().includes('bon') || String(b.verdict||'').toLowerCase().includes('sup') ? '#059669' : String(b.verdict||'').toLowerCase().includes('bas') || String(b.verdict||'').toLowerCase().includes('insuff') ? '#dc2626' : '#d97706'
             return `<tr style="border-bottom:1px solid #e2e8f0">
               <td style="padding:10px 12px;color:#1e293b;font-weight:600">${benchmarkLabels[k] || k}</td>
               <td style="padding:10px 12px;text-align:center;color:#1e293b;font-weight:700">${b.entreprise != null ? (typeof b.entreprise === 'number' ? b.entreprise + (k.includes('mois') || k.includes('rentabilite') ? ' mois' : '%') : esc(b.entreprise)) : '—'}</td>
@@ -2297,7 +2297,7 @@ function renderDiagnosticModulePage(opts: {
         const cat = (r.categorie || '').replace('contextuel_','')
         const catLabel = cat === 'secteur' ? '\u{1F3ED} Sectoriel' : cat === 'geographique' ? '\u{1F30D} Géographique' : '\u{1F3E2} Taille'
         const catBg = cat === 'secteur' ? '#7c3aed' : cat === 'geographique' ? '#2563eb' : '#0891b2'
-        const grav = (r.gravite || 'moyenne').toLowerCase()
+        const grav = String(r.gravite || 'moyenne').toLowerCase()
         return `
         <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:16px 18px;margin-bottom:10px">
           <div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px">
