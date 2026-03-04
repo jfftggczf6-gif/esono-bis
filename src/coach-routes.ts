@@ -1884,7 +1884,7 @@ coach.get('/api/templates/:name', async (c) => {
     'bmc-sic': { filename: 'Questionnaire_BMC_SIC.docx', mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
     'bmc': { filename: 'Questionnaire_BMC_SIC.docx', mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
     'sic': { filename: 'Questionnaire_BMC_SIC.docx', mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
-    'inputs': { filename: 'Template_Inputs_Financiers.xlsx', mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
+    'inputs': { filename: 'Analyse_financiere_INPUTS_ENTREPRENEURS_V2.xlsx', mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
     'plan-ovo': { filename: 'plan_ovo_template.xlsm', mime: 'application/vnd.ms-excel.sheet.macroEnabled.12' },
   }
 

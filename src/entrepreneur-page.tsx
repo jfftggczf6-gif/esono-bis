@@ -4273,10 +4273,8 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
       <div class="ev2-center__content" id="center-content">
         ${hasGenerated || delivMap.diagnostic ? `
           <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;padding:16px 20px;background:linear-gradient(135deg,#f0f4ff,#e8edfb);border:1px solid #a3b8d8;border-radius:12px;margin-bottom:16px">
-            <div style="display:flex;align-items:center;gap:10px"><i class="fas fa-stethoscope" style="font-size:24px;color:#1e3a5f"></i><div><div style="font-size:14px;font-weight:700;color:#1e3a5f">\uD83D\uDD0D Diagnostic Expert</div><div style="font-size:12px;color:#4b6584">Score: ${score >= 0 ? score : (delivMap.diagnostic?.score ?? '—')}/100 — Disponible en HTML et PDF</div></div></div>
+            <div style="display:flex;align-items:center;gap:10px"><i class="fas fa-stethoscope" style="font-size:24px;color:#1e3a5f"></i><div><div style="font-size:14px;font-weight:700;color:#1e3a5f">\uD83D\uDD0D Diagnostic Expert</div><div style="font-size:12px;color:#4b6584">Score: ${score >= 0 ? score : (delivMap.diagnostic?.score ?? '—')}/100</div></div></div>
             <div style="display:flex;gap:8px;flex-wrap:wrap">
-              <button class="ev2-btn-sm" onclick="downloadDeliverable('html')"><i class="fas fa-file-code"></i> HTML</button>
-              <button class="ev2-btn-sm" onclick="downloadDeliverable('pdf')"><i class="fas fa-file-pdf"></i> PDF</button>
               <a href="/module/diagnostic" style="display:inline-flex;align-items:center;gap:6px;padding:10px 16px;border-radius:10px;background:white;color:#1e3a5f;border:1px solid #a3b8d8;font-size:12px;font-weight:600;text-decoration:none;cursor:pointer"><i class="fas fa-expand"></i> Pleine page</a>
             </div>
           </div>
