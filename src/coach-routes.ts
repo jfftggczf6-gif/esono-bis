@@ -1112,6 +1112,68 @@ coach.post('/api/coach/entrepreneur/:id/generate', async (c) => {
   return c.json({ success: true, generated, types: deliverableTypes })
 })
 
+// POST /api/coach/entrepreneur/:id/generate-mirror — Generate deliverables in mirror mode (shared immediately)
+coach.post('/api/coach/entrepreneur/:id/generate-mirror', async (c) => {
+  const user = c.get('coachUser') as any
+  const db = c.env.DB
+  const entrepreneurId = c.req.param('id')
+
+  const ent = await db.prepare('SELECT * FROM coach_entrepreneurs WHERE id = ? AND coach_user_id = ?')
+    .bind(entrepreneurId, user.id).first<any>()
+  if (!ent) return c.json({ error: 'Entrepreneur non trouv\u00e9' }, 404)
+
+  const uploads = await db.prepare(
+    'SELECT * FROM coach_uploads WHERE entrepreneur_id = ? ORDER BY category'
+  ).bind(entrepreneurId).all()
+
+  const uploadsByCategory: Record<string, any[]> = {}
+  for (const u of (uploads.results || []) as any[]) {
+    if (!uploadsByCategory[u.category]) uploadsByCategory[u.category] = []
+    uploadsByCategory[u.category].push(u)
+  }
+
+  const hasBmc = !!uploadsByCategory['bmc']?.length
+  const hasSic = !!uploadsByCategory['sic']?.length
+  const hasInputs = !!uploadsByCategory['inputs']?.length
+
+  if (!hasBmc && !hasSic && !hasInputs) {
+    return c.json({ error: 'Aucun document upload\u00e9.' }, 400)
+  }
+
+  const deliverableTypes: string[] = []
+  if (hasBmc) deliverableTypes.push('diagnostic', 'bmc_analysis')
+  if (hasSic) deliverableTypes.push('sic_analysis')
+  if (hasBmc && hasInputs) deliverableTypes.push('framework', 'plan_ovo')
+  if (hasBmc && hasSic && hasInputs) deliverableTypes.push('business_plan', 'odd')
+
+  const now = new Date().toISOString()
+  let generated = 0
+
+  for (const type of deliverableTypes) {
+    const id = crypto.randomUUID()
+    const content = JSON.stringify({
+      type, entrepreneurId, entrepreneurName: ent.entrepreneur_name,
+      enterpriseName: ent.enterprise_name, sector: ent.sector,
+      generatedAt: now, generatedBy: 'coach_mirror', coachId: user.id,
+      status: 'generated',
+      note: 'Livrable g\u00e9n\u00e9r\u00e9 via Vue Miroir \u2014 visible par l\'entrepreneur'
+    })
+
+    await db.prepare(
+      `INSERT OR REPLACE INTO entrepreneur_deliverables 
+       (id, user_id, type, content, score, version, status, created_at, generated_by, visibility, shared_at, coach_user_id)
+       VALUES (?, ?, ?, ?, ?, 1, 'generated', ?, 'coach_mirror', 'shared', ?, ?)`
+    ).bind(id, ent.coach_user_id, type, content, 0, now, now, user.id).run()
+    generated++
+  }
+
+  await db.prepare(
+    "UPDATE coach_entrepreneurs SET deliverables_count = ?, updated_at = datetime('now'), last_activity = datetime('now') WHERE id = ?"
+  ).bind(generated, entrepreneurId).run()
+
+  return c.json({ success: true, generated, types: deliverableTypes })
+})
+
 // GET /api/coach/entrepreneur/:id/deliverables — List deliverables for entrepreneur
 coach.get('/api/coach/entrepreneur/:id/deliverables', async (c) => {
   const user = c.get('coachUser') as any
@@ -1170,7 +1232,7 @@ coach.patch('/api/coach/deliverables/share-all', async (c) => {
 coach.get('/coach/entrepreneurs', (c) => c.redirect('/coach/dashboard'))
 
 // ═══════════════════════════════════════════════════════════════
-// PAGE: /coach/entrepreneur/:id — Fiche Entrepreneur Complète
+// PAGE: /coach/entrepreneur/:id — Fiche Entrepreneur (Parcours Rapide + Vue Miroir V3)
 // ═══════════════════════════════════════════════════════════════
 coach.get('/coach/entrepreneur/:id', async (c) => {
   const user = c.get('coachUser') as any
@@ -1193,7 +1255,7 @@ coach.get('/coach/entrepreneur/:id', async (c) => {
     `)))
   }
 
-  // Get uploads
+  // Get uploads (coach private)
   const uploadsResult = await db.prepare(
     'SELECT * FROM coach_uploads WHERE entrepreneur_id = ? ORDER BY uploaded_at DESC'
   ).bind(id).all()
@@ -1207,6 +1269,15 @@ coach.get('/coach/entrepreneur/:id', async (c) => {
      ORDER BY created_at DESC`
   ).bind(user.id).all()
   const deliverables = (delivResult.results || []) as any[]
+
+  // Get mirror deliverables (coach_mirror = shared immediately)
+  const mirrorDelivResult = await db.prepare(
+    `SELECT id, type, score, version, status, created_at, generated_by, visibility, shared_at
+     FROM entrepreneur_deliverables 
+     WHERE coach_user_id = ? AND generated_by = 'coach_mirror'
+     ORDER BY created_at DESC`
+  ).bind(user.id).all()
+  const mirrorDeliverables = (mirrorDelivResult.results || []) as any[]
 
   const phase = getPhaseLabel(entrepreneur.phase)
   const scoreColor = getScoreColor(entrepreneur.score_ir || 0)
@@ -1227,7 +1298,7 @@ coach.get('/coach/entrepreneur/:id', async (c) => {
     { type: 'odd', label: 'ODD (Due Diligence)', icon: 'fa-shield-halved', color: '#0891b2' },
   ]
 
-  // Build deliverables HTML
+  // Build deliverables HTML for Parcours Rapide
   const delivHtml = deliverables.length > 0 ? deliverables.map(d => {
     const dt = DELIV_TYPES.find(t => t.type === d.type) || { label: d.type, icon: 'fa-file', color: '#64748b' }
     const isShared = d.visibility === 'shared'
@@ -1239,10 +1310,10 @@ coach.get('/coach/entrepreneur/:id', async (c) => {
           <div class="deliv-row__name">${dt.label}</div>
           <div class="deliv-row__meta">
             ${isShared 
-              ? '<span style="color:#059669"><i class="fas fa-share-alt"></i> Partagé' + (sharedDate ? ' le ' + sharedDate : '') + '</span>'
-              : '<span style="color:#94a3b8"><i class="fas fa-lock"></i> Privé</span>'
+              ? '<span style="color:#059669"><i class="fas fa-share-alt"></i> Partag\u00e9' + (sharedDate ? ' le ' + sharedDate : '') + '</span>'
+              : '<span style="color:#94a3b8"><i class="fas fa-lock"></i> Priv\u00e9</span>'
             }
-            · v${d.version} · ${new Date(d.created_at).toLocaleDateString('fr-FR')}
+            \u00b7 v${d.version} \u00b7 ${new Date(d.created_at).toLocaleDateString('fr-FR')}
           </div>
         </div>
       </div>
@@ -1250,118 +1321,127 @@ coach.get('/coach/entrepreneur/:id', async (c) => {
         <a href="/coach/preview/${d.id}" target="_blank" class="deliv-btn"><i class="fas fa-eye"></i> Voir</a>
         <button class="deliv-btn" onclick="downloadDeliv('${d.id}','${d.type}')"><i class="fas fa-download"></i></button>
         ${isShared 
-          ? '<span class="deliv-badge deliv-badge--shared"><i class="fas fa-check-circle"></i> Partagé</span>'
+          ? '<span class="deliv-badge deliv-badge--shared"><i class="fas fa-check-circle"></i> Partag\u00e9</span>'
           : `<button class="deliv-btn deliv-btn--share" onclick="shareDeliv('${d.id}')"><i class="fas fa-share-alt"></i> Partager</button>`
         }
       </div>
     </div>`
   }).join('') : `<div style="text-align:center;padding:32px;color:#94a3b8">
     <i class="fas fa-file-circle-question" style="font-size:32px;margin-bottom:8px;display:block"></i>
-    <div style="font-size:13px;font-weight:600">Aucun livrable généré</div>
-    <div style="font-size:12px;margin-top:4px">Uploadez des documents et cliquez sur "Générer les livrables"</div>
+    <div style="font-size:13px;font-weight:600">Aucun livrable g\u00e9n\u00e9r\u00e9</div>
+    <div style="font-size:12px;margin-top:4px">Uploadez des documents et cliquez sur "G\u00e9n\u00e9rer les livrables"</div>
   </div>`
+
+  // Build mirror deliverable map for V3 bottom icons
+  const mirrorDelivMap: Record<string, any> = {}
+  for (const d of mirrorDeliverables) { mirrorDelivMap[d.type] = d }
+  const mirrorUploadCount = uploadsByCategory.bmc.length + uploadsByCategory.sic.length + uploadsByCategory.inputs.length
+  const hasMirrorGenerated = mirrorDeliverables.length > 0
 
   const content = `
     <style>
       /* ===== TABS ===== */
       .coach-tabs { display:flex; border-bottom:2px solid #f1f5f9; margin-bottom:0; }
-      .coach-tab {
-        padding:14px 24px; font-size:13px; font-weight:600; cursor:pointer;
-        border-bottom:3px solid transparent; margin-bottom:-2px;
-        color:#64748b; transition:all 0.15s; display:flex; align-items:center; gap:8px;
-        background:none; border-left:none; border-right:none; border-top:none; font-family:inherit;
-      }
+      .coach-tab { padding:14px 24px; font-size:13px; font-weight:600; cursor:pointer; border-bottom:3px solid transparent; margin-bottom:-2px; color:#64748b; transition:all 0.15s; display:flex; align-items:center; gap:8px; background:none; border-left:none; border-right:none; border-top:none; font-family:inherit; }
       .coach-tab:hover { color:#1e293b; }
       .coach-tab--active { color:#7c3aed; border-bottom-color:#7c3aed; }
       .coach-tab-panel { display:none; }
       .coach-tab-panel--active { display:block; }
 
-      /* ===== UPLOAD ZONES ===== */
+      /* ===== PARCOURS RAPIDE ===== */
       .upload-phase { background:white; border:1px solid #e2e8f0; border-radius:14px; padding:24px; }
       .upload-phase__title { font-size:14px; font-weight:700; color:#1e293b; margin-bottom:16px; display:flex; align-items:center; gap:10px; }
-      .upload-phase__badge { font-size:11px; padding:3px 10px; border-radius:20px; font-weight:600; }
-      .upload-zone {
-        border:2px dashed #e2e8f0; border-radius:12px; padding:24px; text-align:center;
-        cursor:pointer; transition:all 0.2s; margin-bottom:12px;
-      }
+      .upload-zone { border:2px dashed #e2e8f0; border-radius:12px; padding:24px; text-align:center; cursor:pointer; transition:all 0.2s; margin-bottom:12px; }
       .upload-zone:hover { border-color:#a78bfa; background:#faf5ff; }
       .upload-zone.active { border-color:#7c3aed; background:#f5f3ff; }
       .upload-zone.done { border-color:#059669; background:#f0fdf4; border-style:solid; }
-      .upload-zone__icon { font-size:24px; color:#94a3b8; margin-bottom:6px; }
-      .upload-zone__label { font-size:13px; font-weight:600; color:#475569; }
-      .upload-zone__sub { font-size:11px; color:#94a3b8; margin-top:2px; }
-      .upload-zone__file { 
-        display:flex; align-items:center; gap:10px; padding:10px 14px; margin-top:10px;
-        background:#f8fafc; border-radius:8px; text-align:left;
-      }
-      .upload-zone__file-name { font-size:12px; font-weight:600; color:#1e293b; flex:1; }
-      .upload-zone__file-remove {
-        width:24px; height:24px; border-radius:6px; border:none; background:#fee2e2; color:#dc2626;
-        cursor:pointer; font-size:10px; display:flex; align-items:center; justify-content:center;
-      }
-
-      /* ===== DELIVERABLES ===== */
       .deliv-section { margin-top:28px; }
-      .deliv-section__title { font-size:15px; font-weight:700; color:#1e293b; margin-bottom:16px; display:flex; align-items:center; gap:10px; }
-      .deliv-row {
-        display:flex; align-items:center; justify-content:space-between; gap:16px;
-        padding:16px 20px; background:white; border:1px solid #e2e8f0; border-radius:12px;
-        margin-bottom:8px; transition:all 0.15s;
-      }
+      .deliv-row { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:16px 20px; background:white; border:1px solid #e2e8f0; border-radius:12px; margin-bottom:8px; transition:all 0.15s; }
       .deliv-row:hover { box-shadow:0 2px 8px rgba(0,0,0,0.04); }
       .deliv-row__info { display:flex; align-items:center; gap:14px; }
       .deliv-row__icon { width:40px; height:40px; border-radius:10px; display:flex; align-items:center; justify-content:center; font-size:16px; flex-shrink:0; }
       .deliv-row__name { font-size:13px; font-weight:700; color:#1e293b; }
       .deliv-row__meta { font-size:11px; color:#94a3b8; margin-top:2px; }
       .deliv-row__actions { display:flex; align-items:center; gap:6px; flex-shrink:0; }
-      .deliv-btn {
-        display:inline-flex; align-items:center; gap:5px; padding:6px 12px; border-radius:7px;
-        font-size:11px; font-weight:600; border:1px solid #e2e8f0; background:white;
-        color:#475569; cursor:pointer; text-decoration:none; transition:all 0.15s; font-family:inherit;
-      }
+      .deliv-btn { display:inline-flex; align-items:center; gap:5px; padding:6px 12px; border-radius:7px; font-size:11px; font-weight:600; border:1px solid #e2e8f0; background:white; color:#475569; cursor:pointer; text-decoration:none; transition:all 0.15s; font-family:inherit; }
       .deliv-btn:hover { background:#f8fafc; border-color:#cbd5e1; }
       .deliv-btn--share { color:#7c3aed; border-color:#ddd6fe; background:#faf5ff; }
       .deliv-btn--share:hover { background:#ede9fe; }
       .deliv-badge { font-size:11px; font-weight:600; padding:5px 12px; border-radius:20px; }
       .deliv-badge--shared { color:#059669; background:#ecfdf5; }
-
-      .generate-bar {
-        margin-top:24px; padding:20px; background:linear-gradient(135deg,#7c3aed,#6d28d9);
-        border-radius:14px; display:flex; align-items:center; justify-content:space-between;
-      }
+      .generate-bar { margin-top:24px; padding:20px; background:linear-gradient(135deg,#7c3aed,#6d28d9); border-radius:14px; display:flex; align-items:center; justify-content:space-between; }
       .generate-bar__text { color:rgba(255,255,255,0.9); font-size:13px; font-weight:500; }
-      .generate-bar__btn {
-        padding:10px 24px; border-radius:10px; border:none; background:white; color:#7c3aed;
-        font-size:13px; font-weight:700; cursor:pointer; font-family:inherit; transition:all 0.15s;
-        display:flex; align-items:center; gap:8px;
-      }
+      .generate-bar__btn { padding:10px 24px; border-radius:10px; border:none; background:white; color:#7c3aed; font-size:13px; font-weight:700; cursor:pointer; font-family:inherit; transition:all 0.15s; display:flex; align-items:center; gap:8px; }
       .generate-bar__btn:hover { transform:translateY(-1px); box-shadow:0 4px 12px rgba(0,0,0,0.2); }
       .generate-bar__btn:disabled { opacity:0.6; cursor:default; transform:none; box-shadow:none; }
+      .share-all-bar { margin-top:16px; padding:16px 20px; background:#f0fdf4; border:1px solid #bbf7d0; border-radius:12px; display:flex; align-items:center; justify-content:space-between; }
+      .share-all-bar__btn { padding:8px 18px; border-radius:8px; border:none; background:#059669; color:white; font-size:12px; font-weight:600; cursor:pointer; font-family:inherit; display:flex; align-items:center; gap:6px; }
 
-      .share-all-bar {
-        margin-top:16px; padding:16px 20px; background:#f0fdf4; border:1px solid #bbf7d0;
-        border-radius:12px; display:flex; align-items:center; justify-content:space-between;
-      }
-      .share-all-bar__btn {
-        padding:8px 18px; border-radius:8px; border:none; background:#059669; color:white;
-        font-size:12px; font-weight:600; cursor:pointer; font-family:inherit; transition:all 0.15s;
-        display:flex; align-items:center; gap:6px;
-      }
-      .share-all-bar__btn:hover { background:#047857; }
-
-      /* ===== ENTREPRENEUR VIEW TAB ===== */
-      .ent-info-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
-      .ent-info-card { background:white; border:1px solid #e2e8f0; border-radius:14px; padding:24px; }
-      .ent-info-card__title { font-size:14px; font-weight:700; color:#1e293b; margin-bottom:16px; display:flex; align-items:center; gap:8px; }
-      .ent-info-field { margin-bottom:12px; }
-      .ent-info-field__label { font-size:11px; font-weight:600; color:#94a3b8; text-transform:uppercase; letter-spacing:0.3px; }
-      .ent-info-field__value { font-size:13px; color:#1e293b; margin-top:3px; }
+      /* ===== VUE MIROIR V3 ===== */
+      .cm-banner { padding:10px 20px; background:linear-gradient(135deg,#7c3aed,#6d28d9); color:white; display:flex; align-items:center; gap:10px; font-size:12px; font-weight:600; }
+      .cm-banner i { font-size:16px; }
+      .cm-layout { display:flex; height:calc(100vh - 200px); overflow:hidden; background:#f9fafb; }
+      .cm-sidebar { width:320px; min-width:320px; background:#f9fafb; border-right:1px solid #e5e7eb; display:flex; flex-direction:column; overflow:hidden; }
+      .cm-sidebar__header { padding:20px 18px 12px; border-bottom:1px solid #e5e7eb; background:#ffffff; }
+      .cm-sidebar__title { font-size:15px; font-weight:700; color:#1f2937; display:flex; align-items:center; gap:8px; margin-bottom:4px; }
+      .cm-sidebar__subtitle { font-size:12px; color:#6b7280; }
+      .cm-sidebar__uploads { flex:1; overflow-y:auto; padding:12px 18px; }
+      .cm-sidebar__sources-title { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:2px; color:#9ca3af; margin-bottom:10px; }
+      .cm-upload-card { display:flex; align-items:center; gap:10px; padding:12px 14px; background:#ffffff; border:2px dashed #d1d5db; border-radius:12px; margin-bottom:8px; cursor:pointer; transition:all 0.2s; position:relative; }
+      .cm-upload-card:hover { border-color:#93c5fd; background:#f8faff; }
+      .cm-upload-card--done { border-style:solid; border-color:#86efac; background:#f0fdf4; }
+      .cm-upload-card__icon { width:40px; height:40px; border-radius:10px; display:flex; align-items:center; justify-content:center; font-size:16px; flex-shrink:0; }
+      .cm-upload-card__info { flex:1; min-width:0; }
+      .cm-upload-card__title { font-size:12px; font-weight:700; color:#1f2937; margin-bottom:2px; }
+      .cm-upload-card__hint { font-size:11px; color:#9ca3af; display:flex; align-items:center; gap:5px; }
+      .cm-upload-card__file { font-size:11px; color:#059669; font-weight:600; display:flex; align-items:center; gap:5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      .cm-upload-card__rm { position:absolute; top:8px; right:8px; background:none; border:none; color:#d1d5db; cursor:pointer; font-size:11px; width:22px; height:22px; border-radius:50%; display:flex; align-items:center; justify-content:center; opacity:0; transition:all 0.2s; }
+      .cm-upload-card:hover .cm-upload-card__rm { opacity:1; }
+      .cm-upload-card__rm:hover { background:#fee2e2; color:#dc2626; }
+      .cm-templates { padding:12px 18px; border-bottom:1px solid #e5e7eb; }
+      .cm-tpl-btn { display:flex; align-items:center; gap:8px; width:100%; padding:8px 12px; border:1px solid #e2e8f0; border-radius:8px; background:white; font-size:11px; font-weight:600; color:#475569; cursor:pointer; transition:all 0.15s; font-family:inherit; margin-bottom:6px; text-decoration:none; }
+      .cm-tpl-btn:hover { background:#f8fafc; border-color:#7c3aed; color:#7c3aed; }
+      .cm-supp-btn { width:100%; padding:8px; background:transparent; color:#6b7280; border:1px dashed #d1d5db; border-radius:8px; font-size:11px; font-weight:500; font-family:inherit; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:6px; transition:all 0.2s; }
+      .cm-supp-btn:hover { border-color:#9ca3af; color:#374151; background:#f9fafb; }
+      .cm-source-item { display:flex; align-items:center; gap:10px; padding:10px 12px; background:#ffffff; border:1px solid #e5e7eb; border-radius:10px; margin-bottom:6px; position:relative; }
+      .cm-source-item__icon { width:36px; height:36px; border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:15px; flex-shrink:0; }
+      .cm-source-item__info { flex:1; min-width:0; }
+      .cm-source-item__name { font-size:12px; font-weight:600; color:#1f2937; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      .cm-source-item__meta { font-size:10px; color:#9ca3af; display:flex; gap:8px; margin-top:2px; }
+      .cm-source-item__rm { position:absolute; top:6px; right:6px; background:none; border:none; color:#d1d5db; cursor:pointer; font-size:11px; width:22px; height:22px; border-radius:50%; display:flex; align-items:center; justify-content:center; opacity:0; transition:all 0.2s; }
+      .cm-source-item:hover .cm-source-item__rm { opacity:1; }
+      .cm-source-item__rm:hover { background:#fee2e2; color:#dc2626; }
+      .cm-sidebar__gen { padding:14px 18px; border-top:1px solid #e5e7eb; background:#ffffff; flex-shrink:0; }
+      .cm-gen-btn { width:100%; padding:14px; background:linear-gradient(135deg,#2563eb,#4f46e5); color:white; border:none; border-radius:12px; font-size:14px; font-weight:700; font-family:inherit; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:10px; transition:all 0.3s; box-shadow:0 4px 14px rgba(37,99,235,0.3); }
+      .cm-gen-btn:hover:not(:disabled) { transform:translateY(-2px); box-shadow:0 6px 20px rgba(37,99,235,0.4); }
+      .cm-gen-btn:disabled { background:#d1d5db; color:#9ca3af; cursor:not-allowed; box-shadow:none; }
+      .cm-gen-btn__sub { font-size:10px; font-weight:400; opacity:0.8; }
+      .cm-content { flex:1; display:flex; flex-direction:column; min-width:0; overflow:hidden; }
+      .cm-center__header { display:flex; align-items:center; justify-content:space-between; padding:10px 20px; background:#ffffff; border-bottom:1px solid #e5e7eb; flex-shrink:0; }
+      .cm-center__title { font-size:14px; font-weight:700; color:#1e3a5f; display:flex; align-items:center; gap:8px; }
+      .cm-center__content { flex:1; overflow-y:auto; padding:16px 20px; min-height:0; background:#f9fafb; }
+      .cm-bottom { background:#ffffff; border-top:1px solid #e5e7eb; padding:14px 20px; flex:0 0 auto; z-index:10; }
+      .cm-bottom__grid { display:grid; grid-template-columns:repeat(7,1fr); gap:10px; }
+      .cm-deliv-icon { display:flex; flex-direction:column; align-items:center; gap:6px; padding:12px 6px; border-radius:12px; cursor:pointer; transition:all 0.2s; border:2px solid transparent; text-align:center; position:relative; }
+      .cm-deliv-icon:hover { background:#f3f4f6; }
+      .cm-deliv-icon--active { background:#eff6ff; border-color:#2563eb; }
+      .cm-deliv-icon__circle { width:44px; height:44px; border-radius:12px; display:flex; align-items:center; justify-content:center; font-size:18px; transition:transform 0.2s; }
+      .cm-deliv-icon:hover .cm-deliv-icon__circle { transform:scale(1.08); }
+      .cm-deliv-icon__label { font-size:10px; font-weight:600; color:#374151; line-height:1.3; }
+      .cm-deliv-icon__status { position:absolute; top:6px; right:6px; width:16px; height:16px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:8px; }
+      .cm-deliv-icon__status--ok { background:#d1fae5; color:#059669; }
+      .cm-empty { text-align:center; padding:60px 20px; }
+      .cm-empty__icon { font-size:48px; color:#e5e7eb; margin-bottom:16px; }
+      .cm-empty__title { font-size:16px; font-weight:700; color:#6b7280; margin-bottom:6px; }
+      .cm-empty__sub { font-size:13px; color:#9ca3af; }
 
       @media (max-width:768px) {
         .deliv-row { flex-direction:column; align-items:flex-start; }
-        .deliv-row__actions { width:100%; justify-content:flex-start; flex-wrap:wrap; }
-        .ent-info-grid { grid-template-columns:1fr; }
+        .deliv-row__actions { width:100%; flex-wrap:wrap; }
         .generate-bar { flex-direction:column; gap:12px; text-align:center; }
+        .cm-layout { flex-direction:column; height:auto; }
+        .cm-sidebar { width:100%; min-width:0; max-height:400px; }
+        .cm-bottom__grid { grid-template-columns:repeat(4,1fr); gap:6px; }
       }
     </style>
 
@@ -1373,231 +1453,231 @@ coach.get('/coach/entrepreneur/:id', async (c) => {
       </h1>
       <div class="coach-header__actions">
         <span style="font-size:12px;color:#64748b"><i class="fas ${phase.icon}" style="color:${phase.color}"></i> ${phase.label}</span>
+        <span style="font-size:12px;color:#94a3b8">${escapeHtml(entrepreneur.sector || '')}</span>
+        <span style="font-size:11px;color:#94a3b8">${new Date(entrepreneur.created_at).toLocaleDateString('fr-FR')}</span>
       </div>
     </div>
 
     <!-- TABS -->
     <div class="coach-tabs" style="padding:0 32px;background:white">
       <button class="coach-tab coach-tab--active" onclick="switchTab('parcours')" id="tab-parcours">
-        <i class="fas fa-road"></i> Parcours Rapide
+        <i class="fas fa-upload"></i> Parcours Rapide
       </button>
       <button class="coach-tab" onclick="switchTab('vue')" id="tab-vue">
         <i class="fas fa-eye"></i> Vue Entrepreneur
       </button>
     </div>
 
-    <!-- TAB 1: PARCOURS RAPIDE -->
+    <!-- ═══ TAB 1: PARCOURS RAPIDE ═══ -->
     <div class="coach-tab-panel coach-tab-panel--active" id="panel-parcours">
       <div class="coach-content">
-
-        <!-- UPLOAD BY PHASE -->
         <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:24px">
-          
-          <!-- Phase 1: Identité -->
           <div class="upload-phase">
-            <div class="upload-phase__title">
-              <i class="fas fa-fingerprint" style="color:#7c3aed"></i> Phase 1 — Identité
-              <span class="upload-phase__badge" style="background:#7c3aed15;color:#7c3aed">${uploadsByCategory.bmc.length + uploadsByCategory.sic.length} fichier(s)</span>
+            <div class="upload-phase__title"><i class="fas fa-fingerprint" style="color:#7c3aed"></i> Phase 1 — Identité</div>
+            <div class="upload-zone ${uploadsByCategory.bmc.length ? 'done' : ''}" onclick="document.getElementById('input-bmc').click()" ondragover="event.preventDefault();this.classList.add('active')" ondragleave="this.classList.remove('active')" ondrop="event.preventDefault();this.classList.remove('active');handleUpload(event.dataTransfer.files[0],'bmc')">
+              <div style="font-size:24px;color:${uploadsByCategory.bmc.length ? '#059669' : '#94a3b8'};margin-bottom:6px"><i class="fas ${uploadsByCategory.bmc.length ? 'fa-check-circle' : 'fa-file-word'}"></i></div>
+              <div style="font-size:13px;font-weight:600;color:#475569">Business Model Canvas (BMC)</div>
+              <div style="font-size:11px;color:#94a3b8;margin-top:2px">Word, PDF</div>
+              ${uploadsByCategory.bmc.map((f: any) => `<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;margin-top:8px;background:#f8fafc;border-radius:8px;text-align:left"><i class="fas fa-file" style="color:#2563eb"></i><span style="font-size:12px;font-weight:600;color:#1e293b;flex:1">${escapeHtml(f.filename)}</span><button onclick="event.stopPropagation();removeUpload('${f.id}','${id}')" style="border:none;background:#fee2e2;color:#dc2626;width:22px;height:22px;border-radius:6px;cursor:pointer;font-size:10px"><i class="fas fa-times"></i></button></div>`).join('')}
+              <input type="file" id="input-bmc" style="display:none" accept=".docx,.doc,.pdf" onchange="handleUpload(this.files[0],'bmc')">
             </div>
-            
-            <div class="upload-zone ${uploadsByCategory.bmc.length ? 'done' : ''}" id="zone-bmc"
-                 ondragover="event.preventDefault();this.classList.add('active')"
-                 ondragleave="this.classList.remove('active')"
-                 ondrop="event.preventDefault();this.classList.remove('active');handleUpload(event.dataTransfer.files[0],'bmc')"
-                 onclick="document.getElementById('input-bmc').click()">
-              <div class="upload-zone__icon"><i class="fas ${uploadsByCategory.bmc.length ? 'fa-check-circle' : 'fa-file-word'}" style="${uploadsByCategory.bmc.length ? 'color:#059669' : ''}"></i></div>
-              <div class="upload-zone__label">Business Model Canvas (BMC)</div>
-              <div class="upload-zone__sub">Word, PDF — Glissez ou cliquez</div>
-              ${uploadsByCategory.bmc.map((f: any) => `
-                <div class="upload-zone__file">
-                  <i class="fas fa-file" style="color:#2563eb"></i>
-                  <span class="upload-zone__file-name">${escapeHtml(f.filename)}</span>
-                  <button class="upload-zone__file-remove" onclick="event.stopPropagation();removeUpload('${f.id}','${id}')"><i class="fas fa-times"></i></button>
-                </div>
-              `).join('')}
-              <input type="file" id="input-bmc" style="display:none" accept=".docx,.doc,.pdf,.xlsx,.xls" onchange="handleUpload(this.files[0],'bmc')">
-            </div>
-
-            <div class="upload-zone ${uploadsByCategory.sic.length ? 'done' : ''}" id="zone-sic"
-                 ondragover="event.preventDefault();this.classList.add('active')"
-                 ondragleave="this.classList.remove('active')"
-                 ondrop="event.preventDefault();this.classList.remove('active');handleUpload(event.dataTransfer.files[0],'sic')"
-                 onclick="document.getElementById('input-sic').click()">
-              <div class="upload-zone__icon"><i class="fas ${uploadsByCategory.sic.length ? 'fa-check-circle' : 'fa-hand-holding-heart'}" style="${uploadsByCategory.sic.length ? 'color:#059669' : ''}"></i></div>
-              <div class="upload-zone__label">Social Impact Canvas (SIC)</div>
-              <div class="upload-zone__sub">Word, Excel, PDF — Glissez ou cliquez</div>
-              ${uploadsByCategory.sic.map((f: any) => `
-                <div class="upload-zone__file">
-                  <i class="fas fa-file" style="color:#7c3aed"></i>
-                  <span class="upload-zone__file-name">${escapeHtml(f.filename)}</span>
-                  <button class="upload-zone__file-remove" onclick="event.stopPropagation();removeUpload('${f.id}','${id}')"><i class="fas fa-times"></i></button>
-                </div>
-              `).join('')}
+            <div class="upload-zone ${uploadsByCategory.sic.length ? 'done' : ''}" onclick="document.getElementById('input-sic').click()" ondragover="event.preventDefault();this.classList.add('active')" ondragleave="this.classList.remove('active')" ondrop="event.preventDefault();this.classList.remove('active');handleUpload(event.dataTransfer.files[0],'sic')">
+              <div style="font-size:24px;color:${uploadsByCategory.sic.length ? '#059669' : '#94a3b8'};margin-bottom:6px"><i class="fas ${uploadsByCategory.sic.length ? 'fa-check-circle' : 'fa-hand-holding-heart'}"></i></div>
+              <div style="font-size:13px;font-weight:600;color:#475569">Social Impact Canvas (SIC)</div>
+              <div style="font-size:11px;color:#94a3b8;margin-top:2px">Word, Excel, PDF</div>
+              ${uploadsByCategory.sic.map((f: any) => `<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;margin-top:8px;background:#f8fafc;border-radius:8px;text-align:left"><i class="fas fa-file" style="color:#7c3aed"></i><span style="font-size:12px;font-weight:600;color:#1e293b;flex:1">${escapeHtml(f.filename)}</span><button onclick="event.stopPropagation();removeUpload('${f.id}','${id}')" style="border:none;background:#fee2e2;color:#dc2626;width:22px;height:22px;border-radius:6px;cursor:pointer;font-size:10px"><i class="fas fa-times"></i></button></div>`).join('')}
               <input type="file" id="input-sic" style="display:none" accept=".docx,.doc,.pdf,.xlsx,.xls" onchange="handleUpload(this.files[0],'sic')">
             </div>
           </div>
-
-          <!-- Phase 2: Finance -->
           <div class="upload-phase">
-            <div class="upload-phase__title">
-              <i class="fas fa-chart-pie" style="color:#2563eb"></i> Phase 2 — Finance
-              <span class="upload-phase__badge" style="background:#2563eb15;color:#2563eb">${uploadsByCategory.inputs.length} fichier(s)</span>
-            </div>
-            
-            <div class="upload-zone ${uploadsByCategory.inputs.length ? 'done' : ''}" id="zone-inputs"
-                 ondragover="event.preventDefault();this.classList.add('active')"
-                 ondragleave="this.classList.remove('active')"
-                 ondrop="event.preventDefault();this.classList.remove('active');handleUpload(event.dataTransfer.files[0],'inputs')"
-                 onclick="document.getElementById('input-inputs').click()">
-              <div class="upload-zone__icon"><i class="fas ${uploadsByCategory.inputs.length ? 'fa-check-circle' : 'fa-calculator'}" style="${uploadsByCategory.inputs.length ? 'color:#059669' : ''}"></i></div>
-              <div class="upload-zone__label">Inputs Financiers</div>
-              <div class="upload-zone__sub">Excel — Glissez ou cliquez</div>
-              ${uploadsByCategory.inputs.map((f: any) => `
-                <div class="upload-zone__file">
-                  <i class="fas fa-file-excel" style="color:#059669"></i>
-                  <span class="upload-zone__file-name">${escapeHtml(f.filename)}</span>
-                  <button class="upload-zone__file-remove" onclick="event.stopPropagation();removeUpload('${f.id}','${id}')"><i class="fas fa-times"></i></button>
-                </div>
-              `).join('')}
+            <div class="upload-phase__title"><i class="fas fa-chart-pie" style="color:#2563eb"></i> Phase 2 — Finance</div>
+            <div class="upload-zone ${uploadsByCategory.inputs.length ? 'done' : ''}" onclick="document.getElementById('input-inputs').click()" ondragover="event.preventDefault();this.classList.add('active')" ondragleave="this.classList.remove('active')" ondrop="event.preventDefault();this.classList.remove('active');handleUpload(event.dataTransfer.files[0],'inputs')">
+              <div style="font-size:24px;color:${uploadsByCategory.inputs.length ? '#059669' : '#94a3b8'};margin-bottom:6px"><i class="fas ${uploadsByCategory.inputs.length ? 'fa-check-circle' : 'fa-calculator'}"></i></div>
+              <div style="font-size:13px;font-weight:600;color:#475569">Inputs Financiers</div>
+              <div style="font-size:11px;color:#94a3b8;margin-top:2px">Excel, CSV</div>
+              ${uploadsByCategory.inputs.map((f: any) => `<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;margin-top:8px;background:#f8fafc;border-radius:8px;text-align:left"><i class="fas fa-file-excel" style="color:#059669"></i><span style="font-size:12px;font-weight:600;color:#1e293b;flex:1">${escapeHtml(f.filename)}</span><button onclick="event.stopPropagation();removeUpload('${f.id}','${id}')" style="border:none;background:#fee2e2;color:#dc2626;width:22px;height:22px;border-radius:6px;cursor:pointer;font-size:10px"><i class="fas fa-times"></i></button></div>`).join('')}
               <input type="file" id="input-inputs" style="display:none" accept=".xlsx,.xls,.csv" onchange="handleUpload(this.files[0],'inputs')">
             </div>
           </div>
-
-          <!-- Phase 3: Dossier -->
           <div class="upload-phase">
-            <div class="upload-phase__title">
-              <i class="fas fa-folder-open" style="color:#059669"></i> Phase 3 — Dossier Investisseur
-            </div>
+            <div class="upload-phase__title"><i class="fas fa-folder-open" style="color:#059669"></i> Phase 3 — Dossier Investisseur</div>
             <div style="padding:24px;text-align:center;color:#64748b;border:1px dashed #e2e8f0;border-radius:12px">
               <i class="fas fa-wand-magic-sparkles" style="font-size:28px;color:#a78bfa;margin-bottom:8px;display:block"></i>
-              <div style="font-size:13px;font-weight:600;color:#475569">Généré automatiquement</div>
-              <div style="font-size:11px;color:#94a3b8;margin-top:4px">Business Plan, ODD et autres livrables<br>créés à partir des phases 1 et 2</div>
+              <div style="font-size:13px;font-weight:600;color:#475569">Auto-g\u00e9n\u00e9r\u00e9</div>
+              <div style="font-size:11px;color:#94a3b8;margin-top:4px">Business Plan, ODD cr\u00e9\u00e9s depuis les phases 1 et 2</div>
             </div>
           </div>
         </div>
-
-        <!-- SUPPLEMENTARY DOCS -->
-        <div style="background:white;border:1px solid #e2e8f0;border-radius:14px;padding:20px;margin-bottom:24px">
-          <div style="font-size:13px;font-weight:700;color:#1e293b;margin-bottom:12px;display:flex;align-items:center;gap:8px">
-            <i class="fas fa-paperclip" style="color:#64748b"></i> Documents supplémentaires
-            <span style="font-size:11px;font-weight:500;color:#94a3b8">(optionnel)</span>
-          </div>
-          <div class="upload-zone" style="padding:16px"
-               ondragover="event.preventDefault();this.classList.add('active')"
-               ondragleave="this.classList.remove('active')"
-               ondrop="event.preventDefault();this.classList.remove('active');handleUpload(event.dataTransfer.files[0],'supplementary')"
-               onclick="document.getElementById('input-supp').click()">
-            <div style="font-size:12px;color:#64748b"><i class="fas fa-plus"></i> Ajouter un document complémentaire</div>
-            <input type="file" id="input-supp" style="display:none" accept=".docx,.doc,.pdf,.xlsx,.xls,.csv,.pptx" onchange="handleUpload(this.files[0],'supplementary')">
-          </div>
-          ${uploadsByCategory.supplementary.map((f: any) => `
-            <div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:#f8fafc;border-radius:8px;margin-top:6px">
-              <i class="fas fa-file" style="color:#64748b"></i>
-              <span style="font-size:12px;font-weight:600;color:#1e293b;flex:1">${escapeHtml(f.filename)}</span>
-              <button onclick="removeUpload('${f.id}','${id}')" style="border:none;background:#fee2e2;color:#dc2626;width:22px;height:22px;border-radius:6px;cursor:pointer;font-size:10px"><i class="fas fa-times"></i></button>
-            </div>
-          `).join('')}
-        </div>
-
-        <!-- GENERATE BAR -->
         <div class="generate-bar">
           <div>
-            <div style="font-size:14px;font-weight:700;color:white;margin-bottom:4px"><i class="fas fa-rocket"></i> Générer les livrables</div>
-            <div class="generate-bar__text">${uploads.length} document(s) uploadé(s) — Les livrables seront privés par défaut</div>
+            <div style="font-size:14px;font-weight:700;color:white;margin-bottom:4px"><i class="fas fa-rocket"></i> G\u00e9n\u00e9rer les livrables</div>
+            <div class="generate-bar__text">${uploads.length} document(s) \u2014 Les livrables seront priv\u00e9s par d\u00e9faut</div>
           </div>
           <button class="generate-bar__btn" id="btn-generate" onclick="generateDeliverables()" ${uploads.length === 0 ? 'disabled' : ''}>
-            <i class="fas fa-wand-magic-sparkles"></i> Générer
+            <i class="fas fa-wand-magic-sparkles"></i> G\u00e9n\u00e9rer
           </button>
         </div>
-
-        <!-- DELIVERABLES LIST -->
         <div class="deliv-section">
-          <div class="deliv-section__title">
-            <i class="fas fa-file-alt" style="color:#2563eb"></i> Livrables générés
-            <span style="font-size:12px;font-weight:500;color:#94a3b8">(${deliverables.length})</span>
+          <div style="font-size:15px;font-weight:700;color:#1e293b;margin-bottom:16px;display:flex;align-items:center;gap:10px">
+            <i class="fas fa-file-alt" style="color:#2563eb"></i> Livrables g\u00e9n\u00e9r\u00e9s (${deliverables.length})
           </div>
-          <div id="deliverables-list">
-            ${delivHtml}
-          </div>
-
+          <div id="deliverables-list">${delivHtml}</div>
           ${deliverables.length > 0 && deliverables.some((d: any) => d.visibility === 'private') ? `
           <div class="share-all-bar">
             <div>
-              <div style="font-size:13px;font-weight:700;color:#065f46"><i class="fas fa-share-alt"></i> Partage groupé</div>
-              <div style="font-size:11px;color:#059669;margin-top:2px">${deliverables.filter((d: any) => d.visibility === 'private').length} livrable(s) encore privé(s)</div>
+              <div style="font-size:13px;font-weight:700;color:#065f46"><i class="fas fa-share-alt"></i> Partage group\u00e9</div>
+              <div style="font-size:11px;color:#059669;margin-top:2px">${deliverables.filter((d: any) => d.visibility === 'private').length} livrable(s) encore priv\u00e9(s)</div>
             </div>
-            <button class="share-all-bar__btn" onclick="shareAll()">
-              <i class="fas fa-share-alt"></i> Tout partager avec l'entrepreneur
-            </button>
-          </div>
-          ` : ''}
+            <button class="share-all-bar__btn" onclick="shareAll()"><i class="fas fa-share-alt"></i> Tout partager</button>
+          </div>` : ''}
         </div>
-
       </div>
     </div>
 
-    <!-- TAB 2: VUE ENTREPRENEUR -->
+    <!-- ═══ TAB 2: VUE MIROIR V3 ═══ -->
     <div class="coach-tab-panel" id="panel-vue">
-      <div class="coach-content">
-        <div class="coach-stats" style="grid-template-columns:repeat(3,1fr);margin-bottom:24px">
-          <div class="coach-stat-card">
-            <div class="coach-stat-card__icon" style="background:${phase.color}15;color:${phase.color}"><i class="fas ${phase.icon}"></i></div>
-            <div class="coach-stat-card__body">
-              <div class="coach-stat-card__value" style="font-size:18px">${phase.label}</div>
-              <div class="coach-stat-card__label">Phase actuelle</div>
-            </div>
-          </div>
-          <div class="coach-stat-card">
-            <div class="coach-stat-card__icon" style="background:${scoreColor}15;color:${scoreColor}"><i class="fas fa-chart-bar"></i></div>
-            <div class="coach-stat-card__body">
-              <div class="coach-stat-card__value">${entrepreneur.score_ir || 0}<span style="font-size:14px;font-weight:500;color:#94a3b8">/100</span></div>
-              <div class="coach-stat-card__label">Score IR</div>
-              <div class="coach-stat-card__gauge"><div class="coach-stat-card__gauge-fill" style="width:${entrepreneur.score_ir || 0}%;background:${scoreColor}"></div></div>
-            </div>
-          </div>
-          <div class="coach-stat-card">
-            <div class="coach-stat-card__icon" style="background:rgba(5,150,105,0.1);color:#059669"><i class="fas fa-check-circle"></i></div>
-            <div class="coach-stat-card__body">
-              <div class="coach-stat-card__value">${entrepreneur.modules_validated || 0}<span style="font-size:14px;font-weight:500;color:#94a3b8">/${entrepreneur.total_modules || 8}</span></div>
-              <div class="coach-stat-card__label">Modules validés</div>
-            </div>
-          </div>
-        </div>
+      <!-- Coach banner -->
+      <div class="cm-banner">
+        <i class="fas fa-user-tie"></i>
+        <span>Vous agissez en tant que coach pour <strong>${escapeHtml(entrepreneur.entrepreneur_name)}</strong> \u2014 Les modifications seront visibles par l'entrepreneur</span>
+      </div>
 
-        <div class="ent-info-grid">
-          <div class="ent-info-card">
-            <div class="ent-info-card__title"><i class="fas fa-id-card" style="color:#7c3aed"></i> Informations</div>
-            <div class="ent-info-field"><div class="ent-info-field__label">Entrepreneur</div><div class="ent-info-field__value">${escapeHtml(entrepreneur.entrepreneur_name)}</div></div>
-            <div class="ent-info-field"><div class="ent-info-field__label">Entreprise</div><div class="ent-info-field__value">${escapeHtml(entrepreneur.enterprise_name) || '—'}</div></div>
-            <div class="ent-info-field"><div class="ent-info-field__label">Email</div><div class="ent-info-field__value">${escapeHtml(entrepreneur.email) || '—'}</div></div>
-            <div class="ent-info-field"><div class="ent-info-field__label">Téléphone</div><div class="ent-info-field__value">${escapeHtml(entrepreneur.phone) || '—'}</div></div>
-            <div class="ent-info-field"><div class="ent-info-field__label">Secteur</div><div class="ent-info-field__value">${escapeHtml(entrepreneur.sector) || '—'}</div></div>
-            <div class="ent-info-field"><div class="ent-info-field__label">Dossier créé le</div><div class="ent-info-field__value">${new Date(entrepreneur.created_at).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' })}</div></div>
+      <div class="cm-layout">
+        <!-- LEFT SIDEBAR: Sources -->
+        <aside class="cm-sidebar">
+          <div class="cm-sidebar__header">
+            <div class="cm-sidebar__title"><i class="fas fa-folder-open"></i> Sources</div>
+            <div class="cm-sidebar__subtitle">Ajoutez vos documents d'inputs</div>
           </div>
 
-          <div class="ent-info-card">
-            <div class="ent-info-card__title"><i class="fas fa-file-alt" style="color:#2563eb"></i> Documents uploadés (${uploads.length})</div>
-            ${uploads.length > 0 ? uploads.map((u: any) => {
-              const catColors: Record<string, string> = { bmc: '#059669', sic: '#7c3aed', inputs: '#d97706', supplementary: '#64748b' }
-              const catLabels: Record<string, string> = { bmc: 'BMC', sic: 'SIC', inputs: 'Inputs', supplementary: 'Autre' }
-              return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #f8fafc">
-                <span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;background:${catColors[u.category] || '#64748b'}15;color:${catColors[u.category] || '#64748b'}">${catLabels[u.category] || u.category}</span>
-                <span style="font-size:12px;font-weight:600;color:#1e293b;flex:1">${escapeHtml(u.filename)}</span>
-                <span style="font-size:11px;color:#94a3b8">${new Date(u.uploaded_at).toLocaleDateString('fr-FR')}</span>
-              </div>`
-            }).join('') : '<p style="font-size:13px;color:#94a3b8">Aucun document uploadé</p>'}
+          <!-- Templates download -->
+          <div class="cm-templates">
+            <a href="/coach/templates" class="cm-tpl-btn"><i class="fas fa-clipboard-list" style="color:#7c3aed"></i> Questionnaire BMC/SIC</a>
+            <a href="/coach/templates" class="cm-tpl-btn"><i class="fas fa-chart-bar" style="color:#059669"></i> Google Sheet Financier</a>
           </div>
-        </div>
 
-        <!-- Notes du coach -->
-        <div style="background:white;border:1px solid #e2e8f0;border-radius:14px;padding:24px;margin-top:16px">
-          <div style="font-size:14px;font-weight:700;color:#1e293b;margin-bottom:12px;display:flex;align-items:center;gap:8px">
-            <i class="fas fa-sticky-note" style="color:#d97706"></i> Notes du coach
+          <div class="cm-sidebar__uploads">
+            <div class="cm-sidebar__sources-title">Documents d'inputs (${mirrorUploadCount}/3)</div>
+
+            <!-- BMC -->
+            <div class="cm-upload-card ${uploadsByCategory.bmc.length ? 'cm-upload-card--done' : ''}" onclick="document.getElementById('mirror-bmc').click()">
+              <div class="cm-upload-card__icon" style="background:#dbeafe;color:#2563eb"><i class="fas fa-map"></i></div>
+              <div class="cm-upload-card__info">
+                <div class="cm-upload-card__title">Business Model Canvas</div>
+                ${uploadsByCategory.bmc.length > 0
+                  ? uploadsByCategory.bmc.map((f: any) => `<div class="cm-upload-card__file"><i class="fas fa-check-circle" style="color:#059669"></i> ${escapeHtml(f.filename)}</div><button class="cm-upload-card__rm" onclick="event.stopPropagation();removeUploadMirror('${f.id}')" title="Supprimer"><i class="fas fa-trash"></i></button>`).join('')
+                  : '<div class="cm-upload-card__hint"><i class="fas fa-cloud-arrow-up"></i> .doc, .docx, .pdf</div>'}
+              </div>
+              <input type="file" id="mirror-bmc" style="display:none" accept=".doc,.docx,.pdf" onchange="handleMirrorUpload(this,'bmc')">
+            </div>
+
+            <!-- SIC -->
+            <div class="cm-upload-card ${uploadsByCategory.sic.length ? 'cm-upload-card--done' : ''}" onclick="document.getElementById('mirror-sic').click()">
+              <div class="cm-upload-card__icon" style="background:#d1fae5;color:#059669"><i class="fas fa-seedling"></i></div>
+              <div class="cm-upload-card__info">
+                <div class="cm-upload-card__title">Social Impact Canvas</div>
+                ${uploadsByCategory.sic.length > 0
+                  ? uploadsByCategory.sic.map((f: any) => `<div class="cm-upload-card__file"><i class="fas fa-check-circle" style="color:#059669"></i> ${escapeHtml(f.filename)}</div><button class="cm-upload-card__rm" onclick="event.stopPropagation();removeUploadMirror('${f.id}')" title="Supprimer"><i class="fas fa-trash"></i></button>`).join('')
+                  : '<div class="cm-upload-card__hint"><i class="fas fa-cloud-arrow-up"></i> .doc, .docx, .xls, .xlsx, .pdf</div>'}
+              </div>
+              <input type="file" id="mirror-sic" style="display:none" accept=".doc,.docx,.xls,.xlsx,.pdf" onchange="handleMirrorUpload(this,'sic')">
+            </div>
+
+            <!-- Inputs Financiers -->
+            <div class="cm-upload-card ${uploadsByCategory.inputs.length ? 'cm-upload-card--done' : ''}" onclick="document.getElementById('mirror-inputs').click()">
+              <div class="cm-upload-card__icon" style="background:#fef3c7;color:#d97706"><i class="fas fa-chart-line"></i></div>
+              <div class="cm-upload-card__info">
+                <div class="cm-upload-card__title">Inputs Financiers</div>
+                ${uploadsByCategory.inputs.length > 0
+                  ? uploadsByCategory.inputs.map((f: any) => `<div class="cm-upload-card__file"><i class="fas fa-check-circle" style="color:#059669"></i> ${escapeHtml(f.filename)}</div><button class="cm-upload-card__rm" onclick="event.stopPropagation();removeUploadMirror('${f.id}')" title="Supprimer"><i class="fas fa-trash"></i></button>`).join('')
+                  : '<div class="cm-upload-card__hint"><i class="fas fa-cloud-arrow-up"></i> .xls, .xlsx, .csv</div>'}
+              </div>
+              <input type="file" id="mirror-inputs" style="display:none" accept=".xls,.xlsx,.csv,.pdf" onchange="handleMirrorUpload(this,'inputs')">
+            </div>
+
+            <!-- Supplementary -->
+            <div style="margin-top:4px;margin-bottom:8px">
+              <button class="cm-supp-btn" onclick="document.getElementById('mirror-supp').click()">
+                <i class="fas fa-plus" style="font-size:10px"></i> Documents suppl\u00e9mentaires
+              </button>
+              <input type="file" id="mirror-supp" multiple style="display:none" accept=".doc,.docx,.xls,.xlsx,.pdf,.csv,.txt" onchange="handleMirrorUpload(this,'supplementary')">
+            </div>
+            ${uploadsByCategory.supplementary.map((f: any) => `
+              <div class="cm-source-item">
+                <div class="cm-source-item__icon" style="background:#f3f4f6;color:#6b7280"><i class="fas fa-file"></i></div>
+                <div class="cm-source-item__info">
+                  <div class="cm-source-item__name">${escapeHtml(f.filename)}</div>
+                  <div class="cm-source-item__meta"><span>Suppl\u00e9mentaire</span></div>
+                </div>
+                <button class="cm-source-item__rm" onclick="removeUploadMirror('${f.id}')" style="opacity:1"><i class="fas fa-trash"></i></button>
+              </div>
+            `).join('')}
           </div>
-          <textarea id="coach-notes" placeholder="Ajouter des notes sur cet entrepreneur..."
-            style="width:100%;min-height:100px;padding:12px;border:1px solid #e2e8f0;border-radius:10px;font-size:13px;font-family:inherit;resize:vertical;outline:none"
-            onfocus="this.style.borderColor='#7c3aed'" onblur="this.style.borderColor='#e2e8f0';saveNotes()"
-          >${escapeHtml(entrepreneur.notes || '')}</textarea>
+
+          <!-- Generate CTA -->
+          <div class="cm-sidebar__gen">
+            <button class="cm-gen-btn" id="btn-mirror-gen" ${mirrorUploadCount === 0 ? 'disabled' : ''} onclick="generateMirror()">
+              <span><i class="fas fa-wand-magic-sparkles"></i> ${hasMirrorGenerated ? 'Reg\u00e9n\u00e9rer les livrables' : 'G\u00e9n\u00e9rer les livrables'}</span>
+              <span class="cm-gen-btn__sub">${mirrorUploadCount}/3 inputs</span>
+            </button>
+          </div>
+        </aside>
+
+        <!-- CENTER + BOTTOM -->
+        <div class="cm-content">
+          <div class="cm-center__header">
+            <div class="cm-center__title" id="mirror-center-title"><i class="fas fa-stethoscope"></i> Diagnostic Expert</div>
+            <div style="display:flex;gap:6px">
+              <button class="deliv-btn" onclick="downloadMirrorDeliv('html')"><i class="fas fa-file-code"></i> HTML</button>
+              <button class="deliv-btn" onclick="downloadMirrorDeliv('pdf')"><i class="fas fa-file-pdf"></i> PDF</button>
+            </div>
+          </div>
+          <div class="cm-center__content" id="mirror-center-content">
+            ${hasMirrorGenerated || mirrorDelivMap.diagnostic ? `
+              <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;padding:16px 20px;background:linear-gradient(135deg,#f0f4ff,#e8edfb);border:1px solid #a3b8d8;border-radius:12px;margin-bottom:16px">
+                <div style="display:flex;align-items:center;gap:10px">
+                  <i class="fas fa-stethoscope" style="font-size:24px;color:#1e3a5f"></i>
+                  <div>
+                    <div style="font-size:14px;font-weight:700;color:#1e3a5f">Diagnostic Expert</div>
+                    <div style="font-size:12px;color:#4b6584">G\u00e9n\u00e9r\u00e9 par le coach \u2014 Visible par l'entrepreneur</div>
+                  </div>
+                </div>
+              </div>
+              <div style="padding:40px;text-align:center;color:#64748b;background:white;border-radius:12px;border:1px solid #e5e7eb">
+                <i class="fas fa-file-lines" style="font-size:40px;color:#a3b8d8;margin-bottom:12px;display:block"></i>
+                <div style="font-size:14px;font-weight:600">Contenu du diagnostic</div>
+                <div style="font-size:12px;margin-top:4px;color:#94a3b8">Le diagnostic complet s'affichera ici apr\u00e8s g\u00e9n\u00e9ration</div>
+              </div>
+            ` : `
+              <div class="cm-empty">
+                <div class="cm-empty__icon"><i class="fas fa-stethoscope"></i></div>
+                <div class="cm-empty__title">Diagnostic Expert</div>
+                <div class="cm-empty__sub">Uploadez des documents dans la sidebar puis cliquez sur "G\u00e9n\u00e9rer les livrables"</div>
+              </div>
+            `}
+          </div>
+
+          <!-- BOTTOM: 7-column icon grid -->
+          <div class="cm-bottom">
+            <div class="cm-bottom__grid">
+              ${[
+                { type: 'diagnostic', label: 'Diagnostic Expert Global', icon: 'fa-stethoscope', color: '#2563eb', bg: '#dbeafe' },
+                { type: 'bmc_analysis', label: 'Business Model Canvas', icon: 'fa-th', color: '#059669', bg: '#d1fae5' },
+                { type: 'sic_analysis', label: 'Social Impact Canvas', icon: 'fa-hand-holding-heart', color: '#7c3aed', bg: '#ede9fe' },
+                { type: 'framework', label: 'Plan Financier Interm\u00e9diaire', icon: 'fa-chart-pie', color: '#d97706', bg: '#fef3c7' },
+                { type: 'plan_ovo', label: 'Plan Financier Final', icon: 'fa-chart-line', color: '#ea580c', bg: '#ffedd5' },
+                { type: 'business_plan', label: 'Business Plan', icon: 'fa-building', color: '#4f46e5', bg: '#e0e7ff' },
+                { type: 'odd', label: 'ODD', icon: 'fa-shield-halved', color: '#0d9488', bg: '#ccfbf1' },
+              ].map((bi, idx) => {
+                const available = !!mirrorDelivMap[bi.type]
+                return `<div class="cm-deliv-icon ${idx === 0 ? 'cm-deliv-icon--active' : ''}" data-type="${bi.type}" onclick="selectMirrorDeliverable('${bi.type}')">
+                  ${available ? '<div class="cm-deliv-icon__status cm-deliv-icon__status--ok"><i class="fas fa-check"></i></div>' : ''}
+                  <div class="cm-deliv-icon__circle" style="background:${bi.bg};color:${bi.color}"><i class="fas ${bi.icon}"></i></div>
+                  <div class="cm-deliv-icon__label">${bi.label}</div>
+                </div>`
+              }).join('')}
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -1605,7 +1685,6 @@ coach.get('/coach/entrepreneur/:id', async (c) => {
     <script>
       var ENTREPRENEUR_ID = '${id}';
 
-      // ─── Tabs ───
       function switchTab(tab) {
         document.querySelectorAll('.coach-tab').forEach(function(t) { t.classList.remove('coach-tab--active'); });
         document.querySelectorAll('.coach-tab-panel').forEach(function(p) { p.classList.remove('coach-tab-panel--active'); });
@@ -1613,118 +1692,90 @@ coach.get('/coach/entrepreneur/:id', async (c) => {
         document.getElementById('panel-' + tab).classList.add('coach-tab-panel--active');
       }
 
-      // ─── Upload ───
+      // ─── Parcours Rapide: Upload ───
       async function handleUpload(file, category) {
         if (!file) return;
         var fd = new FormData();
         fd.append('file', file);
         fd.append('category', category);
         try {
-          var res = await fetch('/api/coach/entrepreneur/' + ENTREPRENEUR_ID + '/upload', {
-            method: 'POST', credentials: 'include', body: fd
-          });
+          var res = await fetch('/api/coach/entrepreneur/' + ENTREPRENEUR_ID + '/upload', { method: 'POST', credentials: 'include', body: fd });
           var data = await res.json();
-          if (data.success) {
-            window.location.reload();
-          } else {
-            alert(data.error || 'Erreur upload');
-          }
-        } catch (e) {
-          alert('Erreur: ' + e.message);
-        }
+          if (data.success) window.location.reload();
+          else alert(data.error || 'Erreur upload');
+        } catch (e) { alert('Erreur: ' + e.message); }
       }
-
       async function removeUpload(uploadId, entId) {
         if (!confirm('Supprimer ce fichier ?')) return;
-        try {
-          await fetch('/api/coach/entrepreneur/' + entId + '/upload/' + uploadId, {
-            method: 'DELETE', credentials: 'include'
-          });
-          window.location.reload();
-        } catch (e) {
-          alert('Erreur: ' + e.message);
-        }
+        try { await fetch('/api/coach/entrepreneur/' + entId + '/upload/' + uploadId, { method: 'DELETE', credentials: 'include' }); window.location.reload(); } catch (e) { alert('Erreur: ' + e.message); }
       }
 
-      // ─── Generate ───
+      // ─── Parcours Rapide: Generate ───
       async function generateDeliverables() {
         var btn = document.getElementById('btn-generate');
         btn.disabled = true;
-        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Génération en cours...';
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin"><\\/i> En cours...';
         try {
-          var res = await fetch('/api/coach/entrepreneur/' + ENTREPRENEUR_ID + '/generate', {
-            method: 'POST', credentials: 'include',
-            headers: { 'Content-Type': 'application/json' }
-          });
+          var res = await fetch('/api/coach/entrepreneur/' + ENTREPRENEUR_ID + '/generate', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' } });
           var data = await res.json();
-          if (data.success) {
-            alert(data.generated + ' livrable(s) généré(s) avec succès !');
-            window.location.reload();
-          } else {
-            alert(data.error || 'Erreur');
-            btn.disabled = false;
-            btn.innerHTML = '<i class="fas fa-wand-magic-sparkles"></i> Générer';
-          }
-        } catch (e) {
-          alert('Erreur: ' + e.message);
-          btn.disabled = false;
-          btn.innerHTML = '<i class="fas fa-wand-magic-sparkles"></i> Générer';
-        }
+          if (data.success) { alert(data.generated + ' livrable(s) !'); window.location.reload(); }
+          else { alert(data.error || 'Erreur'); btn.disabled = false; btn.innerHTML = '<i class="fas fa-wand-magic-sparkles"><\\/i> G\\u00e9n\\u00e9rer'; }
+        } catch (e) { alert('Erreur: ' + e.message); btn.disabled = false; }
       }
 
-      // ─── Share ───
+      // ─── Parcours Rapide: Share ───
       async function shareDeliv(delivId) {
-        try {
-          var res = await fetch('/api/coach/deliverables/' + delivId + '/share', {
-            method: 'PATCH', credentials: 'include'
-          });
-          var data = await res.json();
-          if (data.success) {
-            window.location.reload();
-          }
-        } catch (e) {
-          alert('Erreur: ' + e.message);
-        }
+        try { var res = await fetch('/api/coach/deliverables/' + delivId + '/share', { method: 'PATCH', credentials: 'include' }); var d = await res.json(); if (d.success) window.location.reload(); } catch (e) { alert('Erreur: ' + e.message); }
       }
-
       async function shareAll() {
-        if (!confirm('Partager tous les livrables avec cet entrepreneur ?')) return;
+        if (!confirm('Partager tous les livrables ?')) return;
+        try { var res = await fetch('/api/coach/deliverables/share-all?entrepreneur_id=' + ENTREPRENEUR_ID, { method: 'PATCH', credentials: 'include' }); var d = await res.json(); if (d.success) { alert(d.shared + ' partag\\u00e9(s)'); window.location.reload(); } } catch (e) { alert('Erreur: ' + e.message); }
+      }
+      function downloadDeliv(id, type) { alert('T\\u00e9l\\u00e9chargement ' + type); }
+
+      // ─── Vue Miroir: Upload ───
+      async function handleMirrorUpload(input, category) {
+        var file = input.files[0];
+        if (!file) return;
+        var fd = new FormData();
+        fd.append('file', file);
+        fd.append('category', category);
         try {
-          var res = await fetch('/api/coach/deliverables/share-all?entrepreneur_id=' + ENTREPRENEUR_ID, {
-            method: 'PATCH', credentials: 'include'
-          });
+          var res = await fetch('/api/coach/entrepreneur/' + ENTREPRENEUR_ID + '/upload', { method: 'POST', credentials: 'include', body: fd });
           var data = await res.json();
-          if (data.success) {
-            alert(data.shared + ' livrable(s) partagé(s) !');
-            window.location.reload();
-          }
-        } catch (e) {
-          alert('Erreur: ' + e.message);
-        }
+          if (data.success) window.location.reload();
+          else alert(data.error || 'Erreur');
+        } catch (e) { alert('Erreur: ' + e.message); }
+      }
+      async function removeUploadMirror(uploadId) {
+        if (!confirm('Supprimer ce fichier ?')) return;
+        try { await fetch('/api/coach/entrepreneur/' + ENTREPRENEUR_ID + '/upload/' + uploadId, { method: 'DELETE', credentials: 'include' }); window.location.reload(); } catch (e) { alert('Erreur: ' + e.message); }
       }
 
-      function downloadDeliv(id, type) {
-        // Placeholder — would download the actual deliverable
-        alert('Téléchargement du livrable ' + type + ' (ID: ' + id + ')');
+      // ─── Vue Miroir: Generate ───
+      async function generateMirror() {
+        var btn = document.getElementById('btn-mirror-gen');
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin"><\\/i> G\\u00e9n\\u00e9ration...';
+        try {
+          var res = await fetch('/api/coach/entrepreneur/' + ENTREPRENEUR_ID + '/generate-mirror', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' } });
+          var data = await res.json();
+          if (data.success) { alert(data.generated + ' livrable(s) g\\u00e9n\\u00e9r\\u00e9(s) (visibles par l\\'entrepreneur)'); window.location.reload(); }
+          else { alert(data.error || 'Erreur'); btn.disabled = false; btn.innerHTML = '<i class="fas fa-wand-magic-sparkles"><\\/i> G\\u00e9n\\u00e9rer'; }
+        } catch (e) { alert('Erreur: ' + e.message); btn.disabled = false; }
       }
 
-      // ─── Notes ───
-      var notesTimeout;
-      async function saveNotes() {
-        clearTimeout(notesTimeout);
-        notesTimeout = setTimeout(async function() {
-          var notes = document.getElementById('coach-notes').value;
-          try {
-            await fetch('/api/coach/entrepreneurs/' + ENTREPRENEUR_ID, {
-              method: 'PUT', credentials: 'include',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ notes: notes })
-            });
-          } catch (e) {
-            console.error('Save notes error:', e);
-          }
-        }, 1000);
+      // ─── Vue Miroir: Select deliverable icon ───
+      function selectMirrorDeliverable(type) {
+        document.querySelectorAll('.cm-deliv-icon').forEach(function(el) {
+          el.classList.toggle('cm-deliv-icon--active', el.dataset.type === type);
+        });
+        var titles = { diagnostic: 'Diagnostic Expert', bmc_analysis: 'Business Model Canvas', sic_analysis: 'Social Impact Canvas', framework: 'Plan Financier Interm\\u00e9diaire', plan_ovo: 'Plan Financier Final', business_plan: 'Business Plan', odd: 'ODD' };
+        var icons = { diagnostic: 'fa-stethoscope', bmc_analysis: 'fa-th', sic_analysis: 'fa-hand-holding-heart', framework: 'fa-chart-pie', plan_ovo: 'fa-chart-line', business_plan: 'fa-building', odd: 'fa-shield-halved' };
+        var titleEl = document.getElementById('mirror-center-title');
+        if (titleEl) titleEl.innerHTML = '<i class="fas ' + (icons[type] || 'fa-file') + '"><\\/i> ' + (titles[type] || type);
       }
+      function downloadMirrorDeliv(format) { alert('T\\u00e9l\\u00e9chargement en ' + format); }
     </script>
   `
 
@@ -1732,41 +1783,97 @@ coach.get('/coach/entrepreneur/:id', async (c) => {
 })
 
 // ═══════════════════════════════════════════════════════════════
+// GET /api/templates/:name — Download template file
+coach.get('/api/templates/:name', async (c) => {
+  const name = c.req.param('name')
+  const validTemplates: Record<string, { filename: string; mime: string }> = {
+    'bmc': { filename: 'Template_BMC.docx', mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
+    'sic': { filename: 'Template_SIC.docx', mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
+    'inputs': { filename: 'Template_Inputs_Financiers.xlsx', mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
+    'plan-ovo': { filename: 'Plan_Financier_OVO.xlsm', mime: 'application/vnd.ms-excel.sheet.macroEnabled.12' },
+  }
+
+  const tpl = validTemplates[name]
+  if (!tpl) return c.json({ error: 'Template non trouv\u00e9' }, 404)
+
+  // In production, files would be served from R2: /templates/{filename}
+  // For now return a placeholder response
+  return c.json({
+    template: name,
+    filename: tpl.filename,
+    download_url: `/templates/${tpl.filename}`,
+    message: 'Template disponible en R2 sous /templates/' + tpl.filename
+  })
+})
+
 // PAGE: /coach/templates
 // ═══════════════════════════════════════════════════════════════
 coach.get('/coach/templates', async (c) => {
   const user = c.get('coachUser') as any
 
   const templates = [
-    { name: 'Business Model Canvas (BMC)', desc: 'Canevas de modèle économique', icon: 'fa-map', color: '#059669', bg: 'rgba(5,150,105,0.1)' },
-    { name: 'Social Impact Canvas (SIC)', desc: 'Canevas d\'impact social', icon: 'fa-hand-holding-heart', color: '#2563eb', bg: 'rgba(37,99,235,0.1)' },
-    { name: 'Inputs Financiers', desc: 'Données financières de base', icon: 'fa-calculator', color: '#d97706', bg: 'rgba(217,119,6,0.1)' },
-    { name: 'Guide Entrepreneur', desc: 'Manuel d\'utilisation ESONO', icon: 'fa-book', color: '#7c3aed', bg: 'rgba(124,58,237,0.1)' },
+    { key: 'bmc', name: 'Business Model Canvas (BMC)', desc: 'Canevas de mod\u00e8le \u00e9conomique \u2014 Questionnaire complet pour analyser la proposition de valeur, segments clients, canaux et revenus.', icon: 'fa-map', color: '#059669', ext: '.docx' },
+    { key: 'sic', name: 'Social Impact Canvas (SIC)', desc: 'Canevas d\'impact social \u2014 Cadre d\'analyse des b\u00e9n\u00e9ficiaires, indicateurs ODD et th\u00e9orie du changement.', icon: 'fa-hand-holding-heart', color: '#2563eb', ext: '.docx' },
+    { key: 'inputs', name: 'Inputs Financiers', desc: 'Fichier de saisie des donn\u00e9es financi\u00e8res \u2014 Chiffre d\'affaires, charges, investissements et hypoth\u00e8ses pr\u00e9visionnelles.', icon: 'fa-calculator', color: '#d97706', ext: '.xlsx' },
+    { key: 'plan-ovo', name: 'Plan Financier OVO', desc: 'Mod\u00e8le financier macro-\u00e9nable \u2014 Projections cash-flow, bilan et compte de r\u00e9sultat sur 5 ans.', icon: 'fa-chart-line', color: '#7c3aed', ext: '.xlsm' },
   ]
 
   const content = `
+    <style>
+      .tpl-page { padding:32px; }
+      .tpl-page__title { font-size:22px; font-weight:800; color:#f1f5f9; margin-bottom:6px; display:flex; align-items:center; gap:12px; }
+      .tpl-page__desc { font-size:14px; color:#94a3b8; max-width:600px; line-height:1.6; margin-bottom:32px; }
+      .tpl-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:20px; }
+      @media (max-width:768px) { .tpl-grid { grid-template-columns:1fr; } }
+      .tpl-card { background:#1e293b; border:1px solid #334155; border-radius:16px; padding:28px; transition:all 0.25s; position:relative; overflow:hidden; }
+      .tpl-card::before { content:''; position:absolute; top:0; left:0; right:0; height:3px; background:linear-gradient(90deg,var(--tpl-color),transparent); opacity:0; transition:opacity 0.25s; }
+      .tpl-card:hover { border-color:var(--tpl-color); transform:translateY(-2px); box-shadow:0 8px 24px rgba(0,0,0,0.25); }
+      .tpl-card:hover::before { opacity:1; }
+      .tpl-card__header { display:flex; align-items:center; gap:16px; margin-bottom:16px; }
+      .tpl-card__icon { width:52px; height:52px; border-radius:14px; display:flex; align-items:center; justify-content:center; font-size:22px; flex-shrink:0; }
+      .tpl-card__name { font-size:15px; font-weight:700; color:#f1f5f9; margin-bottom:3px; }
+      .tpl-card__ext { display:inline-flex; align-items:center; gap:4px; font-size:10px; font-weight:700; padding:2px 8px; border-radius:6px; background:rgba(255,255,255,0.08); color:#94a3b8; text-transform:uppercase; letter-spacing:0.5px; }
+      .tpl-card__desc { font-size:12px; color:#94a3b8; line-height:1.6; margin-bottom:20px; min-height:40px; }
+      .tpl-card__btn { width:100%; padding:12px; border-radius:10px; border:1px solid #334155; background:rgba(255,255,255,0.04); font-size:13px; font-weight:600; color:#e2e8f0; cursor:pointer; font-family:inherit; display:flex; align-items:center; justify-content:center; gap:8px; transition:all 0.2s; }
+      .tpl-card__btn:hover { background:var(--tpl-color); color:white; border-color:var(--tpl-color); }
+    </style>
     <div class="coach-header">
       <h1 class="coach-header__title"><i class="fas fa-file-download" style="color:#7c3aed;font-size:18px"></i> Templates Vierges</h1>
     </div>
-    <div class="coach-content">
-      <p style="font-size:14px;color:#64748b;margin-bottom:20px">Téléchargez les templates vierges à distribuer à vos entrepreneurs pour faciliter la collecte des données.</p>
-      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px">
+    <div class="tpl-page" style="background:#0f172a;border-radius:0 0 16px 16px;margin:-1px 0 0">
+      <div class="tpl-page__title"><i class="fas fa-folder-open" style="color:#7c3aed"></i> Biblioth\u00e8que de templates</div>
+      <div class="tpl-page__desc">T\u00e9l\u00e9chargez les templates vierges \u00e0 distribuer \u00e0 vos entrepreneurs pour faciliter la collecte des donn\u00e9es. Fichiers stock\u00e9s dans Cloudflare R2 sous <code style="background:rgba(255,255,255,0.08);padding:2px 6px;border-radius:4px;font-size:12px;color:#a78bfa">/templates/</code></div>
+      <div class="tpl-grid">
         ${templates.map(t => `
-          <div style="background:white;border:1px solid #e2e8f0;border-radius:14px;padding:24px;transition:all 0.2s;cursor:pointer" onmouseover="this.style.boxShadow='0 4px 12px rgba(0,0,0,0.06)'" onmouseout="this.style.boxShadow='none'">
-            <div style="display:flex;align-items:center;gap:14px;margin-bottom:14px">
-              <div style="width:44px;height:44px;border-radius:12px;background:${t.bg};color:${t.color};display:flex;align-items:center;justify-content:center;font-size:18px"><i class="fas ${t.icon}"></i></div>
+          <div class="tpl-card" style="--tpl-color:${t.color}">
+            <div class="tpl-card__header">
+              <div class="tpl-card__icon" style="background:${t.color}20;color:${t.color}"><i class="fas ${t.icon}"></i></div>
               <div>
-                <div style="font-size:14px;font-weight:700;color:#1e293b">${t.name}</div>
-                <div style="font-size:12px;color:#94a3b8">${t.desc}</div>
+                <div class="tpl-card__name">${t.name}</div>
+                <span class="tpl-card__ext"><i class="fas fa-file"></i> ${t.ext}</span>
               </div>
             </div>
-            <button style="width:100%;padding:10px;border:1px solid #e2e8f0;border-radius:8px;background:white;font-size:12px;font-weight:600;color:#475569;cursor:pointer;font-family:inherit;display:flex;align-items:center;justify-content:center;gap:6px;transition:all 0.15s" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='white'">
-              <i class="fas fa-download"></i> Télécharger
+            <div class="tpl-card__desc">${t.desc}</div>
+            <button class="tpl-card__btn" onclick="downloadTemplate('${t.key}')">
+              <i class="fas fa-download"></i> T\u00e9l\u00e9charger le template
             </button>
           </div>
         `).join('')}
       </div>
     </div>
+    <script>
+      async function downloadTemplate(key) {
+        try {
+          var res = await fetch('/api/templates/' + key, { credentials: 'include' });
+          var data = await res.json();
+          if (data.download_url) {
+            alert('Template: ' + data.filename + '\\nDisponible en R2: ' + data.download_url);
+          } else {
+            alert(data.error || 'Erreur');
+          }
+        } catch (e) { alert('Erreur: ' + e.message); }
+      }
+    </script>
   `
 
   return c.html(safeScriptBlocks(coachLayout('templates', user.name, content)))
