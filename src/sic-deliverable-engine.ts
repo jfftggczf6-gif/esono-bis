@@ -2091,10 +2091,21 @@ export function renderSicDeliverableFromAnalyst(input: SicAnalystDeliverableInpu
  */
 export function regenerateSicHtmlFromDbAnalysis(
   dbAnalysis: {
-    score: number
-    pillars: Array<{ name: string, score: number, analysis: string, recommendations: string[] }>
-    odd_alignment: Array<{ odd: string, relevance: number }>
-    impact_matrix: Record<string, any>
+    score?: number
+    pillars?: Array<{ name: string, score: number, analysis: string, recommendations: string[] }>
+    odd_alignment?: Array<{ odd: string, relevance: number }>
+    impact_matrix?: Record<string, any>
+    // Claude rich format (v12+)
+    evaluation_sic?: { score_global?: number, piliers?: Record<string, { score?: number, analyse?: string }> }
+    odd_alignment_rich?: { odd_prioritaires?: any[], odd_secondaires?: any[] }
+    theorie_changement?: Record<string, any>
+    beneficiaires?: Record<string, any>
+    genre_inclusion?: Record<string, any>
+    impact_climatique?: Record<string, any>
+    forces?: string[]
+    faiblesses?: string[]
+    recommandations?: string[] | any[]
+    [key: string]: any
   },
   companyData: {
     companyName: string
@@ -2105,14 +2116,71 @@ export function regenerateSicHtmlFromDbAnalysis(
   }
 ): string {
   // Defensive: unwrap JSON schema wrapper if present
-  const analysis = (dbAnalysis as any).properties && !(dbAnalysis as any).pillars
+  let analysis = (dbAnalysis as any).properties && !(dbAnalysis as any).pillars
     ? (dbAnalysis as any).properties
     : dbAnalysis
-  
-  const pillars = analysis.pillars || []
-  const oddAlignment = analysis.odd_alignment || []
-  const impactMatrix = analysis.impact_matrix || {}
-  const scoreGlobal = analysis.score || 0
+
+  // ═══ NORMALIZE: Convert Claude rich format to legacy pillars format ═══
+  const PILLAR_NAME_MAP: Record<string, string> = {
+    vision: 'Vision & Objectifs',
+    objectifs: 'Objectifs d\'impact',
+    strategie: 'Stratégie d\'impact',
+    odd_alignment: 'Alignement ODD',
+    deploiement: 'Déploiement & Mesure',
+  }
+
+  let pillars: Array<{ name: string, score: number, analysis: string, recommendations: string[] }> = []
+  let oddAlignment: Array<{ odd: string, relevance: number }> = []
+  let scoreGlobal = analysis.score || 0
+
+  if (analysis.evaluation_sic?.piliers && !analysis.pillars) {
+    // ── Claude rich format detected ──
+    console.log('[regenerateSicHtml] Detected Claude rich format — normalizing evaluation_sic.piliers')
+    const piliers = analysis.evaluation_sic.piliers
+    for (const [key, pillar] of Object.entries(piliers)) {
+      if (!pillar || typeof pillar !== 'object') continue
+      const p = pillar as any
+      pillars.push({
+        name: PILLAR_NAME_MAP[key] || key.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()),
+        score: typeof p.score === 'number' ? p.score : 0,
+        analysis: p.analyse || p.analysis || '',
+        recommendations: Array.isArray(p.recommandations) ? p.recommandations : []
+      })
+    }
+    // Add recommendations from other sections
+    const globalRecos = Array.isArray(analysis.recommandations)
+      ? analysis.recommandations.map((r: any) => typeof r === 'string' ? r : r.action || r.detail || JSON.stringify(r))
+      : []
+    if (globalRecos.length > 0 && pillars.length > 0) {
+      pillars[0].recommendations = [...pillars[0].recommendations, ...globalRecos]
+    }
+
+    // Extract ODD alignment
+    const oddData = analysis.odd_alignment || analysis.odd_alignment_rich
+    if (oddData) {
+      const oddPrio = Array.isArray(oddData.odd_prioritaires) ? oddData.odd_prioritaires : (Array.isArray(oddData) ? oddData : [])
+      const oddSec = Array.isArray(oddData.odd_secondaires) ? oddData.odd_secondaires : []
+      for (const o of [...oddPrio, ...oddSec]) {
+        if (typeof o === 'object' && o) {
+          const oddStr = o.odd || o.label || o.name || `ODD ${o.numero || o.number || ''}`
+          const relevance = o.relevance || o.score || (oddPrio.includes(o) ? 80 : 50)
+          oddAlignment.push({ odd: oddStr, relevance })
+        }
+      }
+    }
+
+    // Score global
+    if (analysis.evaluation_sic.score_global) {
+      scoreGlobal = analysis.evaluation_sic.score_global
+    }
+
+    console.log(`[regenerateSicHtml] Normalized: ${pillars.length} pillars, ${oddAlignment.length} ODDs, score=${scoreGlobal}`)
+  } else {
+    pillars = analysis.pillars || []
+    oddAlignment = analysis.odd_alignment || []
+  }
+
+  const impactMatrix = analysis.impact_matrix || analysis.impact_climatique || {}
   
   const scoreColor = scoreGlobal >= 71 ? COLORS.primaryLight : scoreGlobal >= 51 ? COLORS.accent : scoreGlobal >= 31 ? COLORS.orange : COLORS.red
   const dateStr = new Date().toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' })

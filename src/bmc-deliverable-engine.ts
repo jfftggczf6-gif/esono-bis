@@ -1325,10 +1325,16 @@ function analysisToBullets(analysis: string): string[] {
  */
 export function regenerateBmcHtmlFromDbAnalysis(
   dbAnalysis: {
-    score: number
-    blocks: Array<{ name: string, score: number, analysis: string, recommendations: string[] }>
+    score?: number
+    blocks?: Array<{ name: string, score: number, analysis: string, recommendations: string[] }>
     coherence_score?: number
     warnings?: string[]
+    // Claude rich format (v12+)
+    diagnostic_global?: { score_global?: number, niveau?: string, resume_executif?: string }
+    analyse_blocs?: Record<string, { score?: number, forces?: string[], faiblesses?: string[], recommandations?: string[], benchmark?: string }>
+    coherence_inter_blocs?: { score?: number, analyse?: string, synergies_identifiees?: string[], incoherences?: string[] }
+    recommandations_strategiques?: Array<{ priorite?: string, action?: string, impact?: string, detail?: string }>
+    [key: string]: any
   },
   companyData: {
     companyName: string
@@ -1338,7 +1344,60 @@ export function regenerateBmcHtmlFromDbAnalysis(
     country: string
   }
 ): string {
-  const blocks = dbAnalysis.blocks || []
+  // ═══ NORMALIZE: Convert Claude rich format to legacy blocks format ═══
+  const BLOC_NAME_MAP: Record<string, string> = {
+    proposition_valeur: 'Proposition de valeur',
+    segments_clients: 'Segments clients',
+    canaux_distribution: 'Canaux de distribution',
+    relation_client: 'Relations clients',
+    flux_revenus: 'Flux de revenus',
+    ressources_cles: 'Ressources clés',
+    activites_cles: 'Activités clés',
+    partenaires_cles: 'Partenaires clés',
+    structure_couts: 'Structure de coûts',
+  }
+
+  let blocks: Array<{ name: string, score: number, analysis: string, recommendations: string[] }> = []
+  let finalScore = dbAnalysis.score || 0
+  let coherenceScore = dbAnalysis.coherence_score
+  let warnings = dbAnalysis.warnings || []
+
+  if (dbAnalysis.analyse_blocs && typeof dbAnalysis.analyse_blocs === 'object' && !dbAnalysis.blocks) {
+    // ── Claude rich format: convert analyse_blocs dict → blocks array ──
+    console.log('[regenerateBmcHtml] Detected Claude rich format — normalizing analyse_blocs')
+    for (const [key, bloc] of Object.entries(dbAnalysis.analyse_blocs)) {
+      if (!bloc || typeof bloc !== 'object') continue
+      const name = BLOC_NAME_MAP[key] || key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+      const forces = Array.isArray(bloc.forces) ? bloc.forces : []
+      const faiblesses = Array.isArray(bloc.faiblesses) ? bloc.faiblesses : []
+      const analysis = [
+        ...forces.map(f => `✓ ${f}`),
+        ...faiblesses.map(f => `⚠ ${f}`),
+        bloc.benchmark || ''
+      ].filter(Boolean).join('. ')
+      blocks.push({
+        name,
+        score: typeof bloc.score === 'number' ? bloc.score : 0,
+        analysis,
+        recommendations: Array.isArray(bloc.recommandations) ? bloc.recommandations : []
+      })
+    }
+    // Extract score from diagnostic_global
+    if (dbAnalysis.diagnostic_global?.score_global) {
+      finalScore = dbAnalysis.diagnostic_global.score_global
+    }
+    // Extract coherence
+    if (dbAnalysis.coherence_inter_blocs?.score) {
+      coherenceScore = dbAnalysis.coherence_inter_blocs.score
+    }
+    // Extract warnings from faiblesses + incoherences
+    const incoherences = dbAnalysis.coherence_inter_blocs?.incoherences || []
+    if (incoherences.length > 0) warnings = [...warnings, ...incoherences]
+
+    console.log(`[regenerateBmcHtml] Normalized: ${blocks.length} blocks, score=${finalScore}, coherence=${coherenceScore}`)
+  } else {
+    blocks = dbAnalysis.blocks || []
+  }
   
   // Convert blocks to BmcBlocScore with canvasSummary from analysis text
   const blocScores: BmcBlocScore[] = blocks.map(block => {
@@ -1395,7 +1454,7 @@ export function regenerateBmcHtmlFromDbAnalysis(
       .flatMap(b => (b.recommendations || []).slice(0, 1))
       .filter(Boolean)
       .slice(0, 4),
-    menaces: (dbAnalysis.warnings || []).slice(0, 4)
+    menaces: warnings.slice(0, 4)
   }
   
   // Generate recommendations from block recommendations
@@ -1419,11 +1478,11 @@ export function regenerateBmcHtmlFromDbAnalysis(
   ].filter(r => r.items.length > 0)
   
   // Maturity checks
-  const avgScore = dbAnalysis.score
+  const avgScore = finalScore
   const maturityChecks: { label: string, status: 'ok' | 'warning' | 'action' }[] = [
     { label: 'Business Model Canvas complet', status: blocks.filter(b => b.score > 0).length >= 7 ? 'ok' : 'warning' },
     { label: 'Scoring par bloc réalisé', status: 'ok' },
-    { label: 'Analyse de cohérence inter-blocs', status: dbAnalysis.coherence_score && dbAnalysis.coherence_score > 60 ? 'ok' : 'warning' },
+    { label: 'Analyse de cohérence inter-blocs', status: coherenceScore && coherenceScore > 60 ? 'ok' : 'warning' },
     { label: 'Recommandations d\'amélioration', status: allRecos.length >= 5 ? 'ok' : 'warning' },
     { label: 'Forces et vigilances identifiées', status: forces.length > 0 && vigilances.length > 0 ? 'ok' : 'warning' },
     { label: 'Score global ≥ 70%', status: avgScore >= 70 ? 'ok' : avgScore >= 50 ? 'warning' : 'action' },
