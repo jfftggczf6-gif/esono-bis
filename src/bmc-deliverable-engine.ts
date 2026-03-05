@@ -1349,12 +1349,17 @@ export function regenerateBmcHtmlFromDbAnalysis(
     proposition_valeur: 'Proposition de valeur',
     segments_clients: 'Segments clients',
     canaux_distribution: 'Canaux de distribution',
+    canaux: 'Canaux de distribution',
     relation_client: 'Relations clients',
+    relations_clients: 'Relations clients',
+    relations_client: 'Relations clients',
     flux_revenus: 'Flux de revenus',
+    revenus: 'Flux de revenus',
     ressources_cles: 'Ressources clés',
     activites_cles: 'Activités clés',
     partenaires_cles: 'Partenaires clés',
     structure_couts: 'Structure de coûts',
+    couts: 'Structure de coûts',
   }
 
   let blocks: Array<{ name: string, score: number, analysis: string, recommendations: string[] }> = []
@@ -1362,37 +1367,51 @@ export function regenerateBmcHtmlFromDbAnalysis(
   let coherenceScore = dbAnalysis.coherence_score
   let warnings = dbAnalysis.warnings || []
 
-  if (dbAnalysis.analyse_blocs && typeof dbAnalysis.analyse_blocs === 'object' && !dbAnalysis.blocks) {
-    // ── Claude rich format: convert analyse_blocs dict → blocks array ──
-    console.log('[regenerateBmcHtml] Detected Claude rich format — normalizing analyse_blocs')
-    for (const [key, bloc] of Object.entries(dbAnalysis.analyse_blocs)) {
+  // Detect Claude rich format — accept multiple key variants
+  const analyseBlocs = dbAnalysis.analyse_blocs || dbAnalysis.analyse_bmc || dbAnalysis.blocs || dbAnalysis.bmc_blocs || null
+  const hasRichFormat = analyseBlocs && typeof analyseBlocs === 'object' && !dbAnalysis.blocks
+
+  if (hasRichFormat) {
+    // ── Claude rich format: convert dict → blocks array ──
+    console.log('[regenerateBmcHtml] Detected Claude rich format — normalizing')
+    for (const [key, bloc] of Object.entries(analyseBlocs as Record<string, any>)) {
       if (!bloc || typeof bloc !== 'object') continue
       const name = BLOC_NAME_MAP[key] || key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
       const forces = Array.isArray(bloc.forces) ? bloc.forces : []
       const faiblesses = Array.isArray(bloc.faiblesses) ? bloc.faiblesses : []
-      const analysis = [
-        ...forces.map(f => `✓ ${f}`),
-        ...faiblesses.map(f => `⚠ ${f}`),
+      // Prefer the 'analyse' text if available, otherwise build from forces/faiblesses
+      const analysisText = bloc.analyse || bloc.analysis || [
+        ...forces.map((f: string) => `✓ ${f}`),
+        ...faiblesses.map((f: string) => `⚠ ${f}`),
         bloc.benchmark || ''
       ].filter(Boolean).join('. ')
       blocks.push({
         name,
         score: typeof bloc.score === 'number' ? bloc.score : 0,
-        analysis,
-        recommendations: Array.isArray(bloc.recommandations) ? bloc.recommandations : []
+        analysis: analysisText,
+        recommendations: Array.isArray(bloc.recommandations) ? bloc.recommandations : (Array.isArray(bloc.recommendations) ? bloc.recommendations : [])
       })
     }
-    // Extract score from diagnostic_global
+    // Extract score — try multiple locations
     if (dbAnalysis.diagnostic_global?.score_global) {
       finalScore = dbAnalysis.diagnostic_global.score_global
+    } else if (typeof dbAnalysis.score_global === 'number') {
+      finalScore = dbAnalysis.score_global
+    } else if (typeof dbAnalysis.score === 'number') {
+      finalScore = dbAnalysis.score
+    }
+    // If still 0, compute average from blocks
+    if (finalScore === 0 && blocks.length > 0) {
+      finalScore = Math.round(blocks.reduce((s, b) => s + b.score, 0) / blocks.length)
     }
     // Extract coherence
     if (dbAnalysis.coherence_inter_blocs?.score) {
       coherenceScore = dbAnalysis.coherence_inter_blocs.score
     }
-    // Extract warnings from faiblesses + incoherences
-    const incoherences = dbAnalysis.coherence_inter_blocs?.incoherences || []
-    if (incoherences.length > 0) warnings = [...warnings, ...incoherences]
+    // Extract warnings from faiblesses + incoherences + points_amelioration
+    const incoherences = dbAnalysis.coherence_inter_blocs?.incoherences
+      || dbAnalysis.coherence_inter_blocs?.points_amelioration || []
+    if (Array.isArray(incoherences) && incoherences.length > 0) warnings = [...warnings, ...incoherences]
 
     console.log(`[regenerateBmcHtml] Normalized: ${blocks.length} blocks, score=${finalScore}, coherence=${coherenceScore}`)
   } else {
