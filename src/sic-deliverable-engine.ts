@@ -2131,13 +2131,21 @@ export function regenerateSicHtmlFromDbAnalysis(
 
   let pillars: Array<{ name: string, score: number, analysis: string, recommendations: string[] }> = []
   let oddAlignment: Array<{ odd: string, relevance: number }> = []
-  let scoreGlobal = analysis.score || 0
+  let scoreGlobal = analysis.score || analysis.score_global_impact || analysis.score_global || 0
 
-  if (analysis.evaluation_sic?.piliers && !analysis.pillars) {
+  // Detect pillar source — accept multiple structures:
+  // v12: evaluation_sic.piliers = { vision: {score, analyse}, ... }
+  // v13: evaluation_sic = { vision: {score, analyse}, ... } (piliers directly)
+  const evalSic = analysis.evaluation_sic || {}
+  const pilierSource = evalSic.piliers
+    || (evalSic.vision ? evalSic : null)  // v13: pillars directly in evaluation_sic
+    || null
+
+  if (pilierSource && !analysis.pillars) {
     // ── Claude rich format detected ──
-    console.log('[regenerateSicHtml] Detected Claude rich format — normalizing evaluation_sic.piliers')
-    const piliers = analysis.evaluation_sic.piliers
-    for (const [key, pillar] of Object.entries(piliers)) {
+    console.log('[regenerateSicHtml] Detected Claude rich format — normalizing evaluation_sic')
+    // Use pilierSource (already resolved from .piliers or direct dict)
+    for (const [key, pillar] of Object.entries(pilierSource as Record<string, any>)) {
       if (!pillar || typeof pillar !== 'object') continue
       const p = pillar as any
       pillars.push({
@@ -2147,31 +2155,58 @@ export function regenerateSicHtmlFromDbAnalysis(
         recommendations: Array.isArray(p.recommandations) ? p.recommandations : []
       })
     }
-    // Add recommendations from other sections
-    const globalRecos = Array.isArray(analysis.recommandations)
-      ? analysis.recommandations.map((r: any) => typeof r === 'string' ? r : r.action || r.detail || JSON.stringify(r))
-      : []
-    if (globalRecos.length > 0 && pillars.length > 0) {
-      pillars[0].recommendations = [...pillars[0].recommendations, ...globalRecos]
-    }
+    // (Recommendations are now extracted after score global below)
 
-    // Extract ODD alignment
-    const oddData = analysis.odd_alignment || analysis.odd_alignment_rich
+    // Extract ODD alignment — accept multiple formats:
+    // v12: odd_alignment = { odd_prioritaires: [...], odd_secondaires: [...] }
+    // v13: alignement_odd = { odd_1: {score, pertinence, description}, odd_2: {...} }
+    const oddData = analysis.odd_alignment || analysis.alignement_odd || analysis.odd_alignment_rich
     if (oddData) {
-      const oddPrio = Array.isArray(oddData.odd_prioritaires) ? oddData.odd_prioritaires : (Array.isArray(oddData) ? oddData : [])
-      const oddSec = Array.isArray(oddData.odd_secondaires) ? oddData.odd_secondaires : []
-      for (const o of [...oddPrio, ...oddSec]) {
-        if (typeof o === 'object' && o) {
-          const oddStr = o.odd || o.label || o.name || `ODD ${o.numero || o.number || ''}`
-          const relevance = o.relevance || o.score || (oddPrio.includes(o) ? 80 : 50)
+      if (Array.isArray(oddData.odd_prioritaires) || Array.isArray(oddData.odd_secondaires) || Array.isArray(oddData)) {
+        // v12 format: arrays
+        const oddPrio = Array.isArray(oddData.odd_prioritaires) ? oddData.odd_prioritaires : (Array.isArray(oddData) ? oddData : [])
+        const oddSec = Array.isArray(oddData.odd_secondaires) ? oddData.odd_secondaires : []
+        for (const o of [...oddPrio, ...oddSec]) {
+          if (typeof o === 'object' && o) {
+            const oddStr = o.odd || o.label || o.name || `ODD ${o.numero || o.number || ''}`
+            const relevance = o.relevance || o.score || (oddPrio.includes(o) ? 80 : 50)
+            oddAlignment.push({ odd: oddStr, relevance })
+          }
+        }
+      } else if (typeof oddData === 'object') {
+        // v13 format: dict { odd_1: {score, pertinence, description}, odd_2: {...}, ... }
+        for (const [key, val] of Object.entries(oddData)) {
+          if (!val || typeof val !== 'object') continue
+          const v = val as any
+          const numMatch = key.match(/(\d+)/)
+          const num = numMatch ? parseInt(numMatch[1]) : 0
+          const oddStr = `ODD ${num}`
+          const relevance = v.score || v.relevance || (v.pertinence === 'Très élevée' ? 85 : v.pertinence === 'Élevée' ? 75 : v.pertinence === 'Moyenne' ? 60 : 50)
           oddAlignment.push({ odd: oddStr, relevance })
         }
       }
     }
 
-    // Score global
-    if (analysis.evaluation_sic.score_global) {
+    // Score global — try multiple locations
+    if (typeof analysis.score_global_impact === 'number') {
+      scoreGlobal = analysis.score_global_impact
+    } else if (analysis.evaluation_sic?.score_global) {
       scoreGlobal = analysis.evaluation_sic.score_global
+    } else if (typeof analysis.score_global === 'number') {
+      scoreGlobal = analysis.score_global
+    }
+    // If still 0, compute from pillars
+    if (scoreGlobal === 0 && pillars.length > 0) {
+      scoreGlobal = Math.round(pillars.reduce((s, p) => s + p.score, 0) / pillars.length)
+    }
+
+    // Extract recommendations from recommandations_prioritaires (v13) or recommandations (v12)
+    const globalRecosSrc = analysis.recommandations_prioritaires || analysis.recommandations || []
+    const globalRecosExtra = Array.isArray(globalRecosSrc)
+      ? globalRecosSrc.map((r: any) => typeof r === 'string' ? r : r.action || r.detail || JSON.stringify(r))
+      : []
+    if (globalRecosExtra.length > 0 && pillars.length > 0) {
+      pillars[0].recommendations = [...pillars[0].recommendations, ...globalRecosExtra]
     }
 
     console.log(`[regenerateSicHtml] Normalized: ${pillars.length} pillars, ${oddAlignment.length} ODDs, score=${scoreGlobal}`)
