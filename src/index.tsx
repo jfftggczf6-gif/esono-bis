@@ -9003,8 +9003,13 @@ function renderBusinessPlanModulePage(opts: {
   // module expects: { resume_executif: { synthese }, presentation_entreprise: { description_generale }, ... }
   let normalizedBp: any = bpData || {}
   
-  // Handle Claude named-key format: { executive_summary: { title, content, key_points }, ... }
-  if (bpData && !bpData.sections && !bpData.resume_executif && (bpData.executive_summary || bpData.market_analysis || bpData.products_services)) {
+  // ═══ NEW RICH FORMAT: Already structured — use directly ═══
+  if (bpData && bpData.resume_executif && bpData.presentation_entreprise && (bpData.analyse_swot || bpData.modele_economique)) {
+    normalizedBp = bpData
+    console.log('[BP Module] Rich format detected — using directly')
+  }
+  // Handle LEGACY Claude named-key format: { executive_summary: { title, content, key_points }, ... }
+  else if (bpData && !bpData.sections && !bpData.resume_executif && (bpData.executive_summary || bpData.market_analysis || bpData.products_services)) {
     const keyMap: Record<string, { target: string, contentKey: string }> = {
       'executive_summary': { target: 'resume_executif', contentKey: 'synthese' },
       'market_analysis': { target: 'analyse_marche', contentKey: 'description' },
@@ -11119,10 +11124,29 @@ app.get('/api/business-plan/download/:id', async (c) => {
       return c.json({ error: 'Erreur: données JSON du Business Plan invalides' }, 500)
     }
 
-    // ═══ Normalize Claude named-key format to rich format for DOCX filler ═══
-    // business_plan_writer agent produces: { executive_summary: { title, content, key_points }, ... }
-    // DOCX filler expects: { resume_executif: { synthese }, presentation_entreprise: { description_generale }, ... }
-    if (bpData && !bpData.sections && !bpData.resume_executif && (bpData.executive_summary || bpData.market_analysis || bpData.products_services)) {
+    // ═══ NEW RICH FORMAT: Already structured for docx-filler — skip normalization ═══
+    // New business_plan_writer produces: { resume_executif: { synthese, points_cles }, presentation_entreprise: { informations_table, revue_historique, vision_mission_valeurs, ... }, ... }
+    // This is ALREADY the format expected by docx-filler.ts — no conversion needed
+    if (bpData && bpData.resume_executif && bpData.presentation_entreprise && (bpData.analyse_swot || bpData.modele_economique)) {
+      // Ensure metadata exists for filename generation
+      if (!bpData.metadata) {
+        bpData.metadata = {
+          ai_generated: true,
+          date_generation: new Date().toISOString(),
+          entreprise: bpData.presentation_entreprise?.informations_table?.nom || '',
+          entrepreneur: bpData.presentation_entreprise?.informations_table?.contact || '',
+        }
+      }
+      if (!bpData.metadata.entreprise && bpData.presentation_entreprise?.informations_table?.nom) {
+        bpData.metadata.entreprise = bpData.presentation_entreprise.informations_table.nom
+      }
+      if (!bpData.metadata.entrepreneur && bpData.presentation_entreprise?.informations_table?.contact) {
+        bpData.metadata.entrepreneur = bpData.presentation_entreprise.informations_table.contact
+      }
+      console.log(`[BP Download] Rich format detected — skipping normalization. Keys: ${Object.keys(bpData).filter(k => k !== 'score' && k !== 'metadata').join(', ')}`)
+    }
+    // ═══ LEGACY: Normalize Claude named-key format (executive_summary, market_analysis, ...) ═══
+    else if (bpData && !bpData.sections && !bpData.resume_executif && (bpData.executive_summary || bpData.market_analysis || bpData.products_services)) {
       const keyMap: Record<string, { target: string, contentKey: string }> = {
         'executive_summary': { target: 'resume_executif', contentKey: 'synthese' },
         'market_analysis': { target: 'analyse_marche', contentKey: 'description' },
