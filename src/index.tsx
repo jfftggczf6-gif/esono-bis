@@ -9139,6 +9139,10 @@ function renderBusinessPlanModulePage(opts: {
       }
     }
     normalizedBp = rich
+    // Apply fallbacks for sections that AI may have named differently
+    if (!rich.offre_produit_service && rich.bmc_affine) rich.offre_produit_service = rich.bmc_affine
+    if (!rich.modele_economique && rich.bmc_affine) rich.modele_economique = rich.bmc_affine
+    if (!rich.gouvernance && rich.besoins_financement) rich.gouvernance = rich.besoins_financement
   }
 
   // Data shortcuts
@@ -9147,13 +9151,13 @@ function renderBusinessPlanModulePage(opts: {
   const presentation = normalizedBp?.presentation_entreprise || normalizedBp?.company_presentation || {}
   const swot = normalizedBp?.analyse_swot || normalizedBp?.swot_analysis || {}
   const marche = normalizedBp?.analyse_marche || normalizedBp?.market_analysis || {}
-  const offre = normalizedBp?.offre_produit_service || normalizedBp?.product_service || {}
+  const offre = normalizedBp?.offre_produit_service || normalizedBp?.product_service || normalizedBp?.bmc_affine || {}
   const marketing = normalizedBp?.strategie_marketing || normalizedBp?.marketing_strategy || {}
-  const modele = normalizedBp?.model_economique || normalizedBp?.modele_economique || normalizedBp?.economic_model || {}
+  const modele = normalizedBp?.model_economique || normalizedBp?.modele_economique || normalizedBp?.economic_model || normalizedBp?.bmc_affine || {}
   const operations = normalizedBp?.plan_operationnel || normalizedBp?.operational_plan || {}
   const impact = normalizedBp?.impact_social || normalizedBp?.social_impact || {}
   const financier = normalizedBp?.plan_financier || normalizedBp?.financial_plan || {}
-  const gouvernance = normalizedBp?.gouvernance || normalizedBp?.governance || {}
+  const gouvernance = normalizedBp?.gouvernance || normalizedBp?.governance || normalizedBp?.besoins_financement || {}
   const risques = normalizedBp?.risques_mitigation || normalizedBp?.risk_mitigation || normalizedBp?.risques || []
   const attentes = normalizedBp?.attentes_ovo || {}
   const annexes = normalizedBp?.annexes || {}
@@ -11136,6 +11140,10 @@ app.get('/api/business-plan/download/:id', async (c) => {
         }
       }
       bpData = rich
+      // Apply fallbacks for sections that AI may have named differently
+      if (!rich.offre_produit_service && rich.bmc_affine) rich.offre_produit_service = rich.bmc_affine
+      if (!rich.modele_economique && rich.bmc_affine) rich.modele_economique = rich.bmc_affine
+      if (!rich.gouvernance && rich.besoins_financement) rich.gouvernance = rich.besoins_financement
       console.log('[BP Download] Normalized generate-all flat sections to rich format')
     }
 
