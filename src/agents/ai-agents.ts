@@ -539,7 +539,8 @@ RÈGLES STRICTES :
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       if (attempt > 1) {
-        const delay = 10000 * attempt  // 20s, 30s backoff on retry (longer for large agents)
+        // BP writer gets longer backoff (15s, 30s) because it needs 12K tokens output
+        const delay = (agentCode === 'business_plan_writer') ? 15000 * (attempt - 1) : 10000 * attempt
         console.log(`Agent ${agentCode}: Retry ${attempt}/${maxAttempts} after ${delay}ms...`)
         await new Promise(r => setTimeout(r, delay))
       }
@@ -581,13 +582,18 @@ RÈGLES STRICTES :
       }
 
       lastError = result.error || 'unknown'
-      // Only retry on transient errors (timeout, rate limit, overload)
-      const isTransient = lastError.includes('Timeout') || lastError.includes('429') || lastError.includes('529') || lastError.includes('overloaded')
+      console.error(`Agent ${agentCode} attempt ${attempt}/${maxAttempts} error: ${lastError}`)
+      // For BP writer, ALWAYS retry — it's the most critical agent and failures are often transient
+      if (agentCode === 'business_plan_writer') {
+        if (attempt < maxAttempts) console.warn(`Agent ${agentCode}: Will retry (critical agent)`)
+        continue
+      }
+      // For others, only retry on transient errors
+      const isTransient = lastError.includes('Timeout') || lastError.includes('429') || lastError.includes('529') || lastError.includes('overloaded') || lastError.includes('API error 5')
       if (!isTransient && attempt < maxAttempts) {
         console.warn(`Agent ${agentCode}: Non-transient error "${lastError}", skipping retry`)
         break
       }
-      console.error(`Agent ${agentCode} attempt ${attempt} error: ${lastError}`)
     }
 
     // After all retries failed, if we have raw text, wrap it as fallback
