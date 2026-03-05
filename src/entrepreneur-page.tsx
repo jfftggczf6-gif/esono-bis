@@ -949,35 +949,50 @@ async function loadPipelineDocs(db: D1Database, jobId: string): Promise<any> {
   return JSON.parse(row.pipeline_docs)
 }
 
-// Chain to next step via self-fetch + waitUntil
+// Chain to next step via self-fetch — FIRE-AND-FORGET
+// The next step handler does heavy work SYNCHRONOUSLY (unlimited wall-time).
+// We don't need to wait for the response — just need to ensure the request is sent.
+// We use AbortController to disconnect after the server accepts the request.
 function chainNextStep(c: any, jobId: string, nextStep: string) {
   const url = new URL(c.req.url)
   url.pathname = '/api/ai/pipeline/step'
   url.search = `?jobId=${jobId}&step=${nextStep}&secret=${PIPELINE_SECRET}`
   const targetUrl = url.toString()
   
-  // Fire-and-forget with retry: try up to 2 times
-  const fetchWithRetry = async () => {
+  const fireAndForget = async () => {
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
-        const resp = await fetch(targetUrl, { method: 'POST' })
-        if (resp.ok) {
-          console.log(`[Pipeline] ✅ Chained to '${nextStep}' (attempt ${attempt})`)
+        console.log(`[Pipeline] Triggering '${nextStep}' (attempt ${attempt})...`)
+        // Use AbortController: abort after 5s — we just need the request to reach the server.
+        // The next step's Worker will continue running even after we disconnect.
+        const ac = new AbortController()
+        const timer = setTimeout(() => ac.abort(), 5000)
+        try {
+          const resp = await fetch(targetUrl, { method: 'POST', signal: ac.signal })
+          clearTimeout(timer)
+          console.log(`[Pipeline] ✅ Triggered '${nextStep}' — status ${resp.status}`)
           return
+        } catch (err: any) {
+          clearTimeout(timer)
+          if (err.name === 'AbortError') {
+            // Aborted after 5s — that's fine, the request was already sent
+            console.log(`[Pipeline] ✅ Triggered '${nextStep}' (fire-and-forget, aborted after 5s)`)
+            return
+          }
+          throw err
         }
-        console.error(`[Pipeline] Chain to '${nextStep}' returned ${resp.status} (attempt ${attempt})`)
       } catch (err: any) {
-        console.error(`[Pipeline] Chain to '${nextStep}' failed (attempt ${attempt}):`, err.message)
+        console.error(`[Pipeline] Trigger '${nextStep}' failed (attempt ${attempt}):`, err.message)
       }
       if (attempt < 2) await new Promise(r => setTimeout(r, 1000))
     }
+    console.error(`[Pipeline] ❌ Failed to trigger '${nextStep}' after 2 attempts`)
   }
-  
+
   try {
-    c.executionCtx.waitUntil(fetchWithRetry())
+    c.executionCtx.waitUntil(fireAndForget())
   } catch {
-    // Dev mode or Pages mode fallback — run detached
-    fetchWithRetry()
+    fireAndForget().catch(e => console.error('[Pipeline] Chain error:', e.message))
   }
 }
 
@@ -1150,42 +1165,16 @@ entrepreneurRoutes.post('/api/ai/generate-all', async (c) => {
       generatedCount: 0,
     }
     
+    // Save heavy docs separately to avoid bloating pipeline_context
+    const pipelineDocs = { documentTexts, rawUploads, markdownUploads }
     await savePipelineContext(db, jobId, pipelineContext)
-    console.log(`[Generate-All] Pipeline context saved, triggering pipeline via direct fetch`)
+    await db.prepare("UPDATE generation_jobs SET pipeline_docs = ? WHERE id = ?")
+      .bind(JSON.stringify(pipelineDocs), jobId).run()
+    console.log(`[Generate-All] Pipeline context saved for job ${jobId}`)
     
-    // CRITICAL: Trigger pipeline via direct self-fetch inside waitUntil
-    // This is more reliable than chainNextStep which sometimes fails on first call
-    const pipelineUrl = new URL(c.req.url)
-    pipelineUrl.pathname = '/api/ai/pipeline/step'
-    pipelineUrl.search = `?jobId=${jobId}&step=agent_bmc&secret=${PIPELINE_SECRET}`
-    const triggerUrl = pipelineUrl.toString()
-    
-    const triggerPipeline = async () => {
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        try {
-          console.log(`[Generate-All] Triggering agent_bmc (attempt ${attempt})...`)
-          const resp = await fetch(triggerUrl, { method: 'POST' })
-          if (resp.ok) {
-            console.log(`[Generate-All] ✅ Pipeline triggered successfully (attempt ${attempt})`)
-            return
-          }
-          console.error(`[Generate-All] Trigger returned ${resp.status} (attempt ${attempt})`)
-        } catch (err: any) {
-          console.error(`[Generate-All] Trigger failed (attempt ${attempt}):`, err.message)
-        }
-        if (attempt < 3) await new Promise(r => setTimeout(r, 2000))
-      }
-      console.error(`[Generate-All] ❌ All trigger attempts failed for job ${jobId}`)
-      try { await failJob(db, jobId, 'Failed to trigger pipeline after 3 attempts') } catch {}
-    }
-    
-    try {
-      c.executionCtx.waitUntil(triggerPipeline())
-    } catch {
-      triggerPipeline().catch(e => console.error('[Generate-All] Detached trigger error:', e.message))
-    }
-
-    // ──── Return immediately with job ID (HTTP 202 Accepted) ────
+    // V10: Return jobId immediately. Front-end triggers pipeline/start separately.
+    // waitUntil() is limited to 30s — cannot run a 5-10min pipeline.
+    // Instead, the front-end fires a fire-and-forget fetch to /api/ai/pipeline/start.
     return c.json({ success: true, jobId, status: 'processing' }, 202)
 
   } catch (error: any) {
@@ -1195,10 +1184,80 @@ entrepreneurRoutes.post('/api/ai/generate-all', async (c) => {
 })
 
 
+// ─── API: POST /api/ai/pipeline/start — Authenticated endpoint to run the full pipeline ──
+// V10: Called by the FRONT-END as fire-and-forget after getting jobId.
+// This handler runs ALL 11 steps SEQUENTIALLY in a single HTTP request.
+// With Cloudflare Workers Unbound, HTTP handlers have NO wall-clock limit.
+// The front-end does NOT wait for this response — it polls /generate-status instead.
+entrepreneurRoutes.post('/api/ai/pipeline/start', async (c) => {
+  try {
+    // Authenticate via JWT (same as other API endpoints)
+    const token = getAuthToken(c)
+    if (!token) return c.json({ error: 'Non authentifié' }, 401)
+    const payload = await verifyToken(token)
+    if (!payload) return c.json({ error: 'Token invalide' }, 401)
+
+    const jobId = c.req.query('jobId')
+    if (!jobId) return c.json({ error: 'Missing jobId' }, 400)
+
+    const db = c.env.DB
+
+    // Verify job belongs to user and is still processing
+    const job = await db.prepare('SELECT status, user_id FROM generation_jobs WHERE id = ?').bind(jobId).first() as any
+    if (!job) return c.json({ error: 'Job not found' }, 404)
+    if (job.user_id !== payload.userId) return c.json({ error: 'Unauthorized' }, 403)
+    if (job.status !== 'processing') return c.json({ error: `Job already ${job.status}` }, 409)
+
+    const STEPS = ['agent_bmc', 'agent_sic', 'agent_finance', 'agent_odd', 'store', 'bmc_html', 'sic_html', 'inputs_html', 'framework_html', 'diagnostic_html', 'postprocess']
+
+    console.log(`[Pipeline:start] Running full pipeline for job ${jobId} (user ${payload.userId})`)
+    
+    for (const step of STEPS) {
+      console.log(`[Pipeline:start] ──── Step: ${step} ────`)
+      
+      // Execute step via self-fetch (each step is a separate Worker invocation = fresh CPU budget)
+      const stepUrl = new URL(c.req.url)
+      stepUrl.pathname = '/api/ai/pipeline/step'
+      stepUrl.search = `?jobId=${jobId}&step=${step}&secret=${PIPELINE_SECRET}`
+      
+      const resp = await fetch(stepUrl.toString(), { method: 'POST' })
+      
+      if (!resp.ok) {
+        const errBody = await resp.text().catch(() => 'unknown')
+        console.error(`[Pipeline:start] Step ${step} failed (HTTP ${resp.status}): ${errBody}`)
+        // Don't double-fail — the step handler already called failJob
+        return c.json({ ok: false, failedStep: step }, 500)
+      }
+      console.log(`[Pipeline:start] ✅ Step ${step} done`)
+      
+      // Check if job was completed or failed by the step
+      const jobCheck = await db.prepare('SELECT status FROM generation_jobs WHERE id = ?').bind(jobId).first() as any
+      if (jobCheck?.status === 'completed') {
+        console.log(`[Pipeline:start] 🎉 Job completed at step ${step}`)
+        return c.json({ ok: true, completedAt: step })
+      }
+      if (jobCheck?.status === 'failed') {
+        console.log(`[Pipeline:start] ❌ Job failed at step ${step}`)
+        return c.json({ ok: false, failedStep: step }, 500)
+      }
+    }
+    
+    console.log(`[Pipeline:start] 🎉 All steps completed for job ${jobId}`)
+    return c.json({ ok: true, completedAt: 'postprocess' })
+    
+  } catch (err: any) {
+    console.error(`[Pipeline:start] Fatal error:`, err.message)
+    const jobId = c.req.query('jobId')
+    if (jobId) try { await failJob(c.env.DB, jobId, `Pipeline error: ${err.message}`) } catch {}
+    return c.json({ ok: false, error: err.message }, 500)
+  }
+})
+
+
 // ─── API: POST /api/ai/pipeline/step — Internal chained pipeline steps ─────
-// V6: HYBRID — Return HTTP 200 IMMEDIATELY + do all work in waitUntil()
-// With usage_model: "unbound" (30min wall-clock) AND waitUntil for safety.
-// Each step does 1 Claude call (I/O) + DB ops, then chains to next step.
+// V7: SYNCHRONOUS execution — Cloudflare Workers have UNLIMITED wall-time for HTTP requests.
+// waitUntil() only gets 30s after response, so we do ALL heavy work before returning.
+// chainNextStep uses waitUntil(fetch) to fire-and-forget the next step trigger (<1s).
 entrepreneurRoutes.post('/api/ai/pipeline/step', async (c) => {
   const jobId = c.req.query('jobId')
   const step = c.req.query('step')
@@ -1211,13 +1270,11 @@ entrepreneurRoutes.post('/api/ai/pipeline/step', async (c) => {
   const db = c.env.DB
   const apiKey = c.env.ANTHROPIC_API_KEY || ''
 
-  // ── Return HTTP 200 IMMEDIATELY, execute step work in waitUntil ──
-  const doStepWork = async () => {
   try {
     const ctx = await loadPipelineContext(db, jobId)
     if (!ctx) {
       await failJob(db, jobId, 'Pipeline context lost')
-      return
+      return c.json({ ok: false, error: 'context lost' }, 500)
     }
 
     const { userId, userName, userCountry, generableTypes, skippedTypes,
@@ -1283,8 +1340,7 @@ entrepreneurRoutes.post('/api/ai/pipeline/step', async (c) => {
       }
 
       await savePipelineContext(db, jobId, ctx)
-      chainNextStep(c, jobId, 'agent_sic')
-      return
+      return c.json({ ok: true, step })
     }
 
     // ════════════════════════════════════════════════════════════════
@@ -1317,8 +1373,7 @@ entrepreneurRoutes.post('/api/ai/pipeline/step', async (c) => {
       }
 
       await savePipelineContext(db, jobId, ctx)
-      chainNextStep(c, jobId, 'agent_finance')
-      return
+      return c.json({ ok: true, step })
     }
 
     // ════════════════════════════════════════════════════════════════
@@ -1351,8 +1406,7 @@ entrepreneurRoutes.post('/api/ai/pipeline/step', async (c) => {
       }
 
       await savePipelineContext(db, jobId, ctx)
-      chainNextStep(c, jobId, 'agent_odd')
-      return
+      return c.json({ ok: true, step })
     }
 
     // ════════════════════════════════════════════════════════════════
@@ -1455,8 +1509,7 @@ entrepreneurRoutes.post('/api/ai/pipeline/step', async (c) => {
       await savePipelineContext(db, jobId, ctx)
 
       console.log(`[Pipeline:agent_odd] All agents done (source=${source}), chaining to 'store'`)
-      chainNextStep(c, jobId, 'store')
-      return
+      return c.json({ ok: true, step })
     }
 
     // ════════════════════════════════════════════════════════════════
@@ -1531,8 +1584,7 @@ entrepreneurRoutes.post('/api/ai/pipeline/step', async (c) => {
       await savePipelineContext(db, jobId, ctx)
 
       console.log(`[Pipeline:store] Done (${generatedCount} deliverables), chaining to 'bmc_html'`)
-      chainNextStep(c, jobId, 'bmc_html')
-      return
+      return c.json({ ok: true, step })
     }
 
     // ════════════════════════════════════════════════════════════════
@@ -1613,8 +1665,7 @@ entrepreneurRoutes.post('/api/ai/pipeline/step', async (c) => {
       }
 
       await savePipelineContext(db, jobId, ctx)
-      chainNextStep(c, jobId, 'sic_html')
-      return
+      return c.json({ ok: true, step })
     }
 
     // ════════════════════════════════════════════════════════════════
@@ -1700,8 +1751,7 @@ entrepreneurRoutes.post('/api/ai/pipeline/step', async (c) => {
       }
 
       await savePipelineContext(db, jobId, ctx)
-      chainNextStep(c, jobId, 'inputs_html')
-      return
+      return c.json({ ok: true, step })
     }
 
     // ════════════════════════════════════════════════════════════════
@@ -1769,8 +1819,7 @@ entrepreneurRoutes.post('/api/ai/pipeline/step', async (c) => {
       }
 
       await savePipelineContext(db, jobId, ctx)
-      chainNextStep(c, jobId, 'framework_html')
-      return
+      return c.json({ ok: true, step })
     }
 
     // ════════════════════════════════════════════════════════════════
@@ -1898,8 +1947,7 @@ entrepreneurRoutes.post('/api/ai/pipeline/step', async (c) => {
       }
 
       await savePipelineContext(db, jobId, ctx)
-      chainNextStep(c, jobId, 'diagnostic_html')
-      return
+      return c.json({ ok: true, step })
     }
 
     // ════════════════════════════════════════════════════════════════
@@ -1986,8 +2034,7 @@ entrepreneurRoutes.post('/api/ai/pipeline/step', async (c) => {
       }
 
       await savePipelineContext(db, jobId, ctx)
-      chainNextStep(c, jobId, 'postprocess')
-      return
+      return c.json({ ok: true, step })
     }
 
     // ════════════════════════════════════════════════════════════════
@@ -2260,28 +2307,19 @@ Utilise UNIQUEMENT des données réelles de l'entreprise.`
 
       await completeJob(db, jobId, jobResult)
       console.log(`[Pipeline:postprocess] ✅ Job ${jobId} completed — ${generatedCount} deliverables`)
-      return
+      return c.json({ ok: true, step, completed: true })
     }
 
     // Unknown step
     console.error(`[Pipeline] Unknown step: ${step}`)
     await failJob(db, jobId, `Unknown step: ${step}`)
+    return c.json({ ok: false, error: `Unknown step: ${step}` }, 400)
 
   } catch (err: any) {
     console.error(`[Pipeline] Fatal error in step ${step}:`, err.message)
     try { await failJob(db, jobId!, err.message) } catch {}
+    return c.json({ ok: false, error: err.message }, 500)
   }
-  } // end doStepWork
-
-  // Execute in background via waitUntil — HTTP 200 returns immediately
-  try {
-    c.executionCtx.waitUntil(doStepWork())
-  } catch {
-    // Dev mode fallback — no executionCtx available
-    doStepWork().catch(e => console.error('[Pipeline] Detached error:', e.message))
-  }
-
-  return c.json({ ok: true, step })
 })
 
 // ─── API: GET /api/ai/generate-status — Poll job progress ─────────
@@ -5307,6 +5345,19 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
         const jobId = data.jobId;
         if (!jobId) { resetUI('Erreur: pas de jobId retourné'); return; }
         if (progressEl) progressEl.textContent = 'Démarrage de la génération...';
+
+        // 1b. Fire-and-forget: trigger the pipeline (long-running HTTP request)
+        // This call runs all 11 steps sequentially (5-10 min).
+        // We don't await the response — we poll /generate-status instead.
+        fetch('/api/ai/pipeline/start?jobId=' + encodeURIComponent(jobId), {
+          method: 'POST',
+          credentials: 'include'
+        }).then(r => {
+          if (r.ok) console.log('[Pipeline] Pipeline start request accepted');
+          else console.warn('[Pipeline] Pipeline start returned', r.status);
+        }).catch(err => {
+          console.warn('[Pipeline] Pipeline start fire-and-forget error:', err.message);
+        });
 
         // 2. Poll every 5s for status
         let elapsed = 0;
