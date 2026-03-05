@@ -1116,12 +1116,12 @@ entrepreneurRoutes.post('/api/ai/generate-all', async (c) => {
     ).bind(payload.userId).first() as any
     const companyName = (project?.name as string) || userName
 
-    // ── Parallel HTML generation promises ──
-    const htmlGenerationPromises: Promise<void>[] = []
+    // ── SEQUENTIAL HTML generation (avoid parallel Claude overload) ──
+    const htmlGenerationThunks: Array<{ name: string, fn: () => Promise<void> }> = []
 
     // 1) BMC HTML
     if (hasBmc && generableTypes.includes('bmc_analysis')) {
-      htmlGenerationPromises.push((async () => {
+      htmlGenerationThunks.push({ name: 'BMC HTML', fn: async () => {
         try {
           let bmcAnswers = new Map<number, string>()
           const bmcModule = await c.env.DB.prepare(
@@ -1188,12 +1188,12 @@ entrepreneurRoutes.post('/api/ai/generate-all', async (c) => {
           console.error('[Generate-All] BMC HTML error (non-fatal):', err.message)
           agentErrors.push(`bmc_html: ${err.message}`)
         }
-      })())
+      }})
     }
 
     // 2) SIC HTML
     if (hasSic && generableTypes.includes('sic_analysis')) {
-      htmlGenerationPromises.push((async () => {
+      htmlGenerationThunks.push({ name: 'SIC HTML', fn: async () => {
         try {
           // Get SIC answers from questionnaire
           let sicAnswers = new Map<number, string>()
@@ -1267,12 +1267,12 @@ entrepreneurRoutes.post('/api/ai/generate-all', async (c) => {
           console.error('[Generate-All] SIC HTML error (non-fatal):', err.message)
           agentErrors.push(`sic_html: ${err.message}`)
         }
-      })())
+      }})
     }
 
     // 3) Inputs Diagnostic HTML
     if (hasInputs) {
-      htmlGenerationPromises.push((async () => {
+      htmlGenerationThunks.push({ name: 'Inputs HTML', fn: async () => {
         try {
           // Gather inputs data from all 9 tabs
           const inputsModule = await c.env.DB.prepare(
@@ -1331,12 +1331,12 @@ entrepreneurRoutes.post('/api/ai/generate-all', async (c) => {
           console.error('[Generate-All] Inputs HTML error (non-fatal):', err.message)
           agentErrors.push(`inputs_html: ${err.message}`)
         }
-      })())
+      }})
     }
 
     // 4) Framework PME HTML
     if ((hasBmc || hasInputs) && generableTypes.includes('framework')) {
-      htmlGenerationPromises.push((async () => {
+      htmlGenerationThunks.push({ name: 'Framework HTML', fn: async () => {
         try {
           console.log('[Generate-All] Generating Framework PME HTML with AI...')
           
@@ -1508,12 +1508,12 @@ entrepreneurRoutes.post('/api/ai/generate-all', async (c) => {
           console.error('[Generate-All] Framework HTML error (non-fatal):', err.message)
           agentErrors.push(`framework_html: ${err.message}`)
         }
-      })())
+      }})
     }
 
     // 5) Diagnostic Expert HTML — croise BMC + SIC + Framework
     if (generableTypes.includes('diagnostic')) {
-      htmlGenerationPromises.push((async () => {
+      htmlGenerationThunks.push({ name: 'Diagnostic HTML', fn: async () => {
         try {
           console.log('[Generate-All] Generating Diagnostic Expert HTML...')
 
@@ -1598,12 +1598,21 @@ entrepreneurRoutes.post('/api/ai/generate-all', async (c) => {
           console.error('[Generate-All] Diagnostic Expert error (non-fatal):', err.message)
           agentErrors.push(`diagnostic_html: ${err.message}`)
         }
-      })())
+      }})
     }
 
-    // Wait for ALL HTML deliverables to complete in parallel
-    console.log(`[Generate-All] Waiting for ${htmlGenerationPromises.length} HTML deliverable generation(s)...`)
-    await Promise.allSettled(htmlGenerationPromises)
+    // Execute HTML generation thunks SEQUENTIALLY to avoid workerd overload
+    console.log(`[Generate-All] Running ${htmlGenerationThunks.length} HTML deliverable generation(s) sequentially...`)
+    for (const thunk of htmlGenerationThunks) {
+      try {
+        console.log(`[Generate-All] → Generating ${thunk.name}...`)
+        await thunk.fn()
+        console.log(`[Generate-All] ✅ ${thunk.name} done`)
+      } catch (thunkErr: any) {
+        console.error(`[Generate-All] ❌ ${thunk.name} failed (non-fatal):`, thunkErr.message)
+        agentErrors.push(`${thunk.name}: ${thunkErr.message}`)
+      }
+    }
     console.log('[Generate-All] All HTML deliverable generations completed.')
 
     // ═══ POST-PROCESSING: AUTO-FIX DELIVERABLES ═══
