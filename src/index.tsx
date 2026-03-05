@@ -9028,6 +9028,17 @@ function renderBusinessPlanModulePage(opts: {
         rich[mapping.target] = { [mapping.contentKey]: content, description: content, points_cles: kp }
       }
     }
+    // Cross-fill missing critical sections from related data
+    // social_impact often missing — try to fill from ODD analysis or SIC
+    if (!rich.impact_social && rich.plan_operationnel) {
+      console.log('[BP Module] WARNING: social_impact missing from Claude output — section will be empty')
+    }
+    // governance often missing — try to fill from management_team (operations)
+    if (!rich.gouvernance && rich.presentation_entreprise) {
+      const presBp = rich.presentation_entreprise
+      rich.gouvernance = { description: presBp.description_generale || presBp.description || '' }
+      console.log('[BP Module] Filled gouvernance from presentation_entreprise')
+    }
     normalizedBp = rich
     console.log('[BP Module] Normalized Claude named-key format to rich structure')
   }
@@ -9827,7 +9838,7 @@ function renderBusinessPlanModulePage(opts: {
           <div class="bp-section__title"><i class="fas fa-hand-holding-heart" style="color:#7c3aed;margin-right:8px"></i>Impact Social & Environnemental</div>
         </div>
         <div class="bp-section__body">
-          ${impact.description && !impact.impact_social ? renderPara(impact.description) : ''}
+          ${impact.description ? renderPara(impact.description) : ''}
           ${impact.impact_social ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-heart"></i> Impact social</div>' + renderPara(impact.impact_social) + '</div>' : ''}
           ${impact.impact_environnemental ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-leaf"></i> Impact environnemental</div>' + renderPara(impact.impact_environnemental) + '</div>' : ''}
           ${impact.impact_economique ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-chart-line"></i> Impact economique</div>' + renderPara(impact.impact_economique) + '</div>' : ''}
@@ -9835,6 +9846,7 @@ function renderBusinessPlanModulePage(opts: {
           ${Array.isArray(impact.odd_cibles) && impact.odd_cibles.length > 0 ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-globe"></i> ODD cibles</div><div class="bp-badges">' +
             impact.odd_cibles.map((o: string) => '<span class="bp-odd"><i class="fas fa-bullseye"></i> ' + esc(o) + '</span>').join('') + '</div></div>' : ''}
           ${impact.indicateurs?.length ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-chart-column"></i> Indicateurs d\'impact</div>' + renderList(impact.indicateurs) + '</div>' : ''}
+          ${!impact.description && !impact.impact_social && !impact.impact_environnemental && !impact.impact_economique && !impact.beneficiaires ? '<p class="bp-empty">Section non generee — relancez la generation pour obtenir cette analyse.</p>' : ''}
         </div>
       </div>
 
@@ -9861,13 +9873,14 @@ function renderBusinessPlanModulePage(opts: {
           <div class="bp-section__title"><i class="fas fa-landmark" style="color:#7c3aed;margin-right:8px"></i>Gouvernance & Projet</div>
         </div>
         <div class="bp-section__body">
-          ${gouvernance.description && !gouvernance.projet_description ? renderPara(gouvernance.description) : ''}
+          ${gouvernance.description ? renderPara(gouvernance.description) : ''}
           ${gouvernance.projet_description ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-rocket"></i> Description du projet</div>' + renderPara(gouvernance.projet_description) + '</div>' : ''}
           ${gouvernance.situation_actuelle && gouvernance.situation_actuelle !== 'A completer' ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-map-pin"></i> Situation actuelle</div>' + renderPara(gouvernance.situation_actuelle) + '</div>' : ''}
           ${gouvernance.duree_mise_en_oeuvre && gouvernance.duree_mise_en_oeuvre !== 'A completer' ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-calendar-days"></i> Duree de mise en oeuvre</div>' + renderPara(gouvernance.duree_mise_en_oeuvre) + '</div>' : ''}
           ${gouvernance.objectif_projet && gouvernance.objectif_projet !== 'A completer' ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-bullseye"></i> Objectif</div>' + renderPara(gouvernance.objectif_projet) + '</div>' : ''}
           ${attentes.montant_demande || attentes.contribution_entrepreneur ? '<div class="bp-sub"><div class="bp-sub__title"><i class="fas fa-handshake"></i> Attentes vis-a-vis d\'OVO</div>' +
             renderKV(attentes, { montant_demande: 'Montant demande', contribution_entrepreneur: 'Contribution entrepreneur', autres_investisseurs: 'Autres investisseurs', expertise_necessaire: 'Expertise necessaire', coaching_souhaite: 'Coaching souhaite' }) + '</div>' : ''}
+          ${!gouvernance.description && !gouvernance.projet_description && !gouvernance.situation_actuelle && !attentes.montant_demande ? '<p class="bp-empty">Section non generee — relancez la generation pour obtenir cette analyse.</p>' : ''}
         </div>
       </div>
 
@@ -11104,6 +11117,41 @@ app.get('/api/business-plan/download/:id', async (c) => {
       bpData = JSON.parse(row.business_plan_json as string)
     } catch {
       return c.json({ error: 'Erreur: données JSON du Business Plan invalides' }, 500)
+    }
+
+    // ═══ Normalize Claude named-key format to rich format for DOCX filler ═══
+    // business_plan_writer agent produces: { executive_summary: { title, content, key_points }, ... }
+    // DOCX filler expects: { resume_executif: { synthese }, presentation_entreprise: { description_generale }, ... }
+    if (bpData && !bpData.sections && !bpData.resume_executif && (bpData.executive_summary || bpData.market_analysis || bpData.products_services)) {
+      const keyMap: Record<string, { target: string, contentKey: string }> = {
+        'executive_summary': { target: 'resume_executif', contentKey: 'synthese' },
+        'market_analysis': { target: 'analyse_marche', contentKey: 'description' },
+        'products_services': { target: 'offre_produit_service', contentKey: 'description' },
+        'marketing_strategy': { target: 'strategie_marketing', contentKey: 'description' },
+        'operations': { target: 'plan_operationnel', contentKey: 'description' },
+        'management_team': { target: 'presentation_entreprise', contentKey: 'description_generale' },
+        'financial_projections': { target: 'plan_financier', contentKey: 'description' },
+        'funding_requirements': { target: 'besoins_financement', contentKey: 'description' },
+        'risks_mitigation': { target: 'risques_mitigation', contentKey: 'description' },
+        'implementation_timeline': { target: 'plan_action', contentKey: 'description' },
+        'social_impact': { target: 'impact_social', contentKey: 'description' },
+        'governance': { target: 'gouvernance', contentKey: 'description' },
+      }
+      const rich: any = { score: bpData.score || 0, metadata: bpData.metadata || { ai_generated: true, date_generation: new Date().toISOString() } }
+      for (const [srcKey, mapping] of Object.entries(keyMap)) {
+        const section = bpData[srcKey]
+        if (section) {
+          const content = section.content || (typeof section === 'string' ? section : '')
+          const kp = section.key_points || []
+          rich[mapping.target] = { [mapping.contentKey]: content, description: content, points_cles: kp }
+        }
+      }
+      // Cross-fill missing critical sections
+      if (!rich.gouvernance && rich.presentation_entreprise) {
+        rich.gouvernance = { description: rich.presentation_entreprise.description_generale || rich.presentation_entreprise.description || '' }
+      }
+      bpData = rich
+      console.log('[BP Download] Normalized Claude named-key format to rich structure')
     }
 
     // ═══ Normalize generate-all flat format to rich format for DOCX filler ═══
