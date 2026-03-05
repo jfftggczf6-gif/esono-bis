@@ -1172,9 +1172,49 @@ entrepreneurRoutes.post('/api/ai/generate-all', async (c) => {
       .bind(JSON.stringify(pipelineDocs), jobId).run()
     console.log(`[Generate-All] Pipeline context saved for job ${jobId}`)
     
-    // V10: Return jobId immediately. Front-end triggers pipeline/start separately.
-    // waitUntil() is limited to 30s — cannot run a 5-10min pipeline.
-    // Instead, the front-end fires a fire-and-forget fetch to /api/ai/pipeline/start.
+    // V11 (Paid Plan): Run full pipeline via waitUntil (15 min budget).
+    // No more fire-and-forget from frontend — everything runs server-side.
+    const STEPS = ['agent_bmc', 'agent_sic', 'agent_finance', 'agent_odd', 'store', 'bmc_html', 'sic_html', 'inputs_html', 'framework_html', 'diagnostic_html', 'postprocess']
+
+    const pipelinePromise = (async () => {
+      try {
+        const baseUrl = new URL(c.req.url)
+        for (const step of STEPS) {
+          console.log(`[Pipeline:waitUntil] ──── Step: ${step} ────`)
+          const stepUrl = new URL(baseUrl)
+          stepUrl.pathname = '/api/ai/pipeline/step'
+          stepUrl.search = `?jobId=${jobId}&step=${step}&secret=${PIPELINE_SECRET}`
+          
+          const resp = await fetch(stepUrl.toString(), { method: 'POST' })
+          if (!resp.ok) {
+            const errBody = await resp.text().catch(() => 'unknown')
+            console.error(`[Pipeline:waitUntil] Step ${step} failed (HTTP ${resp.status}): ${errBody}`)
+            return // Step handler already called failJob
+          }
+          console.log(`[Pipeline:waitUntil] ✅ Step ${step} done`)
+          
+          // Check if job was completed or failed
+          const jobCheck = await db.prepare('SELECT status FROM generation_jobs WHERE id = ?').bind(jobId).first() as any
+          if (jobCheck?.status === 'completed' || jobCheck?.status === 'failed') {
+            console.log(`[Pipeline:waitUntil] Job ${jobCheck.status} at step ${step}`)
+            return
+          }
+        }
+        console.log(`[Pipeline:waitUntil] 🎉 All steps completed for job ${jobId}`)
+      } catch (err: any) {
+        console.error(`[Pipeline:waitUntil] Fatal error:`, err.message)
+        try { await failJob(db, jobId, `Pipeline error: ${err.message}`) } catch {}
+      }
+    })()
+
+    // waitUntil: on paid plan this has 15 min budget
+    try {
+      c.executionCtx.waitUntil(pipelinePromise)
+    } catch {
+      // Dev mode fallback — pipeline runs as detached promise
+      console.log(`[Generate-All] waitUntil not available, pipeline running detached`)
+    }
+
     return c.json({ success: true, jobId, status: 'processing' }, 202)
 
   } catch (error: any) {
@@ -5346,18 +5386,8 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
         if (!jobId) { resetUI('Erreur: pas de jobId retourné'); return; }
         if (progressEl) progressEl.textContent = 'Démarrage de la génération...';
 
-        // 1b. Fire-and-forget: trigger the pipeline (long-running HTTP request)
-        // This call runs all 11 steps sequentially (5-10 min).
-        // We don't await the response — we poll /generate-status instead.
-        fetch('/api/ai/pipeline/start?jobId=' + encodeURIComponent(jobId), {
-          method: 'POST',
-          credentials: 'include'
-        }).then(r => {
-          if (r.ok) console.log('[Pipeline] Pipeline start request accepted');
-          else console.warn('[Pipeline] Pipeline start returned', r.status);
-        }).catch(err => {
-          console.warn('[Pipeline] Pipeline start fire-and-forget error:', err.message);
-        });
+        // V11: Pipeline runs server-side via waitUntil (paid plan = 15 min).
+        // No separate pipeline/start call needed — just poll status.
 
         // 2. Poll every 5s for status
         let elapsed = 0;

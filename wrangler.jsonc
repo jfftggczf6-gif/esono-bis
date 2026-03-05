@@ -6,8 +6,7 @@
   "compatibility_flags": [
     "nodejs_compat"
   ],
-  // Unbound = 30 min wall-clock au lieu de 30s (plan payant ~$5/mois)
-  "usage_model": "unbound",
+  // Plan payant: CPU étendu pour le pipeline IA
   "limits": {
     "cpu_ms": 300000
   },
