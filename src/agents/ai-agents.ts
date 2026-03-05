@@ -243,6 +243,221 @@ async function callClaude(
   }
 }
 
+// ─── Post-Claude Normalizer — ensures canonical format regardless of Claude's output ───
+
+const BMC_BLOCK_NAME_VARIANTS: Record<string, string> = {
+  proposition_valeur: 'Proposition de valeur', proposition_de_valeur: 'Proposition de valeur', value_proposition: 'Proposition de valeur',
+  segments_clients: 'Segments clients', segments_client: 'Segments clients', customer_segments: 'Segments clients',
+  canaux_distribution: 'Canaux de distribution', canaux: 'Canaux de distribution', channels: 'Canaux de distribution',
+  relation_client: 'Relations clients', relations_clients: 'Relations clients', relations_client: 'Relations clients', customer_relationships: 'Relations clients',
+  flux_revenus: 'Flux de revenus', revenus: 'Flux de revenus', revenue_streams: 'Flux de revenus',
+  ressources_cles: 'Ressources clés', key_resources: 'Ressources clés',
+  activites_cles: 'Activités clés', key_activities: 'Activités clés',
+  partenaires_cles: 'Partenaires clés', key_partners: 'Partenaires clés',
+  structure_couts: 'Structure de coûts', couts: 'Structure de coûts', cost_structure: 'Structure de coûts',
+}
+
+const SIC_PILLAR_NAME_VARIANTS: Record<string, string> = {
+  vision: 'Vision & Objectifs', vision_objectifs: 'Vision & Objectifs',
+  objectifs: "Objectifs d'impact", objectifs_impact: "Objectifs d'impact",
+  strategie: "Stratégie d'impact", strategie_impact: "Stratégie d'impact",
+  odd_alignment: 'Alignement ODD', alignement_odd: 'Alignement ODD', odd: 'Alignement ODD',
+  deploiement: 'Déploiement & Mesure', deploiement_mesure: 'Déploiement & Mesure', mesure: 'Déploiement & Mesure',
+}
+
+function dictToBlocksArray(dict: Record<string, any>, nameMap: Record<string, string>): Array<{name: string, score: number, analysis: string, recommendations: string[]}> {
+  const blocks: Array<{name: string, score: number, analysis: string, recommendations: string[]}> = []
+  for (const [key, val] of Object.entries(dict)) {
+    if (!val || typeof val !== 'object') continue
+    const name = nameMap[key] || key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+    const forces = Array.isArray(val.forces) ? val.forces : []
+    const faiblesses = Array.isArray(val.faiblesses) ? val.faiblesses : []
+    blocks.push({
+      name,
+      score: typeof val.score === 'number' ? val.score : 0,
+      analysis: val.analyse || val.analysis || [
+        ...forces.map((f: string) => `✓ ${f}`),
+        ...faiblesses.map((f: string) => `⚠ ${f}`),
+      ].filter(Boolean).join('. ') || '',
+      recommendations: Array.isArray(val.recommandations) ? val.recommandations
+        : Array.isArray(val.recommendations) ? val.recommendations : []
+    })
+  }
+  return blocks
+}
+
+function extractScore(data: any, paths: string[][]): number {
+  for (const path of paths) {
+    let val: any = data
+    for (const key of path) {
+      if (val && typeof val === 'object') val = val[key]
+      else { val = undefined; break }
+    }
+    if (typeof val === 'number' && val > 0) return val
+  }
+  return 0
+}
+
+function normalizeOddAlignment(data: any): Array<{odd: string, relevance: number}> {
+  // Try all known source keys
+  const src = data.odd_alignment || data.alignement_odd || data.odd_alignment_rich
+  if (!src) return []
+  
+  // Already correct format: array of {odd, relevance}
+  if (Array.isArray(src)) {
+    return src.filter((o: any) => o && typeof o === 'object').map((o: any) => ({
+      odd: o.odd || o.label || o.name || `ODD ${o.numero || o.number || '?'}`,
+      relevance: typeof o.relevance === 'number' ? o.relevance : (typeof o.score === 'number' ? o.score : 50)
+    }))
+  }
+  
+  // v12 format: {odd_prioritaires: [...], odd_secondaires: [...]}
+  if (Array.isArray(src.odd_prioritaires) || Array.isArray(src.odd_secondaires)) {
+    const prio = Array.isArray(src.odd_prioritaires) ? src.odd_prioritaires : []
+    const sec = Array.isArray(src.odd_secondaires) ? src.odd_secondaires : []
+    return [...prio, ...sec].filter((o: any) => o && typeof o === 'object').map((o: any) => ({
+      odd: o.odd || o.label || `ODD ${o.numero || o.number || '?'}`,
+      relevance: o.relevance || o.score || (prio.includes(o) ? 80 : 50)
+    }))
+  }
+  
+  // v13 format: dict {odd_1: {score, pertinence}, odd_2: {...}}
+  if (typeof src === 'object') {
+    const result: Array<{odd: string, relevance: number}> = []
+    for (const [key, val] of Object.entries(src)) {
+      if (!val || typeof val !== 'object') continue
+      const v = val as any
+      const numMatch = key.match(/(\d+)/)
+      const num = numMatch ? parseInt(numMatch[1]) : 0
+      const relevance = v.score || v.relevance || (v.pertinence === 'Très élevée' ? 85 : v.pertinence === 'Élevée' ? 75 : v.pertinence === 'Moyenne' ? 60 : 50)
+      result.push({ odd: `ODD ${num}`, relevance })
+    }
+    return result
+  }
+  return []
+}
+
+function normalizeImpactMatrix(data: any): Record<string, any> {
+  const matrix: Record<string, any> = data.impact_matrix || {}
+  
+  // Enrich from beneficiaires
+  const b = data.beneficiaires
+  if (b && typeof b === 'object') {
+    if (!matrix.beneficiaires_directs) matrix.beneficiaires_directs = b.directs || b.nombre_directs || b.total_estime || 0
+    if (!matrix.beneficiaires_indirects) matrix.beneficiaires_indirects = b.indirects || b.nombre_indirects || 0
+    if (!matrix.beneficiaires_directs && b.analyse) {
+      const m = b.analyse.match(/(\d[\d\s]*)\s*(?:bénéficiaires|personnes|collecteurs|ménages|agriculteurs)/i)
+      if (m) matrix.beneficiaires_directs = parseInt(m[1].replace(/\s/g, ''))
+    }
+  }
+  // Enrich from impact_climatique
+  const ic = data.impact_climatique
+  if (ic && typeof ic === 'object') {
+    if (!matrix.impact_climatique_potentiel) matrix.impact_climatique_potentiel = ic.analyse?.split('.')[0] || ic.description || '—'
+    if (!matrix.indicateurs_manquants && Array.isArray(ic.metriques_manquantes)) matrix.indicateurs_manquants = ic.metriques_manquantes
+  }
+  // Enrich from indicateurs_manquants at root
+  if (!matrix.indicateurs_manquants && Array.isArray(data.indicateurs_manquants)) {
+    matrix.indicateurs_manquants = data.indicateurs_manquants
+  }
+  // Enrich from theorie_changement
+  const tc = data.theorie_changement
+  if (tc && typeof tc === 'object') {
+    if (!matrix.theorie_changement) matrix.theorie_changement = tc.logique || tc.analyse || tc.formalisation || ''
+  }
+  return matrix
+}
+
+function normalizeAgentOutput(agentCode: AgentCode, rawData: any): any {
+  if (!rawData || typeof rawData !== 'object') return rawData
+  
+  // ═══ BMC ANALYST ═══
+  if (agentCode === 'bmc_analyst') {
+    // If already in canonical format with blocks array, just validate
+    if (Array.isArray(rawData.blocks) && rawData.blocks.length > 0) {
+      console.log(`[normalize ${agentCode}] Already canonical: ${rawData.blocks.length} blocks, score=${rawData.score}`)
+      return rawData
+    }
+    // Find the blocks dict — Claude uses many different keys
+    const blocDict = rawData.analyse_blocs || rawData.analyse_bmc || rawData.blocs
+      || rawData.bmc_blocs || rawData.analyses || rawData.analyse || null
+    if (blocDict && typeof blocDict === 'object' && !Array.isArray(blocDict)) {
+      const blocks = dictToBlocksArray(blocDict, BMC_BLOCK_NAME_VARIANTS)
+      const score = extractScore(rawData, [
+        ['score'], ['score_global'], ['diagnostic_global', 'score_global'],
+        ['note_globale'], ['evaluation', 'score']
+      ])
+      const coherence = extractScore(rawData, [
+        ['coherence_score'], ['coherence_inter_blocs', 'score'], ['coherence']
+      ])
+      const warnings: string[] = []
+      const incoh = rawData.coherence_inter_blocs?.incoherences || rawData.coherence_inter_blocs?.points_amelioration || []
+      if (Array.isArray(incoh)) warnings.push(...incoh)
+      
+      const normalized = {
+        score: score || (blocks.length > 0 ? Math.round(blocks.reduce((s, b) => s + b.score, 0) / blocks.length) : 0),
+        blocks,
+        coherence_score: coherence,
+        warnings,
+      }
+      console.log(`[normalize ${agentCode}] Converted rich format → canonical: ${blocks.length} blocks, score=${normalized.score}`)
+      return normalized
+    }
+    console.warn(`[normalize ${agentCode}] Unknown format, passing through. Keys: ${Object.keys(rawData).join(', ')}`)
+    return rawData
+  }
+  
+  // ═══ SIC ANALYST ═══
+  if (agentCode === 'sic_analyst') {
+    // If already in canonical format with pillars array, validate
+    if (Array.isArray(rawData.pillars) && rawData.pillars.length > 0) {
+      // Still normalize odd_alignment and impact_matrix in case they're in variant format
+      const oddAlignment = Array.isArray(rawData.odd_alignment) && rawData.odd_alignment.length > 0
+        ? rawData.odd_alignment : normalizeOddAlignment(rawData)
+      const impactMatrix = normalizeImpactMatrix(rawData)
+      console.log(`[normalize ${agentCode}] Already canonical: ${rawData.pillars.length} pillars, score=${rawData.score}`)
+      return { ...rawData, odd_alignment: oddAlignment, impact_matrix: impactMatrix }
+    }
+    // Find pillars source — Claude uses many structures
+    const evalSic = rawData.evaluation_sic || {}
+    const pilierSource = evalSic.piliers                        // v12: evaluation_sic.piliers = {vision: {...}}
+      || (evalSic.vision ? evalSic : null)                      // v13: evaluation_sic = {vision: {...}} directly
+      || rawData.piliers                                         // root-level piliers dict
+      || null
+    
+    if (pilierSource && typeof pilierSource === 'object') {
+      const pillars = dictToBlocksArray(pilierSource, SIC_PILLAR_NAME_VARIANTS)
+      const score = extractScore(rawData, [
+        ['score'], ['score_global_impact'], ['score_global'],
+        ['evaluation_sic', 'score_global'], ['note_globale']
+      ])
+      const oddAlignment = normalizeOddAlignment(rawData)
+      const impactMatrix = normalizeImpactMatrix(rawData)
+      
+      // Add global recommendations to first pillar
+      const recoSrc = rawData.recommandations_prioritaires || rawData.recommandations || []
+      const recos = Array.isArray(recoSrc) ? recoSrc.map((r: any) => typeof r === 'string' ? r : r.action || r.detail || '') : []
+      if (recos.length > 0 && pillars.length > 0) {
+        pillars[0].recommendations = [...pillars[0].recommendations, ...recos]
+      }
+      
+      const normalized = {
+        score: score || (pillars.length > 0 ? Math.round(pillars.reduce((s, p) => s + p.score, 0) / pillars.length) : 0),
+        pillars,
+        odd_alignment: oddAlignment,
+        impact_matrix: impactMatrix,
+      }
+      console.log(`[normalize ${agentCode}] Converted rich format → canonical: ${pillars.length} pillars, ${oddAlignment.length} ODDs, score=${normalized.score}`)
+      return normalized
+    }
+    console.warn(`[normalize ${agentCode}] Unknown format, passing through. Keys: ${Object.keys(rawData).join(', ')}`)
+    return rawData
+  }
+  
+  // ═══ Other agents — pass through (score at root is standard) ═══
+  return rawData
+}
+
 // ─── Individual Agent Runners ───────────────────────────────────
 
 export async function runAgent(
@@ -337,9 +552,10 @@ RÈGLES STRICTES :
 
       if (result.success && result.data) {
         if (attempt > 1) console.log(`Agent ${agentCode}: Success on attempt ${attempt}!`)
+        const normalizedData = normalizeAgentOutput(agentCode, result.data)
         return {
           success: true,
-          data: result.data,
+          data: normalizedData,
           source: 'claude',
           agentCode,
           tokensUsed: result.tokensUsed,
@@ -357,7 +573,8 @@ RÈGLES STRICTES :
             .replace(/\}[^}]*$/, '}')        // Keep up to last }
           const salvaged = JSON.parse(aggressive)
           console.log(`Agent ${agentCode}: Salvaged JSON from text on attempt ${attempt}!`)
-          return { success: true, data: salvaged, source: 'claude', agentCode, tokensUsed: result.tokensUsed }
+          const normalizedSalvaged = normalizeAgentOutput(agentCode, salvaged)
+          return { success: true, data: normalizedSalvaged, source: 'claude', agentCode, tokensUsed: result.tokensUsed }
         } catch {
           console.error(`Agent ${agentCode}: Could not salvage JSON. First 500 chars:`, result.text.slice(0, 500))
         }
