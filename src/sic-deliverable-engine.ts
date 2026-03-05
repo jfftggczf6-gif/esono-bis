@@ -2180,7 +2180,41 @@ export function regenerateSicHtmlFromDbAnalysis(
     oddAlignment = analysis.odd_alignment || []
   }
 
-  const impactMatrix = analysis.impact_matrix || analysis.impact_climatique || {}
+  const impactMatrix: Record<string, any> = analysis.impact_matrix || {}
+
+  // ═══ Enrich impactMatrix with Claude rich format data ═══
+  if (analysis.beneficiaires && typeof analysis.beneficiaires === 'object') {
+    const b = analysis.beneficiaires
+    if (!impactMatrix.beneficiaires_directs && (b.directs || b.nombre_directs)) {
+      impactMatrix.beneficiaires_directs = b.directs || b.nombre_directs || b.score || 0
+    }
+    if (!impactMatrix.beneficiaires_indirects && (b.indirects || b.nombre_indirects)) {
+      impactMatrix.beneficiaires_indirects = b.indirects || b.nombre_indirects || 0
+    }
+    // Try to extract numbers from analyse text
+    if (!impactMatrix.beneficiaires_directs && b.analyse) {
+      const numMatch = b.analyse.match(/(\d[\d\s]*)\s*(?:bénéficiaires|personnes|collecteurs|ménages)/i)
+      if (numMatch) impactMatrix.beneficiaires_directs = numMatch[1].replace(/\s/g, '')
+    }
+  }
+  if (analysis.impact_climatique && typeof analysis.impact_climatique === 'object') {
+    const ic = analysis.impact_climatique
+    if (!impactMatrix.impact_climatique_potentiel && (ic.analyse || ic.metriques_manquantes)) {
+      impactMatrix.impact_climatique_potentiel = ic.analyse?.split('.')[0] || '—'
+    }
+    if (!impactMatrix.indicateurs_manquants && Array.isArray(ic.metriques_manquantes)) {
+      impactMatrix.indicateurs_manquants = ic.metriques_manquantes
+    }
+  }
+  if (analysis.theorie_changement && typeof analysis.theorie_changement === 'object') {
+    const tc = analysis.theorie_changement
+    if (!impactMatrix.regions_couvertes && tc.chaine_impact) {
+      // Try to extract regions from analysis
+      const regionMatch = (typeof tc.chaine_impact === 'string' ? tc.chaine_impact : JSON.stringify(tc.chaine_impact))
+        .match(/(\d+)\s*(?:villes?|régions?|communes?|localités?)/i)
+      if (regionMatch) impactMatrix.regions_couvertes = parseInt(regionMatch[1])
+    }
+  }
   
   const scoreColor = scoreGlobal >= 71 ? COLORS.primaryLight : scoreGlobal >= 51 ? COLORS.accent : scoreGlobal >= 31 ? COLORS.orange : COLORS.red
   const dateStr = new Date().toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' })
