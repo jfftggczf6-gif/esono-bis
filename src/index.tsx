@@ -11160,9 +11160,21 @@ app.get('/api/business-plan/download/:id', async (c) => {
         const hLc = header.toLowerCase()
         const idx = lc.indexOf(hLc)
         if (idx < 0) return ''
-        const after = text.substring(idx + header.length)
-        const nextH = after.search(/\n\*\*[^*]+\*\*\s*:|\n#{1,3}\s/)
-        const section = nextH > 0 ? after.substring(0, nextH) : after.substring(0, maxLen)
+        // Move past the complete **header** marker and any trailing colon/spaces
+        let startIdx = idx + header.length
+        const afterHeader = text.substring(startIdx)
+        // Skip past remaining bold markers, optional score in parens, colon, newlines
+        const skipMatch = afterHeader.match(/^[^]*?\*\*\s*(?:\([^)]*\))?\s*:?\s*/)
+        if (skipMatch) {
+          startIdx += skipMatch[0].length
+        } else {
+          // At minimum skip past **: if present
+          const simpleSkip = afterHeader.match(/^[^:\n]*:\s*/)
+          if (simpleSkip) startIdx += simpleSkip[0].length
+        }
+        const remaining = text.substring(startIdx)
+        const nextH = remaining.search(/\n\*\*[^*]+\*\*\s*(?:\([^)]*\))?\s*:|\n#{1,3}\s/)
+        const section = nextH > 0 ? remaining.substring(0, nextH) : remaining.substring(0, maxLen)
         return section.replace(/^[\s:]+/, '').trim()
       }
       // Helper: extract list items after a header
@@ -11274,11 +11286,33 @@ app.get('/api/business-plan/download/:id', async (c) => {
       // Vision, mission, valeurs
       const vision = presFields['vision'] || extractMdSection(presText, 'Vision') || ''
       const mission = presFields['mission'] || extractMdSection(presText, 'Mission') || ''
+      const positionnement = presFields['positionnement'] || extractMdSection(presText, 'Positionnement') || ''
       const valeurs = extractListItems(presText, 'Valeurs')
+      // Also try extracting valeurs from bold items that look like values (Innovation, Qualité, Impact...)
+      if (!valeurs.length) {
+        const valeurPatterns = presText.match(/\*\*([^*]{3,30})\*\*\s*:?\s*([^*\n]{5,})/g) || []
+        for (const vp of valeurPatterns) {
+          const vm = vp.match(/\*\*([^*]+)\*\*\s*:?\s*(.+)/)
+          if (vm) {
+            const label = vm[1].trim().toLowerCase()
+            // Skip non-value fields
+            if (label.match(/^(identit|mission|vision|position|certif|gouvern|équipe|siège)/i)) continue
+            if (label.length < 25 && vm[2].length < 150) {
+              valeurs.push(vm[1].trim() + ' : ' + vm[2].trim())
+            }
+          }
+        }
+      }
+      console.log(`[BP Download] Vision/Mission: vision="${(vision || '').substring(0,50)}", mission="${(mission || '').substring(0,50)}", positionnement="${(positionnement || '').substring(0,50)}", valeurs=${valeurs.length}`)
       rich.presentation_entreprise.vision_mission_valeurs = {
-        vision: vision || `Devenir un leader de la transformation des déchets en matériaux de construction durables`,
-        mission: mission || extractField(presText, /\*\*Mission\*\*\s*:?\s*([^*\n.]+(?:\.[^*\n]+)?)/i) || presText.split('\\n\\n')[0]?.substring(0, 300) || '',
-        valeurs: valeurs.length ? valeurs.map(v => ({ valeur: v })) : [
+        // If no explicit Vision, use Positionnement as a fallback (common in African BPs)
+        vision: vision || positionnement || `Devenir un acteur de référence dans notre secteur d'activité`,
+        mission: mission || extractField(presText, /\*\*Mission\*\*\s*:?\s*([^*\n.]+(?:\.[^*\n]+)?)/i) || presText.split('\n\n')[0]?.substring(0, 300) || '',
+        valeurs: valeurs.length ? valeurs.map(v => {
+          // Parse "Label : exemple" format
+          const parts = v.split(/\s*:\s*/, 2)
+          return parts.length === 2 ? { valeur: parts[0], exemple: parts[1] } : { valeur: v }
+        }) : [
           { valeur: 'Innovation', exemple: 'Solutions circulaires et industrielles' },
           { valeur: 'Impact social', exemple: 'Création d\'emplois et protection environnementale' },
           { valeur: 'Qualité', exemple: 'Certification et contrôle systématique' },
@@ -11379,39 +11413,242 @@ app.get('/api/business-plan/download/:id', async (c) => {
         }
       }
 
+      // ─── 4b. Analyse de marché structured data ─────────────────
+      if (marcheText && rich.analyse_marche) {
+        const marcheFieldsMap = extractBoldFields(marcheText)
+        rich.analyse_marche.taille_marche = marcheFieldsMap['taille du marche'] || marcheFieldsMap['marche'] ||
+          extractMdSection(marcheText, 'Taille du marché') || extractMdSection(marcheText, 'Marché') || ''
+        rich.analyse_marche.potentiel_croissance = marcheFieldsMap['potentiel'] || marcheFieldsMap['croissance'] ||
+          extractMdSection(marcheText, 'Potentiel') || extractMdSection(marcheText, 'Croissance') || ''
+        
+        // Extract competitor info
+        const concurrentItems = extractListItems(marcheText, 'Concurren')
+        if (concurrentItems.length) {
+          rich.analyse_marche.concurrents = concurrentItems.map(c => ({ nom: c }))
+        }
+        
+        // Extract market trends
+        const tendances = extractListItems(marcheText, 'Tendances') || extractListItems(marcheText, 'Tendances favorables')
+        if (tendances.length) rich.analyse_marche.tendances = tendances
+        
+        // Extract differentiation
+        rich.analyse_marche.differenciation = marcheFieldsMap['avantage concurrentiel'] || marcheFieldsMap['differenciation'] ||
+          extractMdSection(marcheText, 'Avantage concurrentiel') || extractMdSection(marcheText, 'Différenciation') || ''
+      }
+
       // ─── 5. Modèle économique structured data ─────────────────
       if (bmcText && rich.modele_economique) {
         const bFields = extractBoldFields(bmcText)
-        rich.modele_economique.segments_clients = bFields['segments clients'] || bFields['segments'] || ''
-        rich.modele_economique.canaux_distribution = bFields['canaux de distribution'] || bFields['canaux'] || ''
-        rich.modele_economique.relations_clients = bFields['relations clients'] || ''
-        rich.modele_economique.sources_revenus = bFields['flux de revenus'] || bFields['revenus'] || ''
-        rich.modele_economique.structure_couts = bFields['structure de couts'] || bFields['structure des couts'] || ''
-        rich.modele_economique.activites_cles = bFields['activites cles'] || ''
-        rich.modele_economique.ressources_cles = bFields['ressources cles'] || ''
-        rich.modele_economique.partenaires_cles = bFields['partenaires cles'] || ''
+        rich.modele_economique.segments_clients = bFields['segments clients'] || bFields['segments'] || 
+          extractMdSection(bmcText, 'Segments Clients') || ''
+        rich.modele_economique.canaux_distribution = bFields['canaux de distribution'] || bFields['canaux'] || 
+          extractMdSection(bmcText, 'Canaux de Distribution') || ''
+        rich.modele_economique.relations_clients = bFields['relations clients'] || 
+          extractMdSection(bmcText, 'Relations Clients') || ''
+        rich.modele_economique.sources_revenus = bFields['flux de revenus'] || bFields['revenus'] || 
+          extractMdSection(bmcText, 'Flux de Revenus') || ''
+        rich.modele_economique.structure_couts = bFields['structure de couts'] || bFields['structure des couts'] || 
+          extractMdSection(bmcText, 'Structure de Coûts') || extractMdSection(bmcText, 'Structure des Coûts') || ''
+        rich.modele_economique.activites_cles = bFields['activites cles'] || 
+          extractMdSection(bmcText, 'Activités Clés') || ''
+        rich.modele_economique.ressources_cles = bFields['ressources cles'] || 
+          extractMdSection(bmcText, 'Ressources Clés') || ''
+        rich.modele_economique.partenaires_cles = bFields['partenaires cles'] || 
+          extractMdSection(bmcText, 'Partenaires Clés') || ''
+      }
+      
+      // Also populate offre_produit_service from BMC if available
+      if (bmcText && !rich.offre_produit_service?.proposition_valeur) {
+        const bFields = extractBoldFields(bmcText)
+        rich.offre_produit_service = rich.offre_produit_service || {}
+        rich.offre_produit_service.description = bFields['proposition de valeur'] || extractMdSection(bmcText, 'Proposition de Valeur') || ''
+        rich.offre_produit_service.proposition_valeur = bFields['proposition de valeur'] || ''
+        rich.offre_produit_service.probleme_resolu = extractMdSection(bmcText, 'Problématique') || extractMdSection(marcheText, 'Problématique') || ''
+        rich.offre_produit_service.avantage_concurrentiel = bFields['avantage concurrentiel'] || extractMdSection(marcheText, 'Avantage concurrentiel') || ''
       }
 
       // ─── 6. Marketing structured data (5P) ─────────────────
       if (marketingText && rich.strategie_marketing) {
         const mkFields = extractBoldFields(marketingText)
-        rich.strategie_marketing.produit = mkFields['produit'] || mkFields['strategie go-to-market'] || ''
-        rich.strategie_marketing.point_de_vente = mkFields['canaux de distribution'] || mkFields['canaux'] || ''
-        rich.strategie_marketing.prix = mkFields['strategie prix'] || mkFields['prix'] || ''
-        rich.strategie_marketing.promotion = mkFields['outils commerciaux'] || mkFields['promotion'] || ''
-        rich.strategie_marketing.personnel = mkFields['force de vente'] || mkFields['personnel'] || ''
+        const allMkKeys = Object.keys(mkFields).join(', ')
+        console.log(`[BP Download] Marketing fields found: ${allMkKeys}`)
+        
+        // ── A. Produit: go-to-market strategy / product description ──
+        const produitSection = extractMdSection(marketingText, 'Stratégie Go-to-Market', 400) || 
+                               extractMdSection(marketingText, 'Produit', 400) || 
+                               extractMdSection(marketingText, 'Offre', 400) || ''
+        rich.strategie_marketing.produit = produitSection.replace(/\*\*/g, '').trim() || 
+          mkFields['strategie go-to-market'] || mkFields['produit'] || mkFields['offre'] || ''
+        
+        // ── B. Point de vente: distribution channels (with sub-items) ──
+        const canauxSection = extractMdSection(marketingText, 'Canaux de Distribution', 600) || 
+                              extractMdSection(marketingText, 'Canaux', 600) || 
+                              extractMdSection(marketingText, 'Distribution', 600) || ''
+        if (canauxSection) {
+          // Extract list items for structured output
+          const canauxItems = canauxSection.split('\n').filter(l => l.trim().match(/^[-*•]/))
+            .map(l => l.replace(/^[-*•]\s*/, '').replace(/\*\*/g, '').trim()).filter(l => l.length > 5)
+          rich.strategie_marketing.point_de_vente = canauxItems.length ? canauxItems.join('\n') : 
+            canauxSection.replace(/\*\*/g, '').trim()
+        } else {
+          rich.strategie_marketing.point_de_vente = mkFields['canaux de distribution'] || mkFields['canaux'] || 
+            mkFields['distribution'] || ''
+        }
+        
+        // Also add deployment plan if available
+        const deploySection = extractMdSection(marketingText, 'Plan de Déploiement', 600) || 
+                              extractMdSection(marketingText, 'Déploiement Géographique', 600) || ''
+        if (deploySection) {
+          const deployItems = deploySection.split('\n').filter(l => l.trim().match(/^[-*•]|Phase/i))
+            .map(l => l.replace(/^[-*•]\s*/, '').replace(/\*\*/g, '').trim()).filter(l => l.length > 5)
+          if (deployItems.length) {
+            rich.strategie_marketing.point_de_vente = (rich.strategie_marketing.point_de_vente || '') + 
+              '\nDéploiement géographique :\n' + deployItems.join('\n')
+          }
+        }
+
+        // ── C. Prix: pricing strategy with structured data ──
+        const prixSection = extractMdSection(marketingText, 'Stratégie Prix', 600) || 
+                            extractMdSection(marketingText, 'Prix', 600) || 
+                            extractMdSection(marketingText, 'Tarif', 600) || ''
+        if (prixSection) {
+          const cleanPrix = prixSection.replace(/\*\*/g, '').trim()
+          // Try to extract structured pricing
+          const prixVente = extractField(cleanPrix, /(?:prix|tarif)\s*(?:de\s*)?(?:vente|unitaire)[^:]*:\s*([^\n]+)/i, 
+                            /(\d[\d\s,.]*\s*(?:XOF|FCFA|EUR|USD)[^.\n]*)/i) || 
+                            extractField(cleanPrix, /((?:pavés?|briques?|kits?)\s*[\d\s,.]*\s*(?:XOF|FCFA)[^.\n]*)/i)
+          const prixRevient = extractField(cleanPrix, /(?:prix|coût)\s*(?:de\s*)?(?:revient|production)[^:]*:\s*([^\n]+)/i)
+          const margeText = extractField(cleanPrix, /(?:marge)[^:]*:\s*([^\n]+)/i)
+          const strategie = extractField(cleanPrix, /(?:stratégie|strategie|approche|positionnement)[^:]*:\s*([^\n]+)/i)
+          
+          rich.strategie_marketing.prix = {
+            prix_vente: prixVente || 'Voir grille tarifaire',
+            prix_revient: prixRevient || '',
+            marge: margeText || '',
+            strategie: strategie || cleanPrix.substring(0, 250),
+          }
+        } else {
+          rich.strategie_marketing.prix = mkFields['strategie prix'] || mkFields['prix'] || mkFields['tarification'] || ''
+        }
+        
+        // ── D. Promotion: marketing tools and communication ──
+        const promoSection = extractMdSection(marketingText, 'Outils Commerciaux', 400) || 
+                             extractMdSection(marketingText, 'Promotion', 400) || 
+                             extractMdSection(marketingText, 'Communication', 400) || ''
+        // Also look for commercial objectives
+        const objectifsSection = extractMdSection(marketingText, 'Objectifs', 400) || extractMdSection(marketingText, 'Cibles', 400) || ''
+        let promotionParts: string[] = []
+        if (promoSection) promotionParts.push(promoSection.replace(/\*\*/g, '').trim())
+        if (objectifsSection) promotionParts.push('Objectifs commerciaux : ' + objectifsSection.replace(/\*\*/g, '').trim())
+        rich.strategie_marketing.promotion = promotionParts.join('\n') || 
+          mkFields['outils commerciaux'] || mkFields['promotion'] || mkFields['communication'] || ''
+        
+        // ── E. Personnel: sales team ──
+        rich.strategie_marketing.personnel = mkFields['force de vente'] || mkFields['personnel'] || mkFields['equipe commerciale'] ||
+          extractMdSection(marketingText, 'Force de Vente', 400)?.replace(/\*\*/g, '').trim() || 
+          extractMdSection(marketingText, 'Personnel', 400)?.replace(/\*\*/g, '').trim() || ''
+
+        console.log(`[BP Download] Marketing 5P: produit=${(rich.strategie_marketing.produit || '').length}, pdv=${(rich.strategie_marketing.point_de_vente || '').length}, prix=${typeof rich.strategie_marketing.prix === 'object' ? JSON.stringify(rich.strategie_marketing.prix).length : (rich.strategie_marketing.prix || '').length}, promo=${(rich.strategie_marketing.promotion || '').length}, personnel=${(rich.strategie_marketing.personnel || '').length}`)
       }
 
-      // ─── 7. Operational plan structured data ─────────────────
-      if (opsText && rich.plan_operationnel) {
+      // ─── 7. Operational plan structured data (Équipe et organisation) ─────────────────
+      if ((opsText || presText) && rich.plan_operationnel) {
         const opsFields = extractBoldFields(opsText)
-        // Extract team from operational text
-        const equipeMentions = opsText.match(/\*\*(?:equipe|Équipe|direction|personnel|RH)[^*]*\*\*\s*:?\s*([^*\n]+)/gi) || []
-        if (equipeMentions.length || opsFields['ressources humaines']) {
-          rich.plan_operationnel.personnel = opsFields['ressources humaines'] || opsFields['personnel'] || 
-            equipeMentions.map(e => e.replace(/\*\*/g, '').replace(/^[^:]*:\s*/, '')).join('. ')
+        const allOpsKeys = Object.keys(opsFields).join(', ')
+        console.log(`[BP Download] Operations fields found: ${allOpsKeys}`)
+        
+        // ── A. Équipe de direction ──
+        // Combine ops + presentation to find leadership mentions
+        const directionItems: any[] = []
+        const allTeamSources = [presText, opsText]
+        for (const searchText of allTeamSources) {
+          // Pattern 1: **Role** : Name, details — role label must be short (< 60 chars)
+          const dirMatches = searchText.matchAll(/\*\*([^*]{3,60})\*\*\s*:?\s*([^\n]*(?:\n(?!\*\*|\n)[^\n]*){0,3})/gi)
+          for (const m of dirMatches) {
+            if (directionItems.length >= 5) break
+            const roleLabel = m[1].trim()
+            const detail = m[2].trim()
+            // Only process if role label contains a leadership keyword
+            if (!roleLabel.match(/(?:Directeur|Directrice|DG|CEO|CTO|CMO|PDG|Fondateur|Fondatrice|Co-fondatri?ce|Dirigeant|dirigeante|Gérant|Équipe dirigeante)/i)) continue
+            // Skip if detail is too short
+            if (detail.length < 15) continue
+            // Try to split "Adjoua LAWANI, Directrice Générale & Co-fondatrice (pilote...)"
+            const nameMatch = detail.match(/^([A-ZÀ-Ÿ][a-zà-ÿ]+(?:\s+[A-ZÀ-Ÿ]+){0,3})\s*[,—–-]\s*(.+)/i)
+            if (nameMatch) {
+              directionItems.push({
+                nom: nameMatch[1].trim(),
+                role: roleLabel + (nameMatch[2].split(/[,.;(]/)[0] ? ' — ' + nameMatch[2].split(/[,.;(]/)[0].trim() : ''),
+                competences: nameMatch[2].split(/[,.;]/).slice(1).join(', ').replace(/\([^)]*\)/g, '').trim()
+              })
+            } else if (detail.length > 10) {
+              directionItems.push({ role: roleLabel, nom: '', competences: detail.substring(0, 250) })
+            }
+          }
         }
-        rich.plan_operationnel.organigramme_description = opsFields['localisation'] || opsFields['organisation'] || ''
+        if (directionItems.length) {
+          rich.plan_operationnel.equipe_direction = directionItems
+        }
+        console.log(`[BP Download] Team direction items: ${directionItems.length}`)
+
+        // ── B. Personnel (effectifs, qualifications, politique RH) ──
+        // Build a comprehensive personnel description from Ressources Humaines section
+        const teamSection = extractMdSection(opsText, 'Ressources Humaines', 1200) || 
+                            extractMdSection(opsText, 'Personnel', 1200) || 
+                            extractMdSection(opsText, 'Effectifs', 1200)
+        
+        let personnelParts: string[] = []
+        if (teamSection) {
+          // Extract structured sub-items: An 1, An 3, Formation, etc.
+          const yearItems = teamSection.match(/\*\*An\s*\d+\*\*\s*:?\s*[^\n]*/gi) || []
+          const formationItem = extractMdSection(teamSection, 'Formation') || extractMdSection(teamSection, 'Certification')
+          
+          if (yearItems.length) {
+            personnelParts.push('Effectif : ' + yearItems.map(y => y.replace(/\*\*/g, '').trim()).join(', '))
+          }
+          if (formationItem) {
+            personnelParts.push('Qualifications : ' + formationItem.replace(/\*\*/g, '').trim())
+          }
+          // If no structured items found, use the whole section
+          if (!personnelParts.length) personnelParts.push(teamSection.replace(/\*\*/g, '').trim())
+        }
+        // Also look for qualité/certifications section — but only quality-related content
+        const qualiteSection = extractMdSection(opsText, 'Qualité', 300) || extractMdSection(opsText, 'Certifications', 300)
+        if (qualiteSection && !qualiteSection.match(/^Capacité|^Objectif\s*\d/i)) {
+          // Only add if it's actually about quality, not production capacity
+          const qualiteClean = qualiteSection.split('\n').filter(l => 
+            !l.match(/capacité de production|objectif\s+\d+\s*000/i)
+          ).join('\n').trim()
+          if (qualiteClean.length > 20) {
+            personnelParts.push('Politique qualité : ' + qualiteClean.replace(/\*\*/g, '').trim())
+          }
+        }
+        if (personnelParts.length) {
+          rich.plan_operationnel.personnel = personnelParts.join('\n')
+        } else {
+          // Fallback from bold fields
+          rich.plan_operationnel.personnel = opsFields['ressources humaines'] || opsFields['personnel'] || ''
+        }
+
+        // ── C. Organigramme / Localisation ──
+        const locSection = extractMdSection(opsText, 'Localisation') || extractMdSection(opsText, 'Organisation') || ''
+        const supplySection = extractMdSection(opsText, 'Supply Chain', 600) || extractMdSection(opsText, 'Approvisionnement', 600)
+        const orgParts: string[] = []
+        // Add production site info
+        if (opsText.match(/site\s*(?:industriel|principal|production)/i)) {
+          const siteInfo = extractField(opsText, /(site\s*(?:industriel|principal|de production)[^.\n]*)/i)
+          if (siteInfo) orgParts.push(siteInfo.replace(/\*\*/g, ''))
+        }
+        if (locSection) orgParts.push(locSection.replace(/\*\*/g, ''))
+        if (supplySection) orgParts.push(supplySection.replace(/\*\*/g, ''))
+        rich.plan_operationnel.organigramme_description = orgParts.join('\n') || opsFields['localisation'] || ''
+
+        // ── D. Conseil d'administration / Gouvernance ──
+        const gouvernanceSection = extractMdSection(presText, 'Gouvernance', 400) || extractMdSection(opsText, 'Gouvernance', 400)
+        if (gouvernanceSection) {
+          rich.plan_operationnel.conseil_administration = gouvernanceSection.replace(/\*\*/g, '').trim()
+        }
+
+        console.log(`[BP Download] Team: direction=${directionItems.length}, personnel=${(rich.plan_operationnel.personnel || '').length}chars, organigramme=${(rich.plan_operationnel.organigramme_description || '').length}chars`)
       }
 
       // ─── 8. Financial plan structured data ─────────────────
@@ -11476,39 +11713,185 @@ app.get('/api/business-plan/download/:id', async (c) => {
       // ─── 9. Impact social structured data ─────────────────
       if (impactText && rich.impact_social) {
         const impFields = extractBoldFields(impactText)
-        rich.impact_social.impact_social = impFields['impact social'] || impFields['beneficiaires directs'] || ''
-        rich.impact_social.impact_environnemental = impFields['impact climatique'] || impFields['impact environnemental'] || ''
-        rich.impact_social.impact_economique = impFields['impact economique'] || ''
-        rich.impact_social.beneficiaires = impFields['beneficiaires quantifies'] || impFields['beneficiaires'] || ''
-        // Extract ODD
-        const oddMatches = impactText.match(/ODD\s*\d+[^.\n]*/g) || []
-        if (oddMatches.length) rich.impact_social.odd_cibles = oddMatches.map(o => o.trim()).slice(0, 8)
+        const allImpKeys = Object.keys(impFields).join(', ')
+        console.log(`[BP Download] Impact fields found: ${allImpKeys}`)
+        
+        // Théorie du changement
+        const theorieChangement = extractMdSection(impactText, 'Théorie du Changement', 400) || 
+                                  extractMdSection(impactText, 'Theorie', 400) || ''
+        
+        // Impact social: from ODD focused on employment/community
+        // NOTE: Don't use bénéficiaires here — it will be in its own section
+        rich.impact_social.impact_social = 
+          extractMdSection(impactText, 'Théorie du Changement', 300)?.replace(/\*\*/g, '') ||
+          impFields['impact social'] || impFields['score impact global'] ||
+          extractMdSection(impactText, 'Impact social')?.replace(/\*\*/g, '') || 
+          extractMdSection(impactText, 'Impact communautaire')?.replace(/\*\*/g, '') || ''
+        
+        // Impact environnemental: from ODD 12, 13 or climate section
+        const climatSection = extractMdSection(impactText, 'Impact Climatique', 600) || 
+                              extractMdSection(impactText, 'Impact environnemental', 600) || 
+                              extractMdSection(impactText, 'Environnement', 600) || ''
+        rich.impact_social.impact_environnemental = climatSection.replace(/\*\*/g, '') ||
+          impFields['impact climatique'] || impFields['impact environnemental'] || ''
+        
+        // Impact économique: employment creation, revenue generation
+        rich.impact_social.impact_economique = impFields['impact economique'] || impFields['creation d\'emplois'] || 
+          extractMdSection(impactText, 'Impact économique')?.replace(/\*\*/g, '') || 
+          extractMdSection(impactText, 'Emploi')?.replace(/\*\*/g, '') || ''
+        
+        // Bénéficiaires quantifiés
+        const benefSection = extractMdSection(impactText, 'Bénéficiaires Quantif', 500) || 
+                             extractMdSection(impactText, 'Bénéficiaires', 500) || ''
+        if (benefSection) {
+          const benefItems = benefSection.split('\n').filter(l => l.trim().match(/^[-*•]/))
+            .map(l => l.replace(/^[-*•]\s*/, '').replace(/\*\*/g, '').trim()).filter(l => l.length > 5)
+          rich.impact_social.beneficiaires = benefItems.length ? benefItems.join('\n') : benefSection.replace(/\*\*/g, '').trim()
+        } else {
+          rich.impact_social.beneficiaires = impFields['beneficiaires quantifies'] || impFields['beneficiaires'] || ''
+        }
+        
+        // Add théorie du changement if available
+        if (theorieChangement) {
+          rich.impact_social.theorie_changement = theorieChangement.replace(/\*\*/g, '').trim()
+        }
+        
+        // Extract ODD targets
+        const oddMatches = impactText.match(/\*\*ODD\s*\d+\*\*\s*(?:\([^)]*\))?\s*:?\s*[^.\n]*/g) || impactText.match(/ODD\s*\d+[^.\n]*/g) || []
+        if (oddMatches.length) rich.impact_social.odd_cibles = oddMatches.map(o => o.replace(/\*\*/g, '').trim()).slice(0, 8)
+        
+        // Extract impact indicators/KPIs
+        const indicateurs = extractListItems(impactText, 'Indicateurs') || extractListItems(impactText, 'Suivi') || 
+                           extractListItems(impactText, 'Monitoring') || extractListItems(impactText, 'Mesure')
+        if (indicateurs.length) rich.impact_social.indicateurs = indicateurs
+        
+        // If structured fields are still empty, try to parse by paragraphs
+        if (!rich.impact_social.impact_social && !rich.impact_social.impact_environnemental && !rich.impact_social.impact_economique) {
+          const paragraphs = impactText.split(/\n\n/).filter((p: string) => p.trim().length > 20)
+          if (paragraphs.length >= 3) {
+            rich.impact_social.impact_social = paragraphs[0].replace(/\*\*/g, '')
+            rich.impact_social.impact_environnemental = paragraphs[1].replace(/\*\*/g, '')
+            rich.impact_social.impact_economique = paragraphs.slice(2).join('\n\n').replace(/\*\*/g, '')
+          } else if (paragraphs.length >= 1) {
+            rich.impact_social.impact_social = impactText.replace(/\*\*/g, '')
+          }
+        }
+        
+        console.log(`[BP Download] Impact: social=${(rich.impact_social.impact_social || '').length}, enviro=${(rich.impact_social.impact_environnemental || '').length}, eco=${(rich.impact_social.impact_economique || '').length}, benef=${(rich.impact_social.beneficiaires || '').length}, odd=${(rich.impact_social.odd_cibles || []).length}`)
       }
 
       // ─── 10. Attentes OVO ─────────────────
       if (besText) {
         const montant = extractField(besText, /(?:\*\*Besoin\s*Total\*\*|Total)[^:]*:\s*([\d\s,.]*M?\s*(?:XOF|FCFA|CFA)[^.\n]*)/i) || 
-                        extractField(besText, /(\d[\d\s,.]*M?\s*(?:XOF|FCFA|CFA))/i)
+                        extractField(besText, /(\d[\d\s,.]*M?\s*(?:XOF|FCFA|CFA)[^\n]*)/i)
         const besFields = extractBoldFields(besText)
+        
+        // Extract structured contribution & investor info
+        const equityInfo = extractField(besText, /(\d+%\s*(?:Equity|fonds propres)[^.\n]*)/i) || besFields['equity'] || besFields['fonds propres'] || ''
+        const subventionInfo = extractField(besText, /(\d+%\s*(?:Subventions|grants)[^.\n]*)/i) || besFields['subventions'] || ''
+        const pretInfo = extractField(besText, /(\d+%\s*(?:Prêts|loans)[^.\n]*)/i) || besFields['prets'] || ''
+        
+        // Extract expertise needs from the whole text
+        const expertiseFromText = extractMdSection(besText, 'Accompagnement') || extractMdSection(besText, 'Expertise') || 
+                                   extractMdSection(allText, 'Accompagnement') || ''
+        const coachingFromText = extractMdSection(besText, 'Coaching') || extractMdSection(besText, 'Formation') || ''
+        
         rich.attentes_ovo = {
           montant_demande: montant || besFields['besoin total'] || 'À définir',
-          contribution_entrepreneur: besFields['equity'] || besFields['fonds propres'] || extractField(besText, /(\d+%\s*Equity[^.\n]*)/i) || '',
-          autres_investisseurs: besFields['subventions'] || besFields['prets'] || extractField(besText, /(\d+%\s*(?:Subventions|Prêts)[^.\n]*)/i) || '',
-          expertise_necessaire: 'Accompagnement stratégique, financier et opérationnel',
-          coaching_souhaite: 'Structuration financière, accès marchés, gouvernance',
+          contribution_entrepreneur: equityInfo,
+          autres_investisseurs: subventionInfo || pretInfo || 
+            extractField(besText, /(?:autres?\s*investisseurs?|co-financement)[^:]*:\s*([^\n]+)/i) || '',
+          expertise_necessaire: expertiseFromText || 'Accompagnement stratégique, financier et opérationnel',
+          coaching_souhaite: coachingFromText || 'Structuration financière, accès marchés, gouvernance',
         }
       }
 
-      // ─── 11. Gouvernance structured data ─────────────────
-      if (rich.gouvernance || rich.besoins_financement) {
-        const gouvText = rich.gouvernance?.description || rich.besoins_financement?.description || ''
-        if (gouvText) {
-          rich.gouvernance = rich.gouvernance || {}
-          rich.gouvernance.projet_description = gouvText.split('\\n\\n')[0] || gouvText.substring(0, 500)
-          rich.gouvernance.situation_actuelle = extractMdSection(gouvText, 'Situation') || extractMdSection(gouvText, 'État actuel') || ''
-          rich.gouvernance.duree_mise_en_oeuvre = extractField(gouvText, /(\d+\s*(?:mois|ans?)[^.\n]{0,30})/i) || '18 mois'
-          rich.gouvernance.objectif_projet = extractMdSection(gouvText, 'Objectif') || extractMdSection(gouvText, 'Utilisation') || gouvText.substring(0, 300)
+      // ─── 11. Gouvernance & Description générale du projet ─────────────────
+      // "Description générale" in the DOCX template is NOT about financing — it should describe
+      // the project purpose, current situation, timeline, and objectives.
+      {
+        const gouvText = normNl(rich.gouvernance?.description || '')
+        const gouvBesText = normNl(rich.besoins_financement?.description || '')
+        const resumeSynthese = normNl(rich.resume_executif?.synthese || '')
+        
+        rich.gouvernance = rich.gouvernance || {}
+        
+        // ── Projet description: synthesize a proper description from resume + context ──
+        // Priority: 1) dedicated governance text, 2) resume executive synthesis, 3) besoins text
+        let projetDesc = ''
+        if (gouvText && gouvText.length > 100 && !gouvText.match(/^\*\*Besoin\s*Total/i)) {
+          // Has dedicated governance text that's not just financing info
+          projetDesc = gouvText.split('\n\n')[0] || gouvText.substring(0, 600)
         }
+        if (!projetDesc || projetDesc.length < 80) {
+          // Synthesize from resume executif — extract the core project description
+          // Look for the opportunity/project part, or use the first substantive paragraph
+          const projectPart = extractMdSection(resumeSynthese, 'Opportunité') || 
+                              extractMdSection(resumeSynthese, 'Projet') || ''
+          if (projectPart && projectPart.length > 50) {
+            projetDesc = projectPart
+          } else if (resumeSynthese.length > 80) {
+            // Use the first 2-3 sentences of the resume as project description
+            const sentences = resumeSynthese.split(/(?<=[.!?])\s+/).filter(s => s.length > 20)
+            projetDesc = sentences.slice(0, 3).join(' ')
+          }
+        }
+        rich.gouvernance.projet_description = projetDesc.replace(/\*\*/g, '').substring(0, 800) || 
+          `Projet de développement et passage à l'échelle d'une entreprise à impact dans le secteur.`
+        
+        // ── Situation actuelle: extract operational status ──
+        let situationActuelle = ''
+        // Look in presentation for traction/current status
+        const tractionSection = extractMdSection(presText, 'Traction') || extractMdSection(presText, 'Situation actuelle') ||
+                                extractMdSection(presText, 'État actuel') || ''
+        if (tractionSection) {
+          situationActuelle = tractionSection
+        } else {
+          // Build from available facts in presentation: certifications, team size, clients
+          const factParts: string[] = []
+          if (presText.match(/immatricul|créée?|fondée?/i)) {
+            const creation = extractField(presText, /((?:créée?|immatricul|fondée?|enregistrée?)[^.\n]{0,200})/i)
+            if (creation) factParts.push(creation.replace(/\*\*/g, ''))
+          }
+          if (presText.match(/certific/i)) {
+            const cert = extractField(presText, /(certification[^.\n]{0,150})/i)
+            if (cert) factParts.push(cert.replace(/\*\*/g, ''))
+          }
+          if (opsText.match(/\d+\s*(?:collecteur|employé|collaborat)/i)) {
+            const staff = extractField(opsText, /(\d+\s*(?:collecteurs?|employés?|collaborateurs?)[^.\n]{0,120})/i)
+            if (staff) factParts.push('Réseau de ' + staff.replace(/\*\*/g, ''))
+          }
+          situationActuelle = factParts.join('. ') || ''
+        }
+        rich.gouvernance.situation_actuelle = situationActuelle.replace(/\*\*/g, '').substring(0, 500) || ''
+        
+        // ── Durée de mise en oeuvre ──
+        const dureeFromBes = extractField(gouvBesText || finText, /(\d+\s*(?:mois|ans?)[^.\n]{0,150})/i)
+        const dureeFromOps = extractField(opsText, /(?:déploiement|mise en|montée)[^:]*?(\d+\s*(?:mois|ans?)[^.\n]{0,120})/i)
+        rich.gouvernance.duree_mise_en_oeuvre = dureeFromBes || dureeFromOps || '18 mois'
+        
+        // ── Objectif du projet: concrete targets ──
+        let objectifProjet = ''
+        // Look for specific fund usage/allocation details
+        const allocationSection = extractMdSection(gouvBesText, 'Utilisation') || extractMdSection(gouvBesText, 'Allocation') || ''
+        if (allocationSection) {
+          objectifProjet = allocationSection
+        } else {
+          // Extract concrete allocation items from besoins_financement
+          const allocItems = gouvBesText.match(/\*\*\d+%[^*]*\*\*[^.\n]*/g) || 
+                             gouvBesText.match(/(?:Équipement|BFR|Marketing|fonds de roulement)[^.\n]*/gi) || []
+          if (allocItems.length) {
+            objectifProjet = allocItems.map(a => a.replace(/\*\*/g, '').trim()).join('\n')
+          } else if (gouvBesText) {
+            // Use the structured allocation from besText: "60% equipment, 25% working capital..."
+            const allocMatch = gouvBesText.match(/(\d+%\s*[^.\n]*(?:équipement|equipment|BFR|fonds|marketing|commercial)[^.\n]*)/gi)
+            if (allocMatch) objectifProjet = allocMatch.join('\n')
+          }
+        }
+        rich.gouvernance.objectif_projet = objectifProjet.replace(/\*\*/g, '').substring(0, 600) || 
+          rich.gouvernance.projet_description.substring(0, 300)
+        
+        console.log(`[BP Download] Gouvernance: desc=${rich.gouvernance.projet_description.length}chars, situation=${rich.gouvernance.situation_actuelle.length}chars, objectif=${rich.gouvernance.objectif_projet.length}chars`)
       }
 
       console.log('[BP Download] Normalized generate-all flat sections to rich format with deep extraction')

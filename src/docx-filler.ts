@@ -79,7 +79,17 @@ function makeBullet(text: string): string {
 function makeContent(text: string | undefined | null): string {
   if (!text || text === 'À compléter' || text === 'A completer') return ''
   // Normalize literal \\n to real newlines (from JSON double-escaped strings)
-  const normalized = text.replace(/\\n/g, '\n')
+  let normalized = text.replace(/\\n/g, '\n')
+  // Clean up orphan markdown bold artifacts from partial extraction
+  // First: properly handle **bold** markers by keeping content (will be rendered as bold by buildRunsWithBold)
+  // Only clean artifacts that are NOT valid bold markers
+  normalized = normalized.replace(/^\*\*\s*:?\s*$/gm, '')         // lines that are just ** or ** :
+  normalized = normalized.replace(/^\*\*\s*:\s*/gm, '')           // ** : at very start of line (no preceding word)
+  normalized = normalized.replace(/\*\*\s*$/gm, '')               // trailing ** at end of line
+  // Clean "word** :" artifacts — but only when ** is NOT preceded by another ** (not a bold marker)
+  // e.g. "Bénéficiaires** :" should become "Bénéficiaires :" but "**Bénéficiaires**" should stay  
+  normalized = normalized.replace(/(?<!\*)\*\*\s*:(\s)/g, ' :$1')  // word** : → word :
+  normalized = normalized.replace(/(?<!\*)\*\*\s*(?=\n|$)/g, '')   // trailing word** at end → word
   return markdownToDocx(normalized)
 }
 
@@ -460,7 +470,18 @@ function buildImpact(bp: any): string {
   if (impact.impact_social) { xml += makePara('Impact social :', true); xml += makeContent(impact.impact_social) }
   if (impact.impact_environnemental) { xml += makePara('Impact environnemental :', true); xml += makeContent(impact.impact_environnemental) }
   if (impact.impact_economique) { xml += makePara('Impact économique :', true); xml += makeContent(impact.impact_economique) }
-  if (impact.beneficiaires) { xml += makePara('Bénéficiaires :', true); xml += makeContent(impact.beneficiaires) }
+  // Only show beneficiaires if it adds new info (not already covered by other sections)
+  if (impact.beneficiaires) {
+    const benefText = typeof impact.beneficiaires === 'string' ? impact.beneficiaires : ''
+    const alreadyCovered = [impact.impact_social, impact.impact_environnemental, impact.impact_economique]
+      .filter(Boolean).join(' ')
+    // Check if beneficiaires text is substantially different from what's already shown
+    const benefCore = benefText.replace(/[^a-zA-ZÀ-ÿ0-9]/g, '').substring(0, 100)
+    const coveredCore = alreadyCovered.replace(/[^a-zA-ZÀ-ÿ0-9]/g, '')
+    if (benefCore && !coveredCore.includes(benefCore.substring(0, 50))) {
+      xml += makePara('Bénéficiaires :', true); xml += makeContent(benefText)
+    }
+  }
   if (impact.odd_cibles?.length) {
     xml += makePara('ODD ciblés :', true)
     xml += makeBulletList(impact.odd_cibles)
