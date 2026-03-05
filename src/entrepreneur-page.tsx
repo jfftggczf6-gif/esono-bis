@@ -1207,7 +1207,7 @@ entrepreneurRoutes.post('/api/ai/pipeline/start', async (c) => {
     if (job.user_id !== payload.userId) return c.json({ error: 'Unauthorized' }, 403)
     if (job.status !== 'processing') return c.json({ error: `Job already ${job.status}` }, 409)
 
-    const STEPS = ['agent_bmc', 'agent_sic', 'agent_finance', 'agent_odd', 'store', 'bmc_html', 'sic_html', 'inputs_html', 'framework_html', 'diagnostic_html', 'postprocess']
+    const STEPS = ['agent_bmc', 'agent_sic', 'agent_finance', 'agent_odd', 'agent_business_plan', 'agent_plan_ovo', 'store', 'bmc_html', 'sic_html', 'inputs_html', 'framework_html', 'diagnostic_html', 'postprocess']
 
     console.log(`[Pipeline:start] Running full pipeline for job ${jobId} (user ${payload.userId})`)
     
@@ -1462,6 +1462,12 @@ entrepreneurRoutes.post('/api/ai/pipeline/step', async (c) => {
         if (analysisResults['odd_analyst']) {
           deliverables['odd'] = analysisResults['odd_analyst']
         }
+        if (analysisResults['business_plan_writer']) {
+          deliverables['business_plan'] = analysisResults['business_plan_writer']
+        }
+        if (analysisResults['plan_ovo_analyst']) {
+          deliverables['plan_ovo'] = analysisResults['plan_ovo_analyst']
+        }
         
         // Calculate scores
         const scores: number[] = []
@@ -1507,7 +1513,124 @@ entrepreneurRoutes.post('/api/ai/pipeline/step', async (c) => {
       ctx.agentErrors = agentErrors
       await savePipelineContext(db, jobId, ctx)
 
-      console.log(`[Pipeline:agent_odd] All agents done (source=${source}), chaining to 'store'`)
+      console.log(`[Pipeline:agent_odd] All agents done (source=${source}), chaining to 'agent_business_plan'`)
+      return c.json({ ok: true, step })
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    // STEP: agent_business_plan — Generate Business Plan (1 Claude call)
+    // Uses all previous agent analyses to produce a full business plan
+    // ════════════════════════════════════════════════════════════════
+    if (step === 'agent_business_plan') {
+      console.log(`[Pipeline:agent_business_plan] Starting for job ${jobId}`)
+      await updateJobProgress(db, jobId, 'Agent Business Plan en cours de rédaction...')
+
+      const canGenBP = (hasBmc || hasSic || hasInputs)
+      if (canGenBP && apiKey) {
+        try {
+          // Load previous analyses for context
+          const analysisResults = ctx.agentResults || {}
+          const bmcCtx = analysisResults['bmc_analyst'] ? JSON.stringify(analysisResults['bmc_analyst']).slice(0, 3000) : ''
+          const sicCtx = analysisResults['sic_analyst'] ? JSON.stringify(analysisResults['sic_analyst']).slice(0, 2000) : ''
+          const finCtx = analysisResults['finance_analyst'] ? JSON.stringify(analysisResults['finance_analyst']).slice(0, 3000) : ''
+          const oddCtx = analysisResults['odd_analyst'] ? JSON.stringify(analysisResults['odd_analyst']).slice(0, 2000) : ''
+
+          // Get document texts for raw data
+          const documentTexts = await getDocumentTexts()
+          
+          const result = await runAgent(db, apiKey, {
+            agentCode: 'business_plan_writer',
+            documentTexts,
+            userName,
+            userCountry,
+            kbContext: ctx.kbContextRaw || { benchmarks: [], fiscalParams: [], funders: [], criteria: [], feedbackHistory: [] },
+            previousAnalyses: {
+              bmc_analysis: analysisResults['bmc_analyst'],
+              sic_analysis: analysisResults['sic_analyst'],
+              finance_analysis: analysisResults['finance_analyst'],
+              odd: analysisResults['odd_analyst'],
+            },
+          })
+
+          if (result.success && result.data) {
+            if (!ctx.agentResults) ctx.agentResults = {}
+            ctx.agentResults['business_plan_writer'] = result.data
+            ctx.agentsUsed.push(`business_plan_writer:${result.source}`)
+            if (result.source === 'claude') ctx.anyClaudeSuccess = true
+
+            // Also update deliverables in result
+            if (ctx.result?.deliverables) {
+              ctx.result.deliverables['business_plan'] = result.data
+            }
+            console.log(`[Pipeline:agent_business_plan] ✅ BP generated (score=${result.data.score || 0}, source=${result.source})`)
+          } else {
+            ctx.agentsUsed.push('business_plan_writer:failed')
+            ctx.agentErrors.push(`business_plan_writer: ${result.error || 'failed'}`)
+            console.warn(`[Pipeline:agent_business_plan] Failed: ${result.error}`)
+          }
+        } catch (err: any) {
+          console.error(`[Pipeline:agent_business_plan] Error: ${err.message}`)
+          ctx.agentErrors.push(`business_plan_writer: ${err.message}`)
+        }
+      } else {
+        console.log(`[Pipeline:agent_business_plan] Skipped (canGen=${canGenBP}, apiKey=${!!apiKey})`)
+      }
+
+      await savePipelineContext(db, jobId, ctx)
+      return c.json({ ok: true, step })
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    // STEP: agent_plan_ovo — Generate Plan Financier OVO (1 Claude call)
+    // Uses finance analysis + document inputs for detailed financial projections
+    // ════════════════════════════════════════════════════════════════
+    if (step === 'agent_plan_ovo') {
+      console.log(`[Pipeline:agent_plan_ovo] Starting for job ${jobId}`)
+      await updateJobProgress(db, jobId, 'Agent Plan Financier OVO en cours...')
+
+      if (hasInputs && apiKey) {
+        try {
+          // Load previous analyses for context
+          const analysisResults = ctx.agentResults || {}
+          const documentTexts = await getDocumentTexts()
+
+          const result = await runAgent(db, apiKey, {
+            agentCode: 'plan_ovo_analyst',
+            documentTexts,
+            userName,
+            userCountry,
+            kbContext: ctx.kbContextRaw || { benchmarks: [], fiscalParams: [], funders: [], criteria: [], feedbackHistory: [] },
+            previousAnalyses: {
+              bmc_analysis: analysisResults['bmc_analyst'],
+              finance_analysis: analysisResults['finance_analyst'],
+            },
+          })
+
+          if (result.success && result.data) {
+            if (!ctx.agentResults) ctx.agentResults = {}
+            ctx.agentResults['plan_ovo_analyst'] = result.data
+            ctx.agentsUsed.push(`plan_ovo_analyst:${result.source}`)
+            if (result.source === 'claude') ctx.anyClaudeSuccess = true
+
+            // Also update deliverables in result
+            if (ctx.result?.deliverables) {
+              ctx.result.deliverables['plan_ovo'] = result.data
+            }
+            console.log(`[Pipeline:agent_plan_ovo] ✅ OVO generated (score=${result.data.score || 0}, source=${result.source})`)
+          } else {
+            ctx.agentsUsed.push('plan_ovo_analyst:failed')
+            ctx.agentErrors.push(`plan_ovo_analyst: ${result.error || 'failed'}`)
+            console.warn(`[Pipeline:agent_plan_ovo] Failed: ${result.error}`)
+          }
+        } catch (err: any) {
+          console.error(`[Pipeline:agent_plan_ovo] Error: ${err.message}`)
+          ctx.agentErrors.push(`plan_ovo_analyst: ${err.message}`)
+        }
+      } else {
+        console.log(`[Pipeline:agent_plan_ovo] Skipped (hasInputs=${hasInputs}, apiKey=${!!apiKey})`)
+      }
+
+      await savePipelineContext(db, jobId, ctx)
       return c.json({ ok: true, step })
     }
 
@@ -2134,219 +2257,29 @@ entrepreneurRoutes.post('/api/ai/pipeline/step', async (c) => {
         console.warn('[Pipeline:postprocess] SIC check error:', postProcErr.message)
       }
 
-      // Auto-fix Business Plan (fallback regeneration)
+      // Log Business Plan and Plan OVO agent results
+      // (These are now generated by dedicated agents — no more postprocess auto-fix)
       try {
         const bpCheck = await db.prepare(
-          "SELECT content FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'business_plan' ORDER BY version DESC LIMIT 1"
+          "SELECT content, LENGTH(content) as len FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'business_plan' ORDER BY version DESC LIMIT 1"
         ).bind(userId).first() as any
-
-        if (bpCheck?.content && bpCheck.content.length < 5000 && apiKey) {
-          console.log(`[Pipeline:postprocess] AUTO-FIX: BP is fallback (${bpCheck.content.length} bytes) → regenerating`)
-          try {
-            // Load context for BP generation
-            const bpLoadDeliv = async (type: string) => {
-              const row = await db.prepare(
-                "SELECT content FROM entrepreneur_deliverables WHERE user_id = ? AND type = ? ORDER BY version DESC LIMIT 1"
-              ).bind(userId, type).first() as any
-              return row?.content || ''
-            }
-            const [bpBmc, bpSic, bpFw, bpDiag, bpPmeData] = await Promise.all([
-              bpLoadDeliv('bmc_analysis'), bpLoadDeliv('sic_analysis'),
-              bpLoadDeliv('framework'), bpLoadDeliv('diagnostic'),
-              bpLoadDeliv('framework_pme_data')
-            ])
-            
-            // Get latest uploaded DOCX text
-            let docxText = ''
-            const uploads = await db.prepare(
-              "SELECT extracted_text FROM uploads WHERE user_id = ? ORDER BY uploaded_at DESC LIMIT 3"
-            ).bind(userId).all()
-            for (const row of (uploads.results || []) as any[]) {
-              if (row.extracted_text && row.extracted_text.length > 200) {
-                const text = row.extracted_text.toString().slice(0, 8000)
-                if (text.length > docxText.length) docxText = text
-              }
-            }
-
-            const bpPrompt = `Tu es un expert en business plan. Génère un Business Plan COMPLET et STRUCTURÉ en JSON pour l'entreprise "${companyName}" (${userCountry || "Côte d'Ivoire"}).
-
-Contexte de l'entreprise:
-${bpBmc ? `BMC: ${bpBmc.slice(0, 3000)}` : ''}
-${bpSic ? `SIC: ${bpSic.slice(0, 2000)}` : ''}
-${bpFw ? `Framework: ${bpFw.slice(0, 2000)}` : ''}
-${bpDiag ? `Diagnostic: ${bpDiag.slice(0, 2000)}` : ''}
-${docxText ? `Document: ${docxText.slice(0, 3000)}` : ''}
-
-Retourne un JSON avec les sections: executive_summary, market_analysis, products_services, marketing_strategy, operations, management_team, financial_projections (en XOF), funding_requirements, risks_mitigation, implementation_timeline.
-Chaque section doit avoir: title, content (texte riche), key_points (array).
-Utilise UNIQUEMENT des données réelles de l'entreprise.`
-
-            const bpResponse = await fetch('https://api.anthropic.com/v1/messages', {
-              method: 'POST',
-              headers: {
-                'x-api-key': apiKey,
-                'anthropic-version': '2023-06-01',
-                'content-type': 'application/json',
-              },
-              body: JSON.stringify({
-                model: 'claude-sonnet-4-20250514',
-                max_tokens: 8192,
-                temperature: 0.3,
-                messages: [{ role: 'user', content: bpPrompt }],
-              }),
-              signal: AbortSignal.timeout(120000),
-            })
-
-            if (bpResponse.ok) {
-              const bpData = await bpResponse.json() as any
-              const bpText = bpData.content?.[0]?.text || ''
-              const jsonMatch = bpText.match(/\{[\s\S]*\}/)
-              if (jsonMatch) {
-                const bpContent = jsonMatch[0]
-                await db.prepare("DELETE FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'business_plan'").bind(userId).run()
-                await db.prepare(
-                  "INSERT INTO entrepreneur_deliverables (id, user_id, type, content, score, version, iteration_id, status, created_at) VALUES (?, ?, 'business_plan', ?, ?, ?, ?, 'generated', datetime('now'))"
-                ).bind(crypto.randomUUID(), userId, bpContent, 70, ver, iterId).run()
-                console.log(`[Pipeline:postprocess] BP regenerated: ${bpContent.length} bytes`)
-              }
-            }
-          } catch (bpFixErr: any) {
-            console.warn('[Pipeline:postprocess] AUTO-FIX BP failed:', bpFixErr.message)
-          }
+        if (bpCheck?.content) {
+          console.log(`[Pipeline:postprocess] ✅ Business Plan present: ${bpCheck.len} bytes`)
+        } else {
+          console.warn('[Pipeline:postprocess] ⚠️ Business Plan missing — agent_business_plan may have failed')
         }
-      } catch (postProcErr: any) {
-        console.warn('[Pipeline:postprocess] BP check error:', postProcErr.message)
-      }
+      } catch {}
 
-      // Auto-fix Plan OVO (enrich with actual financial data)
       try {
         const ovoCheck = await db.prepare(
-          "SELECT content FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'plan_ovo' ORDER BY version DESC LIMIT 1"
+          "SELECT content, LENGTH(content) as len FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'plan_ovo' ORDER BY version DESC LIMIT 1"
         ).bind(userId).first() as any
-
-        if (ovoCheck?.content && ovoCheck.content.length < 2000 && apiKey) {
-          console.log(`[Pipeline:postprocess] AUTO-FIX: Plan OVO too small (${ovoCheck.content.length} bytes) → enriching`)
-          try {
-            const ovoLoadDeliv = async (type: string) => {
-              const row = await db.prepare(
-                "SELECT content FROM entrepreneur_deliverables WHERE user_id = ? AND type = ? ORDER BY version DESC LIMIT 1"
-              ).bind(userId, type).first() as any
-              return row?.content || ''
-            }
-            const [ovoFw, ovoBmc, ovoFwPme, ovoBp] = await Promise.all([
-              ovoLoadDeliv('framework'), ovoLoadDeliv('bmc_analysis'),
-              ovoLoadDeliv('framework_pme_data'), ovoLoadDeliv('business_plan')
-            ])
-
-            // Get inputs document text
-            let inputsText = ''
-            const inputsUpload = await db.prepare(
-              "SELECT extracted_text FROM uploads WHERE user_id = ? AND category = 'inputs' ORDER BY uploaded_at DESC LIMIT 1"
-            ).bind(userId).first() as any
-            if (inputsUpload?.extracted_text) {
-              const extIdx = inputsUpload.extracted_text.indexOf('---EXTRACTED_TEXT---')
-              const mdIdx = inputsUpload.extracted_text.indexOf('---MARKDOWN_TABLES---')
-              if (mdIdx !== -1) {
-                inputsText = inputsUpload.extracted_text.substring(mdIdx + 21, extIdx !== -1 ? extIdx : undefined).slice(0, 8000)
-              } else if (extIdx !== -1) {
-                inputsText = inputsUpload.extracted_text.substring(extIdx + 19).slice(0, 8000)
-              }
-            }
-
-            const ovoPrompt = `Tu es un expert financier PME/startup en Afrique. Génère un Plan Financier OVO COMPLET et DÉTAILLÉ en JSON pour "${companyName}" (${userCountry || "Côte d'Ivoire"}).
-
-Données financières disponibles:
-${ovoFwPme ? `Framework PME: ${ovoFwPme.slice(0, 3000)}` : ''}
-${ovoFw ? `Framework: ${ovoFw.slice(0, 2000)}` : ''}
-${ovoBmc ? `BMC Analysis: ${ovoBmc.slice(0, 2000)}` : ''}
-${ovoBp ? `Business Plan: ${ovoBp.slice(0, 3000)}` : ''}
-${inputsText ? `Données financières brutes: ${inputsText.slice(0, 4000)}` : ''}
-
-Retourne un JSON COMPLET avec:
-{
-  "score": number (0-100),
-  "analysis": "synthèse financière détaillée (300+ mots, en français)",
-  "projections": {
-    "year1": { "revenue": number_MFCFA, "expenses": number, "ebitda": number, "net_income": number, "cash_flow": number, "employees": number },
-    "year2": { ... },
-    "year3": { ... },
-    "year4": { ... },
-    "year5": { ... }
-  },
-  "key_metrics": {
-    "break_even_months": number,
-    "irr": "X%",
-    "npv": "X M FCFA",
-    "payback_period": "X mois",
-    "gross_margin": "X%",
-    "net_margin": "X%",
-    "debt_service_coverage": "Xx",
-    "current_ratio": "Xx",
-    "roi_5years": "X%"
-  },
-  "revenue_model": {
-    "sources": [{"name": "source", "year1": number, "year3": number, "year5": number, "share": "X%"}],
-    "total_addressable_market": "X M FCFA",
-    "market_share_target": "X%"
-  },
-  "cost_structure": {
-    "fixed_costs": [{"name": "item", "monthly": number, "annual": number}],
-    "variable_costs": [{"name": "item", "unit_cost": number, "annual": number}],
-    "total_fixed_annual": number,
-    "total_variable_annual": number
-  },
-  "funding_plan": {
-    "total_needed": "X M FCFA",
-    "equity": "X M FCFA",
-    "debt": "X M FCFA",
-    "grants": "X M FCFA",
-    "sources": [{"type": "source", "amount": "X M FCFA", "terms": "description"}]
-  },
-  "assumptions": ["hypothèse 1", "hypothèse 2", ...],
-  "risks": [{"risk": "description", "impact": "faible|moyen|élevé", "mitigation": "mesure"}],
-  "cash_flow_monthly": [{"month": 1, "inflow": number, "outflow": number, "balance": number}, ... (12 mois)]
-}
-
-IMPORTANT: Utilise les données RÉELLES du document. Devise: XOF/FCFA. Projections sur 5 ans.`
-
-            const ovoResponse = await fetch('https://api.anthropic.com/v1/messages', {
-              method: 'POST',
-              headers: {
-                'x-api-key': apiKey,
-                'anthropic-version': '2023-06-01',
-                'content-type': 'application/json',
-              },
-              body: JSON.stringify({
-                model: 'claude-sonnet-4-20250514',
-                max_tokens: 8192,
-                temperature: 0.3,
-                messages: [{ role: 'user', content: ovoPrompt }],
-              }),
-              signal: AbortSignal.timeout(120000),
-            })
-
-            if (ovoResponse.ok) {
-              const ovoData = await ovoResponse.json() as any
-              const ovoText = ovoData.content?.[0]?.text || ''
-              const jsonMatch = ovoText.match(/\{[\s\S]*\}/)
-              if (jsonMatch) {
-                const ovoContent = jsonMatch[0]
-                const ovoParsed = JSON.parse(ovoContent)
-                const ovoScore = ovoParsed.score || 65
-                await db.prepare("DELETE FROM entrepreneur_deliverables WHERE user_id = ? AND type = 'plan_ovo'").bind(userId).run()
-                await db.prepare(
-                  "INSERT INTO entrepreneur_deliverables (id, user_id, type, content, score, version, iteration_id, status, created_at) VALUES (?, ?, 'plan_ovo', ?, ?, ?, ?, 'generated', datetime('now'))"
-                ).bind(crypto.randomUUID(), userId, ovoContent, ovoScore, ver, iterId).run()
-                console.log(`[Pipeline:postprocess] Plan OVO enriched: ${ovoContent.length} bytes, score=${ovoScore}`)
-              }
-            }
-          } catch (ovoFixErr: any) {
-            console.warn('[Pipeline:postprocess] AUTO-FIX Plan OVO failed:', ovoFixErr.message)
-          }
+        if (ovoCheck?.content) {
+          console.log(`[Pipeline:postprocess] ✅ Plan OVO present: ${ovoCheck.len} bytes`)
+        } else {
+          console.warn('[Pipeline:postprocess] ⚠️ Plan OVO missing — agent_plan_ovo may have failed')
         }
-      } catch (postProcErr: any) {
-        console.warn('[Pipeline:postprocess] OVO check error:', postProcErr.message)
-      }
+      } catch {}
 
       // Sync module tables
       try {

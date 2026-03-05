@@ -1,11 +1,11 @@
 // ═══════════════════════════════════════════════════════════════════
 // ESONO AI Agents — Multi-agent Architecture for Investment Readiness
-// Agents: BMC, SIC, Finance, Diagnostic, ODD + Orchestrator
+// Agents: BMC, SIC, Finance, ODD, Business Plan, Plan OVO, Diagnostic + Orchestrator
 // ═══════════════════════════════════════════════════════════════════
 
 // ─── Types ───────────────────────────────────────────────────────
 
-export type AgentCode = 'bmc_analyst' | 'sic_analyst' | 'finance_analyst' | 'diagnostic_expert' | 'odd_analyst' | 'orchestrator'
+export type AgentCode = 'bmc_analyst' | 'sic_analyst' | 'finance_analyst' | 'diagnostic_expert' | 'odd_analyst' | 'business_plan_writer' | 'plan_ovo_analyst' | 'orchestrator'
 
 export interface AgentPromptConfig {
   system_prompt: string
