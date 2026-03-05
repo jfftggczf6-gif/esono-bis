@@ -1491,15 +1491,23 @@ entrepreneurRoutes.post('/api/ai/pipeline/step', async (c) => {
         source = 'claude'
       }
 
-      // Fallback if no result
+      // Fallback if no Claude result at all
       if (!result) {
         result = buildFallbackResult(hasBmc, hasSic, hasInputs, userName, uploadedCats.size)
+        // Remove BP and OVO from fallback — these have dedicated agents now
+        // If agents fail, we prefer NO data over fake data
+        delete result.deliverables?.business_plan
+        delete result.deliverables?.plan_ovo
         source = 'fallback'
         agentsUsed.push('fallback')
       } else {
-        // Fill missing from fallback
+        // Fill missing from fallback — but NEVER for business_plan and plan_ovo
+        // Those types have dedicated agents (agent_business_plan, agent_plan_ovo)
+        // If those agents fail, it's better to have no data than fake generic data
+        const AGENT_ONLY_TYPES = new Set(['business_plan', 'plan_ovo'])
         const fallback = buildFallbackResult(hasBmc, hasSic, hasInputs, userName, uploadedCats.size)
         for (const dtype of generableTypes) {
+          if (AGENT_ONLY_TYPES.has(dtype)) continue // skip — dedicated agents handle these
           if (!result.deliverables[dtype] && fallback.deliverables?.[dtype]) {
             result.deliverables[dtype] = fallback.deliverables[dtype]
             console.log(`[Pipeline:agent_odd] Filled missing ${dtype} from fallback`)
