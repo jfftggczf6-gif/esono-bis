@@ -533,13 +533,13 @@ RÈGLES STRICTES :
 
   // Try Claude with retry for critical agents (business_plan_writer)
   if (apiKey && apiKey !== 'sk-ant-PLACEHOLDER') {
-    const maxAttempts = (agentCode === 'business_plan_writer' || agentCode === 'plan_ovo_analyst') ? 2 : 1
+    const maxAttempts = (agentCode === 'business_plan_writer' || agentCode === 'plan_ovo_analyst') ? 3 : 1
     let lastError = ''
     let lastText = ''
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       if (attempt > 1) {
-        const delay = 5000 * attempt  // 10s backoff on retry
+        const delay = 10000 * attempt  // 20s, 30s backoff on retry (longer for large agents)
         console.log(`Agent ${agentCode}: Retry ${attempt}/${maxAttempts} after ${delay}ms...`)
         await new Promise(r => setTimeout(r, delay))
       }
@@ -610,7 +610,7 @@ RÈGLES STRICTES :
     data: null,
     source: 'fallback',
     agentCode,
-    error: apiKey ? `Claude call failed: ${agentCode}` : 'No API key configured',
+    error: apiKey ? `Claude call failed: ${agentCode} — ${lastError || 'no error details'}` : 'No API key configured',
   }
 }
 
