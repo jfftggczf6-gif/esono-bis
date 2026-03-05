@@ -532,10 +532,10 @@ RÈGLES STRICTES :
   }
 
   // Try Claude with retry for critical agents (business_plan_writer)
+  let lastError = ''
+  let lastText = ''
   if (apiKey && apiKey !== 'sk-ant-PLACEHOLDER') {
     const maxAttempts = (agentCode === 'business_plan_writer' || agentCode === 'plan_ovo_analyst') ? 3 : 1
-    let lastError = ''
-    let lastText = ''
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       if (attempt > 1) {
