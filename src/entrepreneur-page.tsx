@@ -717,9 +717,18 @@ entrepreneurRoutes.post('/api/upload', async (c) => {
         const xlsxData = parseXlsx(bytes)
         const legacyText = xlsxToText(xlsxData)
         const markdownText = xlsxToMarkdownTables(xlsxData)
-        // Store all three formats: base64 for binary, Markdown tables for Claude AI, legacy for regex
-        extractedText = `base64:${base64}\n\n---MARKDOWN_TABLES---\n${markdownText}\n\n---EXTRACTED_TEXT---\n${legacyText}`
-        console.log(`[Upload] Extracted from ${file.name}: ${xlsxData.length} sheets, legacy=${legacyText.length}ch, markdown=${markdownText.length}ch`)
+        // For Excel: store text only if extraction succeeded, skip base64 for large files
+        if (legacyText && legacyText.length > 50) {
+          const totalWithBase64 = base64.length + markdownText.length + legacyText.length + 100
+          if (totalWithBase64 > 900 * 1024) {
+            // Too large with base64 — skip it
+            extractedText = `---MARKDOWN_TABLES---\n${markdownText}\n\n---EXTRACTED_TEXT---\n${legacyText}`
+            console.log(`[Upload] Extracted from ${file.name}: ${xlsxData.length} sheets, legacy=${legacyText.length}ch, markdown=${markdownText.length}ch (base64 skipped, total would be ${(totalWithBase64/1024).toFixed(0)} Ko)`)
+          } else {
+            extractedText = `base64:${base64}\n\n---MARKDOWN_TABLES---\n${markdownText}\n\n---EXTRACTED_TEXT---\n${legacyText}`
+            console.log(`[Upload] Extracted from ${file.name}: ${xlsxData.length} sheets, legacy=${legacyText.length}ch, markdown=${markdownText.length}ch`)
+          }
+        }
       } catch (err: any) {
         console.error('[Upload] XLSX parse error (non-fatal):', err.message)
         // Keep base64 only as fallback
@@ -728,12 +737,39 @@ entrepreneurRoutes.post('/api/upload', async (c) => {
       try {
         const docText = parseDocx(bytes)
         const markdownText = docxToMarkdown(bytes)
-        // Store base64 + extracted document text for Claude AI
-        extractedText = `base64:${base64}\n\n---DOCUMENT_TEXT---\n${docText}\n\n---EXTRACTED_TEXT---\n${docText}`
-        console.log(`[Upload] Extracted DOCX from ${file.name}: text=${docText.length}ch`)
+        // For DOCX: store ONLY extracted text (no base64) to avoid D1 size limits
+        // The pipeline only needs the text content for AI analysis
+        if (docText && docText.length > 50) {
+          extractedText = `---DOCUMENT_TEXT---\n${markdownText || docText}\n\n---EXTRACTED_TEXT---\n${docText}`
+          console.log(`[Upload] Extracted DOCX from ${file.name}: text=${docText.length}ch, markdown=${(markdownText||'').length}ch (base64 skipped to save space)`)
+        } else {
+          // Text extraction returned too little — keep base64 as fallback
+          extractedText = `base64:${base64}\n\n---DOCUMENT_TEXT---\n${docText}\n\n---EXTRACTED_TEXT---\n${docText}`
+          console.log(`[Upload] DOCX text too short (${docText.length}ch), keeping base64 fallback`)
+        }
       } catch (err: any) {
         console.error('[Upload] DOCX parse error (non-fatal):', err.message)
         // Keep base64 only as fallback
+      }
+    }
+
+    // Safety: truncate if still too large for D1 (max ~950 Ko to stay safe)
+    const D1_MAX_BINDING = 950 * 1024
+    if (extractedText.length > D1_MAX_BINDING) {
+      console.warn(`[Upload] extracted_text too large (${(extractedText.length/1024).toFixed(0)} Ko), truncating base64...`)
+      // Remove base64 portion if present, keep only text
+      if (extractedText.startsWith('base64:')) {
+        const docTextStart = extractedText.indexOf('---DOCUMENT_TEXT---')
+        const extractedStart = extractedText.indexOf('---EXTRACTED_TEXT---')
+        if (docTextStart > 0) {
+          extractedText = extractedText.slice(docTextStart)
+        } else if (extractedStart > 0) {
+          extractedText = extractedText.slice(extractedStart)
+        } else {
+          // Last resort: truncate
+          extractedText = extractedText.slice(0, D1_MAX_BINDING)
+        }
+        console.log(`[Upload] Truncated to ${(extractedText.length/1024).toFixed(0)} Ko (base64 removed)`)
       }
     }
 
