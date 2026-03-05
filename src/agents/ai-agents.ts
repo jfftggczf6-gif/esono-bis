@@ -201,18 +201,40 @@ async function callClaude(
     const text = responseData?.content?.[0]?.text || ''
     const tokensUsed = (responseData?.usage?.input_tokens || 0) + (responseData?.usage?.output_tokens || 0)
 
-    // Extract JSON from response
-    let jsonStr = text
-    const jsonMatch = text.match(/\{[\s\S]*\}/)
-    if (jsonMatch) jsonStr = jsonMatch[0]
-
+    // Extract JSON from response — try multiple strategies
+    let data: any = null
+    let parseError = ''
+    
+    // Strategy 1: Direct parse
     try {
-      const data = JSON.parse(jsonStr)
-      return { success: true, data, text, tokensUsed }
+      data = JSON.parse(text)
     } catch {
-      // Return raw text if JSON parsing fails
-      return { success: true, text, tokensUsed, error: 'JSON parse failed, raw text returned' }
+      // Strategy 2: Find outermost JSON object
+      const jsonMatch = text.match(/\{[\s\S]*\}/)
+      if (jsonMatch) {
+        try {
+          data = JSON.parse(jsonMatch[0])
+        } catch (e2: any) {
+          // Strategy 3: Clean markdown code blocks
+          const cleaned = text.replace(/^```(?:json)?\s*/m, '').replace(/\s*```$/m, '').trim()
+          try {
+            data = JSON.parse(cleaned)
+          } catch (e3: any) {
+            parseError = `JSON parse failed after 3 strategies. Text length: ${text.length}. First 200 chars: ${text.slice(0, 200)}. Last 200 chars: ${text.slice(-200)}`
+            console.error('callClaude JSON parse error:', parseError)
+          }
+        }
+      } else {
+        parseError = `No JSON object found in response. Text length: ${text.length}. First 300 chars: ${text.slice(0, 300)}`
+        console.error('callClaude no JSON:', parseError)
+      }
     }
+    
+    if (data) {
+      return { success: true, data, text, tokensUsed }
+    }
+    // Return with text so runAgent can handle it
+    return { success: true, text, tokensUsed, error: parseError || 'JSON parse failed' }
   } catch (err: any) {
     if (err.name === 'AbortError') {
       return { success: false, error: 'Timeout after ' + (options.timeoutMs || 120000) + 'ms' }
@@ -245,13 +267,15 @@ export async function runAgent(
 
   // Build the context-enriched system prompt
   const extraReplacements: Record<string, string> = {}
+  // Reduce analysis size for BP writer since it already has a large system prompt (~9KB)
+  const analysisLimit = (agentCode === 'business_plan_writer') ? 2000 : 3000
   
   if (previousAnalyses) {
-    if (previousAnalyses.bmc_analysis) extraReplacements['BMC_ANALYSIS'] = JSON.stringify(previousAnalyses.bmc_analysis).slice(0, 3000)
-    if (previousAnalyses.sic_analysis) extraReplacements['SIC_ANALYSIS'] = JSON.stringify(previousAnalyses.sic_analysis).slice(0, 3000)
-    if (previousAnalyses.finance_analysis) extraReplacements['FINANCE_ANALYSIS'] = JSON.stringify(previousAnalyses.finance_analysis).slice(0, 3000)
-    if (previousAnalyses.diagnostic) extraReplacements['DIAGNOSTIC'] = JSON.stringify(previousAnalyses.diagnostic).slice(0, 3000)
-    if (previousAnalyses.odd) extraReplacements['ODD_ANALYSIS'] = JSON.stringify(previousAnalyses.odd).slice(0, 3000)
+    if (previousAnalyses.bmc_analysis) extraReplacements['BMC_ANALYSIS'] = JSON.stringify(previousAnalyses.bmc_analysis).slice(0, analysisLimit)
+    if (previousAnalyses.sic_analysis) extraReplacements['SIC_ANALYSIS'] = JSON.stringify(previousAnalyses.sic_analysis).slice(0, analysisLimit)
+    if (previousAnalyses.finance_analysis) extraReplacements['FINANCE_ANALYSIS'] = JSON.stringify(previousAnalyses.finance_analysis).slice(0, analysisLimit)
+    if (previousAnalyses.diagnostic) extraReplacements['DIAGNOSTIC'] = JSON.stringify(previousAnalyses.diagnostic).slice(0, analysisLimit)
+    if (previousAnalyses.odd) extraReplacements['ODD_ANALYSIS'] = JSON.stringify(previousAnalyses.odd).slice(0, analysisLimit)
   }
 
   const systemPrompt = buildPrompt(promptConfig.system_prompt, kbContext, extraReplacements)
@@ -264,32 +288,84 @@ export async function runAgent(
 
   let userMessage = `Entrepreneur: ${userName}${input.userCountry ? ` (${input.userCountry})` : ''}\n\nDocuments fournis:\n${docParts}`
   
+  // Log prompt sizes for debugging
+  console.log(`[runAgent ${agentCode}] System prompt: ${systemPrompt.length} chars, User message: ${userMessage.length} chars, Max tokens: ${promptConfig.max_tokens}, Timeout: ${input.timeoutMs || 120000}ms`)
+  
   if (customInstructions) {
     userMessage += `\n\nInstructions spécifiques de l'entrepreneur:\n${customInstructions}`
   }
 
   userMessage += `\n\nAnalyse ces documents et génère le livrable au format JSON selon la structure définie dans les instructions système. Réponds UNIQUEMENT avec le JSON, sans texte avant ou après.`
 
-  // Try Claude
+  // Try Claude with retry for critical agents (business_plan_writer)
   if (apiKey && apiKey !== 'sk-ant-PLACEHOLDER') {
-    const result = await callClaude(apiKey, systemPrompt, userMessage, {
-      temperature: promptConfig.temperature,
-      maxTokens: promptConfig.max_tokens,
-      timeoutMs: input.timeoutMs || 120000,
-    })
+    const maxAttempts = (agentCode === 'business_plan_writer' || agentCode === 'plan_ovo_analyst') ? 2 : 1
+    let lastError = ''
+    let lastText = ''
 
-    if (result.success && result.data) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      if (attempt > 1) {
+        const delay = 5000 * attempt  // 10s backoff on retry
+        console.log(`Agent ${agentCode}: Retry ${attempt}/${maxAttempts} after ${delay}ms...`)
+        await new Promise(r => setTimeout(r, delay))
+      }
+
+      const result = await callClaude(apiKey, systemPrompt, userMessage, {
+        temperature: promptConfig.temperature,
+        maxTokens: promptConfig.max_tokens,
+        timeoutMs: input.timeoutMs || 120000,
+      })
+
+      if (result.success && result.data) {
+        if (attempt > 1) console.log(`Agent ${agentCode}: Success on attempt ${attempt}!`)
+        return {
+          success: true,
+          data: result.data,
+          source: 'claude',
+          agentCode,
+          tokensUsed: result.tokensUsed,
+        }
+      }
+
+      // If Claude responded but JSON parse failed, try to salvage the text
+      if (result.success && result.text && !result.data) {
+        console.warn(`Agent ${agentCode} attempt ${attempt}: Claude responded (${result.text.length} chars) but JSON parse failed. Error: ${result.error}`)
+        lastText = result.text
+        // Try one more time with aggressive cleanup
+        try {
+          const aggressive = result.text
+            .replace(/^[\s\S]*?(?=\{)/, '')  // Remove everything before first {
+            .replace(/\}[^}]*$/, '}')        // Keep up to last }
+          const salvaged = JSON.parse(aggressive)
+          console.log(`Agent ${agentCode}: Salvaged JSON from text on attempt ${attempt}!`)
+          return { success: true, data: salvaged, source: 'claude', agentCode, tokensUsed: result.tokensUsed }
+        } catch {
+          console.error(`Agent ${agentCode}: Could not salvage JSON. First 500 chars:`, result.text.slice(0, 500))
+        }
+      }
+
+      lastError = result.error || 'unknown'
+      // Only retry on transient errors (timeout, rate limit, overload)
+      const isTransient = lastError.includes('Timeout') || lastError.includes('429') || lastError.includes('529') || lastError.includes('overloaded')
+      if (!isTransient && attempt < maxAttempts) {
+        console.warn(`Agent ${agentCode}: Non-transient error "${lastError}", skipping retry`)
+        break
+      }
+      console.error(`Agent ${agentCode} attempt ${attempt} error: ${lastError}`)
+    }
+
+    // After all retries failed, if we have raw text, wrap it as fallback
+    if (lastText.length > 100) {
+      console.warn(`Agent ${agentCode}: All attempts failed but have text (${lastText.length} chars). Using as raw fallback.`)
       return {
         success: true,
-        data: result.data,
+        data: { content: lastText, _raw_text_fallback: true, score: 40 },
         source: 'claude',
         agentCode,
-        tokensUsed: result.tokensUsed,
       }
     }
 
-    // Log error but continue to fallback
-    console.error(`Agent ${agentCode} Claude error:`, result.error)
+    console.error(`Agent ${agentCode} Claude final error: ${lastError}`)
   }
 
   // Fallback: return null data, orchestrator will use buildFallbackResult
@@ -298,7 +374,7 @@ export async function runAgent(
     data: null,
     source: 'fallback',
     agentCode,
-    error: apiKey ? 'Claude call failed' : 'No API key configured',
+    error: apiKey ? `Claude call failed: ${agentCode}` : 'No API key configured',
   }
 }
 
