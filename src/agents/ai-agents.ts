@@ -295,7 +295,26 @@ export async function runAgent(
     userMessage += `\n\nInstructions spécifiques de l'entrepreneur:\n${customInstructions}`
   }
 
-  userMessage += `\n\nAnalyse ces documents et génère le livrable au format JSON selon la structure définie dans les instructions système. Réponds UNIQUEMENT avec le JSON, sans texte avant ou après.`
+  // Inject the output schema so Claude knows the EXACT JSON structure expected
+  if (promptConfig.output_schema) {
+    let schemaStr = promptConfig.output_schema
+    // If it's already a string, use it; if object, stringify
+    if (typeof schemaStr !== 'string') schemaStr = JSON.stringify(schemaStr, null, 2)
+    userMessage += `\n\n═══ FORMAT DE RÉPONSE OBLIGATOIRE ═══
+Tu DOIS répondre avec un objet JSON qui respecte EXACTEMENT ce schéma. Utilise UNIQUEMENT les clés spécifiées ci-dessous. NE PAS inventer de clés alternatives (pas de "analyse_bmc", "diagnostic_global", "alignement_odd", "recommandations_prioritaires", etc.).
+
+JSON Schema attendu :
+${schemaStr}
+
+RÈGLES STRICTES :
+1. Les clés doivent être EXACTEMENT celles du schéma (ex: "blocks" PAS "analyse_blocs", "score" PAS "score_global")
+2. Les arrays doivent rester des arrays (pas de dicts avec odd_1, odd_2...)
+3. Pas de clés supplémentaires en dehors du schéma
+4. Pas de texte avant ou après le JSON
+5. Réponds UNIQUEMENT avec le JSON valide`
+  } else {
+    userMessage += `\n\nAnalyse ces documents et génère le livrable au format JSON. Réponds UNIQUEMENT avec le JSON, sans texte avant ou après.`
+  }
 
   // Try Claude with retry for critical agents (business_plan_writer)
   if (apiKey && apiKey !== 'sk-ant-PLACEHOLDER') {
