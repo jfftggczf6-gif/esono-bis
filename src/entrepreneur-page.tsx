@@ -6207,6 +6207,7 @@ entrepreneurRoutes.get('/entrepreneur', async (c) => {
         html += '</div>';
         return html;
       }
+      }
 
       const hyp = ext.hypotheses || {};
       const baseYear = hyp.base_year || 2025;
