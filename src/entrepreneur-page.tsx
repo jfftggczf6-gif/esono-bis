@@ -1558,6 +1558,7 @@ entrepreneurRoutes.post('/api/ai/pipeline/step', async (c) => {
               finance_analysis: analysisResults['finance_analyst'],
               odd: analysisResults['odd_analyst'],
             },
+            timeoutMs: 240000, // 4 min — BP is large (12K tokens output)
           })
 
           if (result.success && result.data) {

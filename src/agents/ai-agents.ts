@@ -30,6 +30,7 @@ export interface AgentInput {
   kbContext: KBContext
   previousAnalyses?: Record<string, any>  // for orchestrator
   customInstructions?: string  // from chat corrections
+  timeoutMs?: number  // override default 120s timeout (e.g. 240000 for BP)
 }
 
 export interface AgentOutput {
@@ -267,14 +268,14 @@ export async function runAgent(
     userMessage += `\n\nInstructions spécifiques de l'entrepreneur:\n${customInstructions}`
   }
 
-  userMessage += `\n\nAnalyse ces documents et génère le livrable au format JSON selon le schéma: ${promptConfig.output_schema}`
+  userMessage += `\n\nAnalyse ces documents et génère le livrable au format JSON selon la structure définie dans les instructions système. Réponds UNIQUEMENT avec le JSON, sans texte avant ou après.`
 
   // Try Claude
   if (apiKey && apiKey !== 'sk-ant-PLACEHOLDER') {
     const result = await callClaude(apiKey, systemPrompt, userMessage, {
       temperature: promptConfig.temperature,
       maxTokens: promptConfig.max_tokens,
-      timeoutMs: 120000,
+      timeoutMs: input.timeoutMs || 120000,
     })
 
     if (result.success && result.data) {
